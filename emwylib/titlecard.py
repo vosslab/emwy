@@ -16,7 +16,7 @@ from scipy import misc
 from PIL import ImageDraw
 from PIL import ImageFont
 from scipy.ndimage import filters
-from transforms import RGBTransform
+from emwylib.transforms import RGBTransform
 
 #===============================
 def runCmd(cmd, msg=False):

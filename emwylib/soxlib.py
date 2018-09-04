@@ -20,8 +20,7 @@ def runCmd(cmd, msg=False):
 	return
 
 #===============================
-def normalizeAudio(wavfile, level=-1.9, samplerate=None, bitrate=None):
-	normwavfile = "audio-norm.wav"
+def normalizeAudio(wavfile, normwavfile="audio-norm.wav", level=-1.9, samplerate=None, bitrate=None):
 	cmd = "sox %s "%(wavfile,)
 	if samplerate is not None:
 		cmd += "-r %d "%(samplerate,)

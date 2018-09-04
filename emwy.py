@@ -295,7 +295,8 @@ class ProcessMovie():
 			band_wavfile = soxlib.bandPassFilter(dnr_wavfile)
 			if band_wavfile != dnr_wavfile:
 				os.remove(dnr_wavfile)
-			norm_wavfile = soxlib.normalizeAudio(band_wavfile, level=self.norm_level,
+			norm_wavfile = "audio-norm-%s.wav"%(self.makeTimestamp())
+			soxlib.normalizeAudio(band_wavfile, norm_wavfile, level=self.norm_level,
 				samplerate=self.samplerate, bitrate=self.bitrate)
 			if norm_wavfile != band_wavfile:
 				os.remove(band_wavfile)
@@ -402,7 +403,8 @@ class ProcessMovie():
 		soxlib.convertAudioToWav(titledict.get('audio_file'),  convwavfile, audio_mode=self.audio_mode)
 
 		norm_level = titledict.get('norm_level', self.norm_level)
-		normwavfile = soxlib.normalizeAudio(convwavfile, level=norm_level,
+		normwavfile = "audio-tc-norm.wav"
+		soxlib.normalizeAudio(convwavfile, normwavfile, level=norm_level,
 			samplerate=self.samplerate, bitrate=self.bitrate)
 		os.remove(convwavfile)
 
