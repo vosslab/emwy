@@ -14,7 +14,7 @@ or any documentation, see
 
 https://video.stackexchange.com/questions/7459/are-there-any-good-video-editing-programs-with-a-command-line-interface
 
-* [AviSynth](https://avisynth.nl/index.php/Main_Page)
+* [AviSynth](http://avisynth.nl/index.php/Main_Page)
 * [MLT Multimedia Framework](https://www.mltframework.org/)
 
 # Software pre-requisities
@@ -24,10 +24,10 @@ but it expects several packages to exist on the system already.
 
 ## software packages:
 * [ffmpeg (with x264 codec)](https://www.ffmpeg.org)
-* [lame](https://lame.sourceforge.net)
+* [lame](http://lame.sourceforge.net)
 * [mediainfo](https://mediaarea.net/MediaInfo) ; version 18.03 or newer from March 2018
 * [python](https://python.org), tested on python 2.7, my day job is using python 2.7
-* [sox](https://sox.sourceforge.net)
+* [sox](http://sox.sourceforge.net)
 
 ## python modules:
 * [numpy](https://www.numpy.org)
