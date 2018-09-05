@@ -163,6 +163,7 @@ class ProcessMovie():
 			self.movframerate = 24
 			self.extra_audio_process = False
 			self.lame_preset = 'medium'
+			self.reverse_compress = True
 		elif self.quality == 'high':
 			self.samplerate = 96000
 			self.bitrate = 24
@@ -170,6 +171,7 @@ class ProcessMovie():
 			self.movframerate = 30
 			self.extra_audio_process = True
 			self.lame_preset = 'standard'
+			self.reverse_compress = True
 		for category in ('audio', 'video'):
 			if self.global_dict.get(category) is not None:
 				for key in self.global_dict[category].keys():
@@ -292,7 +294,7 @@ class ProcessMovie():
 			gate_wavfile = soxlib.noiseGate(noise_wavfile)
 			if gate_wavfile != noise_wavfile:
 				os.remove(noise_wavfile)
-			dnr_wavfile = soxlib.compressAudio(gate_wavfile)
+			dnr_wavfile = soxlib.compressAudio(gate_wavfile, reverse_compress=self.reverse_compress)
 			if dnr_wavfile != gate_wavfile:
 				os.remove(gate_wavfile)
 			band_wavfile = soxlib.bandPassFilter(dnr_wavfile)

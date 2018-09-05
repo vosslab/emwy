@@ -62,8 +62,7 @@ def noiseGate(wavfile, level=40):
 	return gatedwavfile
 
 #===============================
-def bandPassFilter(wavfile, highpass=20, lowpass=10000):
-	filtwavfile = "audio-filter.wav"
+def bandPassFilter(wavfile, filtwavfile="audio-filter.wav", highpass=20, lowpass=10000):
 	cmd = "sox %s %s lowpass %d highpass %d"%(wavfile, filtwavfile, lowpass, highpass)
 	runCmd(cmd)
 	if not os.path.isfile(filtwavfile):
@@ -109,10 +108,8 @@ def splitAudioSox(wavfile, splitwavfile, movframerate, startseconds, endseconds)
 	return splitwavfile
 
 #===============================
-def speedUpAudio(wavfile, fastwavfile=None, speed=1.1, samplerate=None, bitrate=None):
+def speedUpAudio(wavfile, fastwavfile="audio-fast.wav", speed=1.1, samplerate=None, bitrate=None):
 	t0 = time.time()
-	if fastwavfile is None:
-		fastwavfile = "audio-fast.wav"
 	cmd = "sox %s "%(wavfile,)
 	if samplerate is not None:
 		cmd += "-r %d "%(samplerate,)
@@ -127,9 +124,11 @@ def speedUpAudio(wavfile, fastwavfile=None, speed=1.1, samplerate=None, bitrate=
 	return fastwavfile
 
 #===============================
-def compressAudio(wavfile):
-	drcwavfile = "audio-drc.wav"
-	cmd = "sox %s %s compand 0.2,1 6:-70,-60,-20 -13 -50 0.2"%(wavfile, drcwavfile)
+def compressAudio(wavfile, drcwavfile="audio-drc.wav", reverse_compress=True):
+	cmd = "sox %s %s compand 0.2,1 6:-70,-60,-20 -13 -50 0.2 "%(wavfile, drcwavfile)
+	if reverse_compress is True:
+		#double DRC in reverse direction
+		cmd += " reverse compand 0.2,1 6:-70,-60,-20 -13 -50 0.2 reverse "
 	runCmd(cmd)
 	if not os.path.isfile(drcwavfile):
 		print "dynamic range compression failed"
