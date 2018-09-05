@@ -21,6 +21,7 @@ def runCmd(cmd, msg=False):
 
 #===============================
 def splitAudioFfmpeg(movfile, wavfile, startseconds, endseconds, samplerate=96, bitrate=24):
+	# not used, created for testing purposes only
 	cutseconds = endseconds - startseconds
 	cmd  = "ffmpeg -y "
 	cmd += " -ss %.2f -t %.2f "%(startseconds, cutseconds)
@@ -40,7 +41,7 @@ def processVideo(movfile, outfile, starttime, endtime, speed=1.1, crf=25, movfra
 	cmd  = "ffmpeg -y "
 	cmd += " -ss %.2f -t %.2f "%(starttime, endtime-starttime)
 	cmd += " -i %s "%(movfile)
-	cmd += " -sn -an "
+	cmd += " -sn -an -map_chapters -1 "
 	#cmd += " -i ~/sh/vosslab_logo-vector50.png "
 	#cmd += " -filter_complex 'overlay=main_w-overlay_w-10:main_h-overlay_h-10'"
 	cmd += " -codec:v libx264  -crf %d -preset ultrafast "%(crf)
