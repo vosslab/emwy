@@ -116,7 +116,7 @@ class EditControl():
 	#===============================
 	def processAllMovies(self):
 		processed_movies = []
-		
+
 		for mov_dict in self.movie_tree:
 			movproc = ProcessMovie(mov_dict, self)
 			movie_file = movproc.getFinalMovieFile()
@@ -210,20 +210,20 @@ class ProcessMovie():
 		proc = subprocess.Popen(cmd, shell=True,
 			stderr=subprocess.PIPE, stdout=subprocess.PIPE)
 		stdout, stderr = proc.communicate()
-		data = json.loads(stdout)
+		rawdata = json.loads(stdout)
+		data = rawdata.get('media')
 		return data
 
-	#===============================
 	def getDuration(self, mediafile):
 		data = self.getMediaInfo(mediafile)
-		duration = float(data['media']['track'][0]['Duration'])
+		duration = float(data['track'][0]['Duration'])
 		return duration
 
 	#===============================
 	def getMovieDimensions(self, mediafile):
 		data = self.getMediaInfo(mediafile)
 		videotrack = None
-		for track in data['media']['track']:
+		for track in data.get('track'):
 			if track.get('@type') == 'Video':
 				videotrack = track
 		if videotrack is None:
