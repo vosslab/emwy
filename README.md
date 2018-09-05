@@ -1,6 +1,6 @@
 # emwy
 
-*emwy* stands for 'edit movies with yaml' it is a command line tool for 
+**emwy** stands for "*edit movies with yaml*" it is a command line tool for 
 splicing and combining movies.
 
 # Why emwy?
@@ -9,13 +9,15 @@ Most GUI based NLE (non-linear editors) have a high latency while
 editing which slowed things down and did not match my style. 
 
 I did a search for other command line editors, but did not find any at
-the time, so I wrote my own. Since I have found two, but they did not have easy
-or any documentation, see
-
-https://video.stackexchange.com/questions/7459/are-there-any-good-video-editing-programs-with-a-command-line-interface
+the time, so I wrote my own. Since I have found two:
 
 * [AviSynth](http://avisynth.nl/index.php/Main_Page)
 * [MLT Multimedia Framework](https://www.mltframework.org/)
+
+but they did not have any good documentation,
+[see stackexchange](https://video.stackexchange.com/questions/7459/)
+
+>  "powerful, if somewhat obscure, multitrack command line oriented video editor…"
 
 # Software pre-requisities
 
