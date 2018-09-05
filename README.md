@@ -1,8 +1,12 @@
 # emwy
-edit movies with yaml
 
+*emwy* stands for 'edit movies with yaml' it is a command line tool for 
+splicing and combining movies.
 
 # Software pre-requisities
+
+emwy is a python package, so it does not need to be compiled, 
+but it expects several packages to exist on the system already.
 
 ## software packages:
 * ffmpeg (with x264 codec), https://www.ffmpeg.org
@@ -11,7 +15,7 @@ edit movies with yaml
 * lame, http://lame.sourceforge.net
 * python, tested on python 2.7
 
-## python libraries:
+## python modules:
 * yaml, https://pyyaml.org
 * pillow, https://pillow.readthedocs.io
 * numpy, https://www.numpy.org
