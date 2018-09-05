@@ -1,15 +1,15 @@
 # emwy
 
-**emwy** stands for "*edit movies with yaml*" it is a command line tool for 
-splicing and combining movies.
+**emwy** stands for "*<u>e</u>dit <u>m</u>ovies <u>w</u>ith <u>y</u>aml*" it is a command line tool for splicing and combining movies, with many custom features that only I desire.
+
+**emwy** is pronounced as one syllable like a child attempting to say the name "Emily", but getting the "w" sound instead of the "l" sound and skipping the "i" in the middle. &#477;m-we
+
 
 # Why emwy?
 
-Most GUI based NLE (non-linear editors) have a high latency while
-editing which slowed things down and did not match my style. 
+Most GUI based NLE (non-linear editors) have a high latency while editing which slowed things down and did not match my style.
 
-I did a search for other command line editors, but did not find any at
-the time, so I wrote my own. Since I have found two:
+I did a search for other command line editors, but did not find any at the time, so I wrote my own. Since I have found two:
 
 * [AviSynth](http://avisynth.nl/index.php/Main_Page)
 * [MLT Multimedia Framework](https://www.mltframework.org/)
@@ -21,7 +21,7 @@ but they did not have any good documentation,
 
 # Software pre-requisities
 
-emwy is a python package, so it does not need to be compiled, 
+emwy is a python package, so it does not need to be compiled,
 but it expects several packages to exist on the system already.
 
 ## software packages:
