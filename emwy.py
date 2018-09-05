@@ -121,10 +121,13 @@ class EditControl():
 			movproc = ProcessMovie(mov_dict, self)
 			movie_file = movproc.getFinalMovieFile()
 			processed_movies.append(movie_file)
-		completemovie = "COMPLETE.mkv"
-		self.concatenateMovies(processed_movies, completemovie)
 
 		#merge movies...
+		completemovie = "COMPLETE.mkv"
+		self.concatenateMovies(processed_movies, completemovie)
+		for movfile in processed_movies:
+			os.remove(movfile)
+
 
 #===============================
 #===============================
