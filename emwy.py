@@ -288,15 +288,15 @@ class ProcessMovie():
 		if norm_wavfile != raw_wavfile:
 			os.remove(raw_wavfile)
 		if self.extra_audio_process is True:
-			noise_wavfile = self.processNoise(norm_wavfile)
-			if noise_wavfile != norm_wavfile:
+			#noise_wavfile = self.processNoise(norm_wavfile)
+			#if noise_wavfile != norm_wavfile:
+			#	os.remove(norm_wavfile)
+			#gate_wavfile = soxlib.noiseGate(noise_wavfile)
+			#if gate_wavfile != noise_wavfile:
+			#	os.remove(noise_wavfile)
+			dnr_wavfile = soxlib.compressAudio(norm_wavfile, reverse_compress=self.reverse_compress)
+			if dnr_wavfile != norm_wavfile:
 				os.remove(norm_wavfile)
-			gate_wavfile = soxlib.noiseGate(noise_wavfile)
-			if gate_wavfile != noise_wavfile:
-				os.remove(noise_wavfile)
-			dnr_wavfile = soxlib.compressAudio(gate_wavfile, reverse_compress=self.reverse_compress)
-			if dnr_wavfile != gate_wavfile:
-				os.remove(gate_wavfile)
 			band_wavfile = soxlib.bandPassFilter(dnr_wavfile)
 			if band_wavfile != dnr_wavfile:
 				os.remove(dnr_wavfile)
