@@ -12,20 +12,21 @@ import pprint
 import argparse
 import subprocess
 from emwylib import soxlib
+from emwylib import medialib
 from emwylib import ffmpeglib
 from emwylib import titlecard
 
 ### TODO
 # add background music
-# switch to YAML format
-# add transitions
-# use speeds in YAML file
+# add mute
+# add video transitions
+# add audio fade in and out
 # add fast forward symbol to screen
 # add watermark to video
-# add title cards
-# expand log file to host multiple movie files
-# add flags, e.g. avsync, to log file
-# extract audio at the end, for Audacity editing
+# flag to perform av sync
+# flag to extract audio at the end, for Audacity editing
+# create a show notes
+# add more quality levels
 
 debug = True
 skipcodes = {'noise': True, 'stop': True, 'skip': True, }
@@ -207,34 +208,6 @@ class ProcessMovie():
 		return totalseconds
 
 	#===============================
-	def getMediaInfo(self, mediafile):
-		cmd = "mediainfo --Output=JSON %s"%(mediafile)
-		proc = subprocess.Popen(cmd, shell=True,
-			stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-		stdout, stderr = proc.communicate()
-		rawdata = json.loads(stdout)
-		data = rawdata.get('media')
-		return data
-
-	def getDuration(self, mediafile):
-		data = self.getMediaInfo(mediafile)
-		duration = float(data['track'][0]['Duration'])
-		return duration
-
-	#===============================
-	def getMovieDimensions(self, mediafile):
-		data = self.getMediaInfo(mediafile)
-		videotrack = None
-		for track in data.get('track'):
-			if track.get('@type') == 'Video':
-				videotrack = track
-		if videotrack is None:
-			return None
-		width = int(videotrack['Width'])
-		height = int(videotrack['Height'])
-		return (width, height)
-
-	#===============================
 	def checkMovieFile(self):
 		self.movfile = self.mov_dict.get('file')
 		if self.movfile is None:
@@ -389,7 +362,7 @@ class ProcessMovie():
 	def createTitleCard(self, titledict, count):
 		tc = titlecard.TitleCard()
 		tc.text = titledict.get('text')
-		(width, height) = self.getMovieDimensions(self.movfile)
+		(width, height) = medialib.getVideoDimensions(self.movfile)
 		tc.width = width 
 		tc.height = height
 		tc.framerate = self.movframerate
@@ -413,7 +386,7 @@ class ProcessMovie():
 			samplerate=self.samplerate, bitrate=self.bitrate)
 		os.remove(convwavfile)
 
-		endtime = self.getDuration(out_video_file)
+		endtime = medialib.getDuration(out_video_file)
 		speed = float(self.global_dict['speed'].get('normal', 1.1))
 		self.splitAudio(normwavfile, "audio-split.wav", 0, endtime*speed)
 		os.remove(normwavfile)
@@ -445,8 +418,8 @@ class ProcessMovie():
 
 	#===============================
 	def mergeAV(self, video_file, audio_file, merge_file):
-		vtime = self.getDuration(video_file)
-		atime = self.getDuration(audio_file)
+		vtime = medialib.getDuration(video_file)
+		atime = medialib.getDuration(audio_file)
 		print "Audio: %.3f // Video %.3f"%(atime, vtime)
 		if abs(atime - vtime) > 0.1:
 			print "time error: %.3f %.3f"%(atime,vtime)
