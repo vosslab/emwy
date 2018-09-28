@@ -105,6 +105,8 @@ class EditControl():
 			return bigmovie
 		cmd = "mkvmerge "
 		for movfile in movlist:
+			duration = medialib.getDuration(movfile)
+			print("%.1f  %s"%(duration, movfile))
 			cmd += " %s + "%(movfile)
 		cmd = cmd[:-2]
 		cmd += " -o %s "%(bigmovie)
@@ -124,11 +126,11 @@ class EditControl():
 			processed_movies.append(movie_file)
 
 		#merge movies...
-		completemovie = "COMPLETE.mkv"
-		self.concatenateMovies(processed_movies, completemovie)
+		self.output_file = self.global_dict.get('output_file', 'complete.mkv')
+		self.concatenateMovies(processed_movies, self.output_file)
 		for movfile in processed_movies:
 			os.remove(movfile)
-
+		print("mpv %s"%(self.output_file))
 
 #===============================
 #===============================
@@ -216,7 +218,7 @@ class ProcessMovie():
 		if not os.path.exists(self.movfile):
 			print("file not found %s"%(self.movfile))
 			sys.exit(1)
-		self.getMediaInfo(self.movfile)
+		medialib.getMediaInfo(self.movfile)
 
 	#===============================
 	def checkMovieTimings(self):

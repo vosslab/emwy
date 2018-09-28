@@ -22,6 +22,7 @@ def runCmd(cmd, msg=False):
 #===============================
 def splitAudioFfmpeg(movfile, wavfile, startseconds, endseconds, samplerate=96, bitrate=24):
 	# not used, created for testing purposes only
+	sys.exit(1)
 	cutseconds = endseconds - startseconds
 	cmd  = "ffmpeg -y "
 	cmd += " -ss %.2f -t %.2f "%(startseconds, cutseconds)
@@ -36,7 +37,7 @@ def splitAudioFfmpeg(movfile, wavfile, startseconds, endseconds, samplerate=96, 
 	return wavfile
 
 #===============================
-def processVideo(movfile, outfile, starttime, endtime, speed=1.1, crf=25, movframerate=60):
+def processVideo(movfile, outfile, starttime, endtime, speed=1.1, crf=25, movframerate=60, preset='ultrafast'):
 	t0 = time.time()
 	cmd  = "ffmpeg -y "
 	cmd += " -ss %.2f -t %.2f "%(starttime, endtime-starttime)
@@ -44,7 +45,7 @@ def processVideo(movfile, outfile, starttime, endtime, speed=1.1, crf=25, movfra
 	cmd += " -sn -an -map_chapters -1 -map_metadata -1 "
 	#cmd += " -i ~/sh/vosslab_logo-vector50.png "
 	#cmd += " -filter_complex 'overlay=main_w-overlay_w-10:main_h-overlay_h-10'"
-	cmd += " -codec:v libx264  -crf %d -preset ultrafast "%(crf)
+	cmd += " -codec:v libx264 -crf %d -preset %s "%(crf, preset)
 	cmd += " -tune fastdecode -profile:v high -pix_fmt yuv420p "
 	cmd += " -r %d "%(movframerate)
 	cmd += " -filter:v 'setpts=%.8f*PTS' "%(1.0/speed)
@@ -70,7 +71,7 @@ def addWatermark(movfile, outfile, watermark_file=None, crf=25, movframerate=60,
 	cmd += " %s "%(outfile)
 	runCmd(cmd)
 	if not os.path.isfile(outfile):
-		print "fast forward %.1fX failed"%(speed)
+		print "add watermark failed"
 		sys.exit(1)
 	print "Complete in %d seconds"%(time.time() - t0)
 	return outfile
@@ -86,7 +87,7 @@ def replaceAudio(movfile, wavfile, newmovfile):
 	cmd += " '%s' "%(newmovfile)
 	runCmd(cmd)
 	if not os.path.isfile(newmovfile):
-		print "band pass filter failed"
+		print "replace audio failed"
 		sys.exit(1)
 	return newmovfile
 
