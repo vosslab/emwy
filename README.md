@@ -23,7 +23,7 @@ but they did not have any good documentation, [see stackexchange](https://video.
 
 download a sample youtube video ([using youtube-dl](https://rg3.github.io/youtube-dl/)) and we'll use yaml to splice the video
 
-```youtube-dl -f 22 http://youtu.be/9bZkp7q19f0 -o Psy-Gangnam_Style.mp4```
+```youtube-dl http://youtu.be/9bZkp7q19f0 -o Psy-Gangnam_Style.mp4```
 
 save the following code to the file `gangnam.yml`:
 
