@@ -134,3 +134,43 @@ def compressAudio(wavfile, drcwavfile="audio-drc.wav", reverse_compress=True):
 		print "dynamic range compression failed"
 		sys.exit(1)
 	return drcwavfile
+
+
+#===============================
+def addSilenceToStart(wavfile, addwavfile="audio-shift.wav", seconds=3.0, samplerate=None, bitrate=None, audio_mode=None):
+	silentwav = makeSilence("silence.wav", seconds=seconds, samplerate=samplerate, bitrate=bitrate, audio_mode=audio_mode)
+	combineWaveFiles(silentwav, wavfile, addwavfile)
+	if not os.path.isfile(addwavfile):
+		print "add Silence To Start failed"
+		sys.exit(1)
+	os.remove(silentwav)
+	return addwavfile
+
+#===============================
+def combineWaveFiles(wavfile1, wavfile2, mergewavfile="audio-merge.wav"):
+	cmd = "sox %s %s %s"%(wavfile1, wavfile2, mergewavfile)
+	runCmd(cmd)
+	if not os.path.isfile(mergewavfile):
+		print "merge wav files failed"
+		sys.exit(1)
+	return mergewavfile
+
+#===============================
+def makeSilence(wavfile="silence.wav", seconds=3.0, samplerate=None, bitrate=None, audio_mode=None):
+	cmd = "sox --null "
+	if samplerate is not None:
+		cmd += "-r %d "%(samplerate,)
+	if bitrate is not None:
+		cmd += "-b %d "%(bitrate,)
+	if audio_mode is None:
+		mode_text = ""
+	elif audio_mode == "mono":
+		mode_text = " -c 1 "
+	elif audio_mode == "stereo":
+		mode_text = " -c 2 "
+	cmd += " %s trim 0.0 %.4f"%(wavfile, seconds)
+	runCmd(cmd)
+	if not os.path.isfile(wavfile):
+		print "silence creation failed"
+		sys.exit(1)
+	return wavfile
