@@ -48,7 +48,8 @@ def processVideo(movfile, outfile, starttime, endtime, speed=1.1, crf=25, movfra
 	cmd += " -codec:v libx264 -crf %d -preset %s "%(crf, preset)
 	cmd += " -tune fastdecode -profile:v high -pix_fmt yuv420p "
 	cmd += " -r %d "%(movframerate)
-	cmd += " -filter:v 'setpts=%.8f*PTS' "%(1.0/speed)
+	if abs(speed - 1.0) > 0.01:
+		cmd += " -filter:v 'setpts=%.8f*PTS' "%(1.0/speed)
 	cmd += " %s "%(outfile)
 	runCmd(cmd)
 	if not os.path.isfile(outfile):
