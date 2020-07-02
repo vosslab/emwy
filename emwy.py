@@ -23,6 +23,7 @@ from emwylib import titlecard
 # add audio fade in and out
 # add fast forward symbol to screen
 # add watermark to video
+# allow title cards without audio
 # flag to perform av sync
 # flag to extract audio at the end, for Audacity editing
 # create a show notes
@@ -235,6 +236,22 @@ class ProcessMovie():
 		self.times.sort()
 
 	#===============================
+	def getAVSync(self):
+		raw_avsync = self.mov_dict.get('avsync')
+		if raw_avsync is None:
+			return 0.0
+		raw_avsync = raw_avsync.strip()
+		if ':' in raw_avsync:
+			avsync = self.timeCodeToSeconds(raw_avsync)
+		elif raw_avsync.endswith("ms"):
+			avsync = float(raw_avsync[:-2])/1000.
+		elif raw_avsync.endswith("sec"):
+			avsync = float(raw_avsync[:-3])
+		else:
+			avsync = 0.0
+		return avsync
+
+	#===============================
 	def processNoise(self, orig_wavfile):
 		noisetime1 = None
 		for i in range(len(self.times)):
@@ -256,10 +273,16 @@ class ProcessMovie():
 	#===============================
 	def processAudio(self):
 		### process audio
+		avsync = self.getAVSync()
 		raw_wavfile = ffmpeglib.extractAudio(self.movfile,
 			samplerate=self.samplerate, bitrate=self.bitrate, audio_mode=self.audio_mode)
 		norm_wavfile = soxlib.normalizeAudio(raw_wavfile, level=self.norm_level,
 			samplerate=self.samplerate, bitrate=self.bitrate)
+		if avsync > 0:
+			shift_wavfile = soxlib.addSilenceToStart(norm_wavfile, seconds=avsync,
+				samplerate=self.samplerate, bitrate=self.bitrate, audio_mode=self.audio_mode)
+			os.remove(norm_wavfile)
+			norm_wavfile = shift_wavfile
 		if norm_wavfile != raw_wavfile:
 			os.remove(raw_wavfile)
 		if self.extra_audio_process is True:
