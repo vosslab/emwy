@@ -22,7 +22,7 @@ from emwylib.transforms import RGBTransform
 def runCmd(cmd, msg=False):
 	showcmd = cmd.strip()
 	showcmd = re.sub("  *", " ", showcmd)
-	print "CMD: '%s'"%(showcmd)
+	print(("CMD: '%s'"%(showcmd)))
 	if msg is True:
 		proc = subprocess.Popen(showcmd, shell=True)
 	else:
@@ -105,7 +105,7 @@ class TitleCard(object):
 		turbulence_pattern = numpy.zeros((self.height, self.width))
 		# Create cloud pattern
 		im_size = min(self.height, self.width)
-		power_range = range(2, int(numpy.log2(im_size)))
+		power_range = list(range(2, int(numpy.log2(im_size))))
 		for i in power_range:
 			# Set the size of the quadrant to work on
 			subimg_size = 2**i
@@ -136,7 +136,7 @@ class TitleCard(object):
 		w = self.w
 		imglist = []
 		turbim = self.make_turbulence()
-		for i in tqdm(range(self.numimages)):
+		for i in tqdm(list(range(self.numimages))):
 			bgcolor = self.alterColor(bgcolor, self.defaultshift)
 			textcolor = self.alterColor(textcolor, self.defaultshift)
 			h = self.alterInt(h, self.defaultshift)
@@ -159,7 +159,7 @@ class TitleCard(object):
 		self.makeMovieFromImages(imglist)
 		cmd = "rm %s%s.png "%(self.imgcode, "*")
 		runCmd(cmd)
-		print "done"
+		print("done")
 
 #===============================
 #===============================

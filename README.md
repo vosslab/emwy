@@ -73,7 +73,8 @@ but it expects several packages to exist on the system already.
 * [ffmpeg (with x264 codec)](https://www.ffmpeg.org)
 * [lame](http://lame.sourceforge.net)
 * [mediainfo](https://mediaarea.net/MediaInfo) ; version 18.03 or newer from March 2018
-* [python](https://python.org), tested on python 2.7, my day job is using python 2.7
+* [mkvtoolnix](https://mkvtoolnix.download/)
+* [python](https://python.org), tested on python 2.7 and 3.8
 * [sox](http://sox.sourceforge.net)
 
 ### python modules:

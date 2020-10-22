@@ -7,7 +7,6 @@ import time
 import yaml
 import json
 import shutil
-import string
 import pprint
 import argparse
 import subprocess
@@ -38,7 +37,7 @@ def runCmd(cmd, msg=False):
 	showcmd = cmd.strip()
 	showcmd = re.sub("  *", " ", showcmd)
 	if debug is True:
-		print("CMD: '%s'"%(showcmd))
+		print(("CMD: '%s'"%(showcmd)))
 	if msg is True:
 		proc = subprocess.Popen(showcmd, shell=True)
 	else:
@@ -98,22 +97,22 @@ class EditControl():
 	#===============================
 	def concatenateMovies(self, movlist, bigmovie):
 		if len(movlist) == 0:
-			print "no movies to merge"
+			print("no movies to merge")
 			sys.exit(1)
 		if len(movlist) == 1:
-			print "only one movie, just rename"
+			print("only one movie, just rename")
 			shutil.copy(movlist[0], bigmovie)
 			return bigmovie
 		cmd = "mkvmerge "
 		for movfile in movlist:
 			duration = medialib.getDuration(movfile)
-			print("%.1f  %s"%(duration, movfile))
+			print(("%.1f  %s"%(duration, movfile)))
 			cmd += " %s + "%(movfile)
 		cmd = cmd[:-2]
 		cmd += " -o %s "%(bigmovie)
 		runCmd(cmd)
 		if not os.path.isfile(bigmovie):
-			print "concatenate movies failed"
+			print("concatenate movies failed")
 			sys.exit(1)
 		return bigmovie
 
@@ -131,7 +130,7 @@ class EditControl():
 		self.concatenateMovies(processed_movies, self.output_file)
 		for movfile in processed_movies:
 			os.remove(movfile)
-		print("mpv %s"%(self.output_file))
+		print(("mpv %s"%(self.output_file)))
 
 #===============================
 #===============================
@@ -178,7 +177,7 @@ class ProcessMovie():
 			self.reverse_compress = True
 		for category in ('audio', 'video'):
 			if self.global_dict.get(category) is not None:
-				for key in self.global_dict[category].keys():
+				for key in list(self.global_dict[category].keys()):
 					if type_map[key] is float:
 						self.__dict__[key] = float(self.global_dict[category].get(key, self.__dict__[key]))
 					elif type_map[key] is int:
@@ -188,7 +187,7 @@ class ProcessMovie():
 					elif type_map[key] is str:
 						self.__dict__[key] = str(self.global_dict[category].get(key, self.__dict__[key]))
 			if self.mov_dict.get(category) is not None:
-				for key in self.mov_dict[category].keys():
+				for key in list(self.mov_dict[category].keys()):
 					if type_map[key] is float:
 						self.__dict__[key] = float(self.mov_dict[category].get(key, self.__dict__[key]))
 					elif type_map[key] is int:
@@ -217,7 +216,7 @@ class ProcessMovie():
 			print("file not specified for processing")
 			sys.exit(1)
 		if not os.path.exists(self.movfile):
-			print("file not found %s"%(self.movfile))
+			print(("file not found %s"%(self.movfile)))
 			sys.exit(1)
 		medialib.getMediaInfo(self.movfile)
 
@@ -225,11 +224,11 @@ class ProcessMovie():
 	def checkMovieTimings(self):
 		self.timing = self.mov_dict.get('timing')
 		if self.timing is None:
-			print("timing information not provided for movie %s"%(self.ovfile))
+			print(("timing information not provided for movie %s"%(self.ovfile)))
 			sys.exit(1)
 		self.time_mapping = {}
 		self.times = []
-		for timecode in self.timing.keys():
+		for timecode in list(self.timing.keys()):
 			seconds = self.timeCodeToSeconds(timecode)
 			self.time_mapping[seconds] = timecode
 			self.times.append(seconds)
@@ -258,14 +257,14 @@ class ProcessMovie():
 			time = self.times[i]
 			flags = self.timing[self.time_mapping[time]]
 			if not isinstance(flags, dict):
-				print("error: movie flags must be a dict: %s"%(str(flags)))
+				print(("error: movie flags must be a dict: %s"%(str(flags))))
 				sys.exit(1)
 			if 'noise' in flags:
 				noisetime1 = time
 				noisetime2 = self.times[i+1]
 		if noisetime1 is None:
 			if self.debug is True:
-				print "no noise section flagged, skipping noise reduction"
+				print("no noise section flagged, skipping noise reduction")
 			return orig_wavfile
 		noise_wavfile = soxlib.removeNoise(orig_wavfile, noisetime1, noisetime2)
 		return noise_wavfile
@@ -315,9 +314,10 @@ class ProcessMovie():
 	#=====================
 	def makeTimestamp(self):
 		datestamp = time.strftime("%y%b%d").lower()
-		hourstamp = string.uppercase[(time.localtime()[3])%26]
+		uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		hourstamp = uppercase[(time.localtime()[3])%26]
 		minstamp = "%02d"%(time.localtime()[4])
-		secstamp = string.uppercase[(time.localtime()[5])%26]
+		secstamp = uppercase[(time.localtime()[5])%26]
 		timestamp = datestamp+hourstamp+minstamp+secstamp
 		return timestamp
 
@@ -334,10 +334,10 @@ class ProcessMovie():
 			flags = self.timing[self.time_mapping[starttime]]
 			sys.stderr.write("\n### %04d - %04d: %s "%(starttime, endtime, str(flags)))
 			if skipcodes.get(flags.get('type')): 
-				print("skipping section %d..."%(count))
+				print(("skipping section %d..."%(count)))
 				continue
 
-			print "processing..."
+			print("processing...")
 			out_video_file = "video-section%02d.mkv"%(count)
 			out_audio_file = "audio-section%02d.wav"%(count)
 			merge_file = "merge-section%02d.mkv"%(count)
@@ -347,7 +347,7 @@ class ProcessMovie():
 			else:
 				speed = float(self.global_dict['speed'].get('normal', 1.1))
 			#cut video
-			print "SPEED: %.1f"%(speed)
+			print(("SPEED: %.1f"%(speed)))
 			ffmpeglib.processVideo(self.movfile, out_video_file, starttime, endtime,
 				speed=speed, crf=self.crf, movframerate=self.movframerate)
 
@@ -374,11 +374,11 @@ class ProcessMovie():
 
 		print("")
 		print(filesToMerge)
-		print "MERGE movies"
+		print("MERGE movies")
 		timestamp = self.makeTimestamp()
 		self.finalmovie = "processed-movie-%s.mkv"%(timestamp)
 		self.editor.concatenateMovies(filesToMerge, self.finalmovie)
-		print "mpv %s"%(self.finalmovie)
+		print(("mpv %s"%(self.finalmovie)))
 		for movfile in filesToMerge:
 			os.remove(movfile)
 		os.remove(self.wavfile)
@@ -445,14 +445,14 @@ class ProcessMovie():
 	def mergeAV(self, video_file, audio_file, merge_file):
 		vtime = medialib.getDuration(video_file)
 		atime = medialib.getDuration(audio_file)
-		print "Audio: %.3f // Video %.3f"%(atime, vtime)
+		print(("Audio: %.3f // Video %.3f"%(atime, vtime)))
 		if abs(atime - vtime) > 0.1:
-			print "time error: %.3f %.3f"%(atime,vtime)
+			print(("time error: %.3f %.3f"%(atime,vtime)))
 			sys.exit(1)
 		cmd = "mkvmerge -A -S %s -D -S %s -o %s"%(video_file, audio_file, merge_file)
 		runCmd(cmd)
 		if not os.path.isfile(merge_file):
-			print "A/V merge failed"
+			print("A/V merge failed")
 			sys.exit(1)
 		return merge_file
 

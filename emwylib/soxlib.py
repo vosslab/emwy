@@ -10,7 +10,7 @@ import subprocess
 def runCmd(cmd, msg=False):
 	showcmd = cmd.strip()
 	showcmd = re.sub("  *", " ", showcmd)
-	print "CMD: '%s'"%(showcmd)
+	print(("CMD: '%s'"%(showcmd)))
 	if msg is True:
 		proc = subprocess.Popen(showcmd, shell=True)
 	else:
@@ -29,7 +29,7 @@ def normalizeAudio(wavfile, normwavfile="audio-norm.wav", level=-1.9, samplerate
 	cmd += "%s norm %.1f"%(normwavfile, level)
 	runCmd(cmd)
 	if not os.path.isfile(normwavfile):
-		print "normalize audio failed"
+		print("normalize audio failed")
 		sys.exit(1)
 	return normwavfile
 
@@ -45,7 +45,7 @@ def removeNoise(wavfile, startseconds=0, endseconds=None, amount=0.21):
 	cmd = "sox %s %s noisered noise.prof %.2f"%(wavfile, cleanwavfile, amount)
 	runCmd(cmd)
 	if not os.path.isfile(cleanwavfile):
-		print "remove noise from audio failed"
+		print("remove noise from audio failed")
 		sys.exit(1)
 	return cleanwavfile
 
@@ -57,7 +57,7 @@ def noiseGate(wavfile, level=40):
 		%(wavfile, gatedwavfile, level, level, level))
 	runCmd(cmd)
 	if not os.path.isfile(gatedwavfile):
-		print "noise gate failed"
+		print("noise gate failed")
 		sys.exit(1)
 	return gatedwavfile
 
@@ -66,7 +66,7 @@ def bandPassFilter(wavfile, filtwavfile="audio-filter.wav", highpass=20, lowpass
 	cmd = "sox %s %s lowpass %d highpass %d"%(wavfile, filtwavfile, lowpass, highpass)
 	runCmd(cmd)
 	if not os.path.isfile(filtwavfile):
-		print "band pass filter failed"
+		print("band pass filter failed")
 		sys.exit(1)
 	return filtwavfile
 
@@ -84,7 +84,7 @@ def convertAudioToWav(infile, wavfile, audio_mode=None):
 		%(infile, wavfile, mode_text))
 	runCmd(cmd)
 	if not os.path.isfile(wavfile):
-		print "convert audio failed"
+		print("convert audio failed")
 		sys.exit(1)
 	return wavfile
 
@@ -103,7 +103,7 @@ def splitAudioSox(wavfile, splitwavfile, movframerate, startseconds, endseconds)
 		%(wavfile, splitwavfile, start, cutseconds + gap))
 	runCmd(cmd)
 	if not os.path.isfile(splitwavfile):
-		print "speed up audio failed"
+		print("speed up audio failed")
 		sys.exit(1)
 	return splitwavfile
 
@@ -118,9 +118,9 @@ def speedUpAudio(wavfile, fastwavfile="audio-fast.wav", speed=1.1, samplerate=No
 	cmd += "%s tempo -s %.8f"%(fastwavfile, speed)
 	runCmd(cmd)
 	if not os.path.isfile(fastwavfile):
-		print "speed up audio failed"
+		print("speed up audio failed")
 		sys.exit(1)
-	print "Complete in %d seconds"%(time.time() - t0)
+	print(("Complete in %d seconds"%(time.time() - t0)))
 	return fastwavfile
 
 #===============================
@@ -131,7 +131,7 @@ def compressAudio(wavfile, drcwavfile="audio-drc.wav", reverse_compress=True):
 		cmd += " reverse compand 0.2,1 6:-70,-60,-20 -13 -50 0.2 reverse "
 	runCmd(cmd)
 	if not os.path.isfile(drcwavfile):
-		print "dynamic range compression failed"
+		print("dynamic range compression failed")
 		sys.exit(1)
 	return drcwavfile
 
@@ -141,7 +141,7 @@ def addSilenceToStart(wavfile, addwavfile="audio-shift.wav", seconds=3.0, sample
 	silentwav = makeSilence("silence.wav", seconds=seconds, samplerate=samplerate, bitrate=bitrate, audio_mode=audio_mode)
 	combineWaveFiles(silentwav, wavfile, addwavfile)
 	if not os.path.isfile(addwavfile):
-		print "add Silence To Start failed"
+		print("add Silence To Start failed")
 		sys.exit(1)
 	os.remove(silentwav)
 	return addwavfile
@@ -151,7 +151,7 @@ def combineWaveFiles(wavfile1, wavfile2, mergewavfile="audio-merge.wav"):
 	cmd = "sox %s %s %s"%(wavfile1, wavfile2, mergewavfile)
 	runCmd(cmd)
 	if not os.path.isfile(mergewavfile):
-		print "merge wav files failed"
+		print("merge wav files failed")
 		sys.exit(1)
 	return mergewavfile
 
@@ -171,6 +171,6 @@ def makeSilence(wavfile="silence.wav", seconds=3.0, samplerate=None, bitrate=Non
 	cmd += " %s trim 0.0 %.4f"%(wavfile, seconds)
 	runCmd(cmd)
 	if not os.path.isfile(wavfile):
-		print "silence creation failed"
+		print("silence creation failed")
 		sys.exit(1)
 	return wavfile

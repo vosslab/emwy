@@ -10,7 +10,7 @@ import subprocess
 def runCmd(cmd, msg=False):
 	showcmd = cmd.strip()
 	showcmd = re.sub("  *", " ", showcmd)
-	print "CMD: '%s'"%(showcmd)
+	print(("CMD: '%s'"%(showcmd)))
 	if msg is True:
 		proc = subprocess.Popen(showcmd, shell=True)
 	else:
@@ -32,7 +32,7 @@ def splitAudioFfmpeg(movfile, wavfile, startseconds, endseconds, samplerate=96, 
 	cmd += " '%s' "%(wavfile)
 	runCmd(cmd)
 	if not os.path.isfile(wavfile):
-		print "extract audio failed"
+		print("extract audio failed")
 		sys.exit(1)
 	return wavfile
 
@@ -53,9 +53,9 @@ def processVideo(movfile, outfile, starttime, endtime, speed=1.1, crf=25, movfra
 	cmd += " %s "%(outfile)
 	runCmd(cmd)
 	if not os.path.isfile(outfile):
-		print "fast forward %.1fX failed"%(speed)
+		print(("fast forward %.1fX failed"%(speed)))
 		sys.exit(1)
-	print "Complete in %d seconds"%(time.time() - t0)
+	print(("Complete in %d seconds"%(time.time() - t0)))
 	return outfile
 
 #===============================
@@ -72,9 +72,9 @@ def addWatermark(movfile, outfile, watermark_file=None, crf=25, movframerate=60,
 	cmd += " %s "%(outfile)
 	runCmd(cmd)
 	if not os.path.isfile(outfile):
-		print "add watermark failed"
+		print("add watermark failed")
 		sys.exit(1)
-	print "Complete in %d seconds"%(time.time() - t0)
+	print(("Complete in %d seconds"%(time.time() - t0)))
 	return outfile
 
 #===============================
@@ -88,7 +88,7 @@ def replaceAudio(movfile, wavfile, newmovfile):
 	cmd += " '%s' "%(newmovfile)
 	runCmd(cmd)
 	if not os.path.isfile(newmovfile):
-		print "replace audio failed"
+		print("replace audio failed")
 		sys.exit(1)
 	return newmovfile
 
@@ -105,7 +105,7 @@ def extractAudio(movfile, wavfile='audio-raw.wav', samplerate=96, bitrate=24, au
 	cmd += " '%s' "%(wavfile)
 	runCmd(cmd)
 	if not os.path.isfile(wavfile):
-		print "extract audio failed"
+		print("extract audio failed")
 		sys.exit(1)
 	return wavfile
 
