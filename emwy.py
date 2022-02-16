@@ -73,7 +73,8 @@ class EditControl():
 	#===============================
 	def readYamlFile(self):
 		f = open(self.yaml_file, 'r')
-		datalist = yaml.load(f)
+		#datalist = yaml.load(f)
+		datalist = yaml.safe_load(f)
 		#print datalist
 		for item in datalist:
 			if not isinstance(item, dict):
