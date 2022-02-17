@@ -80,7 +80,7 @@ class TitleCard(object):
 		cmd = "ffmpeg -y "
 		cmd += " -r %d "%(self.framerate)
 		cmd += " -i %s%s.png "%(self.imgcode, "%05d")
-		cmd += " -codec:v libx264 -filter:v 'fps=%d,format=yuv420p' "%(self.framerate)
+		cmd += " -codec:v libx265 -filter:v 'fps=%d,format=yuv420p' "%(self.framerate)
 		cmd += " -crf %d -preset ultrafast -tune fastdecode -profile:v high -pix_fmt yuv420p "%(self.crf)
 		cmd += " %s "%(self.outfile)
 		runCmd(cmd)

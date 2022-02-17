@@ -45,7 +45,7 @@ def processVideo(movfile, outfile, starttime, endtime, speed=1.1, crf=25, movfra
 	cmd += " -sn -an -map_chapters -1 -map_metadata -1 "
 	#cmd += " -i ~/sh/vosslab_logo-vector50.png "
 	#cmd += " -filter_complex 'overlay=main_w-overlay_w-10:main_h-overlay_h-10'"
-	cmd += " -codec:v libx264 -crf %d -preset %s "%(crf, preset)
+	cmd += " -codec:v libx265 -crf %d -preset %s "%(crf, preset)
 	cmd += " -tune fastdecode -profile:v high -pix_fmt yuv420p "
 	cmd += " -r %d "%(movframerate)
 	if abs(speed - 1.0) > 0.01:
@@ -66,7 +66,7 @@ def addWatermark(movfile, outfile, watermark_file=None, crf=25, movframerate=60,
 	cmd += " -sn -an "
 	cmd += " -i '%s' "%(watermark_file)
 	cmd += " -filter_complex 'overlay=main_w-overlay_w-10:main_h-overlay_h-10'"
-	cmd += " -codec:v libx264 -crf %d -preset %s "%(crf, preset)
+	cmd += " -codec:v libx265 -crf %d -preset %s "%(crf, preset)
 	cmd += " -tune fastdecode -profile:v high -pix_fmt yuv420p "
 	cmd += " -r %d "%(movframerate)
 	cmd += " %s "%(outfile)
