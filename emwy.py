@@ -72,6 +72,10 @@ class EditControl():
 
 	#===============================
 	def readYamlFile(self):
+		file_size = os.path.getsize(self.yaml_file)
+		if file_size > 10**7:
+			print("yaml file is larger that 10MB, that seems too big")
+			sys.exit(1)
 		f = open(self.yaml_file, 'r')
 		#datalist = yaml.load(f)
 		datalist = yaml.safe_load(f)
