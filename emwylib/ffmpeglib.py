@@ -46,7 +46,7 @@ def processVideo(movfile, outfile, starttime, endtime, speed=1.1, crf=25, movfra
 	#cmd += " -i ~/sh/vosslab_logo-vector50.png "
 	#cmd += " -filter_complex 'overlay=main_w-overlay_w-10:main_h-overlay_h-10'"
 	cmd += " -codec:v libx265 -crf %d -preset %s "%(crf, preset)
-	cmd += " -tune fastdecode -profile:v high -pix_fmt yuv420p "
+	cmd += " -tune fastdecode -profile:v main444-12 -pix_fmt yuv420p "
 	cmd += " -r %d "%(movframerate)
 	if abs(speed - 1.0) > 0.01:
 		cmd += " -filter:v 'setpts=%.8f*PTS' "%(1.0/speed)

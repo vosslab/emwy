@@ -17,6 +17,7 @@ def getMediaInfo(mediafile):
 #===============================
 def getDuration(mediafile):
 	data = getMediaInfo(mediafile)
+	print("getDuration", mediafile)
 	duration = float(data['track'][0]['Duration'])
 	return duration
 
