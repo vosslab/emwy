@@ -144,7 +144,7 @@ playlists:
   video_base:
     kind: video
     playlist:
-      - source: {asset: lecture, in: "00:30.0", out: "06:10.0"}
+      - source: {asset: lecture, in: "00:30.0", out: "06:10.0", title: "Intro"}
 ```
 
 ### Playlist entry types
@@ -161,6 +161,9 @@ A playlist entry is a mapping with exactly one of these keys:
 ```yaml
 - source:
     id: intro
+    enabled: true
+    title: "Intro"
+    note: "Opening section"
     asset: lecture
     in:  "00:30.0"
     out: "06:10.0"
@@ -173,6 +176,10 @@ A playlist entry is a mapping with exactly one of these keys:
 Fields:
 
 - `id`: optional unique id for anchoring markers and transitions
+- `enabled`: optional boolean, default `true`. If `false`, the entry is ignored for rendering and does not affect output timing.
+- `title`: optional string. If present and the entry is enabled, it becomes an MKV chapter title at the start of the entry in output time (see Chapters).
+- `chapter`: optional boolean, default `true` when `title` is present. Set to `false` to prevent chapter creation from a title.
+- `note`: optional string. Internal annotation for humans and tooling. Notes never create chapters and are not exported unless a future debug/export feature is added.
 - `asset`: required asset id
 - `in`, `out`: required time strings
 - `video`, `audio`: optional processing intent
@@ -205,11 +212,17 @@ Common generator kinds:
 - `silence`
 - `still`
 
+Notes:
+
+- Generator entries may also include `note` for internal annotation.
+
 ```yaml
 - generator:
     id: card_p1
+    enabled: true
     kind: chapter_card
     title: "Problem 1"
+    note: "Start of the first worked problem"
     duration: "00:02.0"
     style: chapter_style
     markers:
@@ -412,6 +425,38 @@ params:
 
 ## Markers, chapters, and educational outlines
 
+### MKV chapters from titles
+
+Playlist entry `title` values are treated as chapters by default.
+
+Rules:
+
+- If a playlist entry has `title` and `enabled: true`, emwy creates a chapter at the start of that entry in output timeline time.
+- If `enabled: false`, the entry is ignored for rendering and does not create a chapter.
+- Chapters are emitted into MKV output when the output container supports it. If the muxing tool requires it, emwy may generate an intermediate chapters file, but authors do not need to configure an export section for this behavior.
+- To label an entry without creating a chapter, set `chapter: false` on that entry.
+
+Example:
+
+```yaml
+- source:
+    asset: lecture
+    in:  "00:30.0"
+    out: "06:10.0"
+    title: "Intro"
+```
+
+```yaml
+- source:
+    enabled: false
+    title: "Optional segment to revisit later"
+    note: "Internal label only, flip enabled to include later"
+    asset: lecture
+    in:  "06:10.0"
+    out: "07:20.0"
+```
+
+
 Markers are metadata. They should be anchored to structure, not to output absolute time.
 
 Preferred authoring:
@@ -580,7 +625,7 @@ playlists:
   video_base:
     kind: video
     playlist:
-      - source: {asset: lecture, in: "00:30.0", out: "06:10.0"}
+      - source: {asset: lecture, in: "00:30.0", out: "06:10.0", title: "Intro"}
       - generator:
           kind: chapter_card
           title: "Problem 1"
