@@ -381,6 +381,10 @@ If an overlay playlist uses `fill: black`, that black is treated as real pixels 
 
 ## Filters
 
+### v1 parity notes
+
+v1 included several audio processing steps and conveniences (normalize, highpass/lowpass, avsync-style delay, optional noise reduction). In v2 these should be expressed as named filters at playlist entry, playlist, or stack scope.
+
 Filters may be attached at:
 
 - playlist entry scope: filters on a playlist entry apply only to that entry
@@ -476,6 +480,33 @@ Export mapping:
 - output compiles to a consumer
 
 Import should be best-effort and must warn about unsupported features.
+
+### Shotcut MLT export
+
+Shotcut uses MLT XML plus additional annotations and a couple of structural conventions so it can map the project into its Timeline, track UI, and bin.
+
+When exporting in Shotcut mode, the emitted MLT XML must additionally include:
+
+- `<property name="shotcut">1</property>` on the main timeline tractor
+- a playlist with id `main bin` before the last tractor
+- a playlist with id `background` containing a black color producer, and make it the first child track of the last tractor
+- for `mlt_service=avformat` sources, use `chain` where applicable and apply the same Shotcut properties to it
+
+Nice-to-have annotations:
+
+- `shotcut:name` on playlists (track labels)
+- `shotcut:audio` and `shotcut:video` flags
+- `shotcut:filter` and `shotcut:transition` to bind Shotcut UI panels
+- `shotcut:markers` if chapters should appear as Shotcut markers
+
+Suggested YAML switch:
+
+```yaml
+exports:
+  mlt_xml: {file: "edit.mlt"}
+  shotcut_mlt: {file: "edit_shotcut.mlt"}
+```
+
 
 ### OTIO export and import
 
@@ -602,4 +633,5 @@ output:
   file: "Lecture_ProblemSet1.mkv"
   container: mkv
 ```
+
 
