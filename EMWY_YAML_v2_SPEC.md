@@ -75,9 +75,30 @@ project:
 
 `profile` is required. It defines the final technical specs for the rendered output.
 
+### Fractional-first fps and internal time
+
+Real projects frequently use fractional frame rates such as 23.976 (24000/1001), 29.97 (30000/1001), and 59.94 (60000/1001). YAML v2 therefore allows `profile.fps` as:
+
+- an integer, for example `60`
+- a rational string, for example `"60000/1001"`
+
+Implementation rule:
+
+- emwy must convert `profile.fps` into a rational value (numerator, denominator) and use that consistently throughout the build.
+
+Event times in YAML remain human-friendly strings like `HH:MM:SS.sss`. Internally, emwy should represent time as a rational duration in seconds (not a float) to avoid drift on long timelines and fractional frame rates.
+
+Conversion rule from a time string to internal rational seconds:
+
+- Parse the string into whole seconds plus a fractional decimal part.
+- Convert the fractional decimal part into a rational fraction exactly based on the digits provided.
+- Store the result as a rational number of seconds.
+
+When emwy must convert a rational time to frames, it must define and document a rounding mode. Recommended default is `nearest_frame`, with `floor` as an optional strict mode.
+
 ```yaml
 profile:
-  fps: 60
+  fps: "60000/1001"         # examples: 24, "24000/1001", 30, "30000/1001", 60, "60000/1001"
   resolution: [1920, 1080]
   pixel_format: yuv420p
   audio:
@@ -102,14 +123,17 @@ defaults:
   audio:
     normalize:
       level_db: -2
-    format: mp3
-    channels: stereo
 ```
 
 Notes:
 
 - `defaults.action` is commonly `keep`.
 - If `defaults.action` is `keep`, the timeline normally lists only the parts to remove or modify.
+
+Processing vs encoding guidance:
+
+- `defaults` should describe editorial and signal-processing intent (speed, fades, loudness normalization).
+- Container and codec choices belong under `output` (and `exports`), not under `defaults`.
 
 ## Assets
 
@@ -120,8 +144,8 @@ Notes:
 ```yaml
 assets:
   video:
-    camA: {file: "lecture_cam.mkv"}
-    camB: {file: "screen_capture.mkv"}
+    lecture: {file: "lecture_camera.mkv"}
+    screen:  {file: "screen_capture.mkv"}
   audio:
     music: {file: "Graze.mp3"}
   image:
@@ -180,10 +204,28 @@ There are three event families:
 - `insert`: insert generated content or external content into the output timeline.
 - `marker`: metadata-only marker such as a chapter marker (no frames inserted).
 
+### Event ids
+
+Any event may include an optional `id`. If present, it must be unique within the file.
+
+Event ids exist primarily so you can attach markers relative to structure without needing to precompute final output time.
+
+Example:
+
+```yaml
+- range:
+    id: p1_setup
+    src: lecture
+    in:  "06:10.0"
+    out: "18:40.0"
+    action: keep
+```
+
 ### Range events
 
 Range event schema:
 
+- `id`: optional unique string
 - `src`: required asset ID (typically from `assets.video.*`)
 - `in`: required time
 - `out`: required time
@@ -192,28 +234,34 @@ Range event schema:
 - `audio`: optional audio modifiers
 - `streams`: optional stream selection and mapping
 - `filters`: optional list of filters
-- `chapter`, `subchapter`, `subsubchapter`: optional headings that become markers
+- `chapter`, `subchapter`, `subsubchapter`: optional headings that become markers at the start of the event
+- `markers`: optional list of markers relative to the start of the event
 - `note`: optional free text
 
 Example:
 
 ```yaml
 - range:
-    src: camA
-    in:  "00:25.5"
-    out: "00:27.7"
+    id: p1_setup
+    src: lecture
+    in:  "06:10.0"
+    out: "18:40.0"
     action: keep
     video: {speed: 1.15}
     chapter: "Problem 1"
     subchapter: "Setup"
+    markers:
+      - {title: "Key idea", level: 2, offset: "03:10.0"}
 ```
 
 ### Insert events
 
 Insert event schema:
 
+- `id`: optional unique string
 - `insert`: required object describing what to insert
 - `chapter`, `subchapter`, `subsubchapter`: optional headings for a marker at the start of the insert
+- `markers`: optional list of markers relative to the start of the insert (rare)
 - `note`: optional free text
 
 Supported insert types:
@@ -228,38 +276,55 @@ Example chapter card:
 
 ```yaml
 - insert:
+    id: card_p2
     chapter_card:
       title: "Problem 2"
       duration: 2.0
       style: chapter_style
+  chapter: "Problem 2"
 ```
 
 ### Marker events
 
 Marker events add metadata only. They insert no frames.
 
+Two placement modes exist:
+
+- structural placement (preferred): headings and `markers` attached to `range` or `insert` events
+- absolute placement (optional): a marker at an output-time `at` position
+
+Structural markers round-trip better and are deterministic without having to render first.
+
 Marker schema:
 
-- `marker`: required
 - `title`: required
 - `level`: optional integer, default `1`
-- `at`: required time in output timeline time
+- `offset`: time string relative to the start of the referenced event (structural mode)
+- `ref`: `{event: <event_id>}` (structural mode)
+- `at`: required only for absolute placement, time in output timeline time (absolute mode)
 
-Example:
+Examples:
+
+Structural marker relative to an event:
+
+```yaml
+- marker:
+    title: "Important definition"
+    level: 2
+    ref: {event: p1_setup}
+    offset: "03:10.0"
+```
+
+Absolute marker in output time (discouraged for hand-authoring):
 
 ```yaml
 - marker:
     title: "Office hours"
     level: 1
-    at: "00:00.0"
+    at: "12:34.0"
 ```
 
-Guidance:
-
-- Prefer headings on `range` and `insert` events over explicit `marker` events.
-- Use `marker` when you need a marker inside a long kept range.
-
-## Actions for a range
+## Actions for a range## Actions for a range
 
 `action` controls the basic fate of the source range. Effects are modifiers.
 
@@ -281,7 +346,7 @@ Optional advanced actions:
 
 ```yaml
 - range:
-    src: camA
+    src: lecture
     in: "10:05.0"
     out: "10:07.0"
     action: replace
@@ -345,7 +410,7 @@ Example fast-forward with muted lecture audio and replacement music:
 
 ```yaml
 - range:
-    src: camA
+    src: lecture
     in: "04:38.7"
     out: "06:00.1"
     action: keep
@@ -396,6 +461,23 @@ By default, emwy should keep all streams present in the selected source asset, i
 This makes classroom edits of movies sane.
 
 Stream selection is controlled via `streams`:
+### Compatibility when switching sources
+
+When `keep_all: true` and the timeline switches `src` between assets, emwy must decide whether streams are compatible.
+
+Required compatibility (default):
+
+- same number of video streams (usually 1)
+- same number of audio streams selected into the output
+- same number of subtitle streams if `subtitles: keep`
+- audio channel layouts must match per stream, or be explicitly remapped
+
+If compatibility fails and no explicit mapping is provided, emwy must fail with a clear error describing the mismatch.
+
+Optional explicit mapping:
+
+- Users may name output streams and map each source stream index into those names per asset.
+
 
 ```yaml
 streams:
@@ -417,8 +499,8 @@ tracks:
   video_base:
     kind: video
     timeline:
-      - range: {src: camA, in: "00:00.0", out: "02:00.0", action: keep}
-      - range: {src: camB, in: "00:00.0", out: "02:00.0", action: keep}
+      - range: {src: lecture, in: "00:00.0", out: "02:00.0", action: keep}
+      - range: {src: screen,  in: "00:00.0", out: "02:00.0", action: keep}
 ```
 
 This produces a single output timeline that alternates between sources.
@@ -436,7 +518,7 @@ tracks:
   video_overlay_slides:
     kind: video
     timeline:
-      - range: {src: camB, in: "00:00.0", out: "30:00.0", action: keep}
+      - range: {src: screen, in: "00:00.0", out: "30:00.0", action: keep}
 
 mix:
   compositor: over
@@ -493,6 +575,8 @@ exports:
 ## Output
 
 `output` defines the main render output.
+Encoding and container decisions belong here. YAML v2 treats these as delivery choices, separate from editorial decisions and signal processing.
+
 
 ```yaml
 output:
@@ -528,6 +612,31 @@ Merge rules:
 ## MLT XML interoperability
 
 MLT XML import and export is an interoperability feature, not the core representation.
+## OTIO interoperability
+
+OpenTimelineIO (OTIO) is a modern interchange format for editorial timelines. YAML v2 is designed to map to OTIO concepts cleanly (timeline, tracks, clips, transitions, markers), even if the initial implementation supports only a subset.
+
+Suggested subset export:
+
+- base video track and any overlay tracks as OTIO tracks
+- `range` events as OTIO clips referencing media
+- `insert` cards as OTIO generator clips
+- headings and structural markers as OTIO markers
+
+Suggested subset import:
+
+- clips and cuts into `range` events
+- markers into headings or `marker` events
+- ignore or warn on unsupported OTIO effects and transitions
+
+Configuration:
+
+```yaml
+exports:
+  otio:
+    file: "edit.otio"
+```
+
 
 ### Export to MLT XML (subset)
 
@@ -586,7 +695,7 @@ defaults:
 
 assets:
   video:
-    camA: {file: "lecture_cam.mkv"}
+    lecture: {file: "lecture_camera.mkv"}
     slides: {file: "screen_capture.mkv"}
   audio:
     music: {file: "Graze.mp3"}
@@ -604,7 +713,7 @@ tracks:
     kind: video
     timeline:
       - range:
-          src: camA
+          src: lecture
           in:  "00:00.0"
           out: "00:30.0"
           action: skip
@@ -615,7 +724,7 @@ tracks:
         chapter: "Intro"
 
       - range:
-          src: camA
+          src: lecture
           in:  "00:30.0"
           out: "06:10.0"
           chapter: "Intro"
@@ -626,7 +735,7 @@ tracks:
         chapter: "Problem 1"
 
       - range:
-          src: camA
+          src: lecture
           in:  "06:10.0"
           out: "18:40.0"
           chapter: "Problem 1"
@@ -634,7 +743,7 @@ tracks:
           video: {speed: 1.15}
 
       - range:
-          src: camA
+          src: lecture
           in:  "18:40.0"
           out: "19:20.0"
           action: keep
