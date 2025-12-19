@@ -25,6 +25,12 @@ You need at least:
 
 See **docs/INSTALL.md** for full platform-specific instructions.
 
+Install Python dependencies with:
+
+```bash
+pip install -r pip_requirements.txt
+```
+
 ### Create a minimal project
 
 Save as `example.emwy.yaml`:
@@ -142,6 +148,7 @@ Optional planning and policy documents:
 
 - **docs/ROADMAP.md**
 - **docs/SECURITY.md**
+- **AGENTS.md**
 
 ## Compatibility
 
@@ -153,6 +160,13 @@ Optional planning and policy documents:
 
 emwy can export **Shotcut-compatible MLT XML** so Shotcut opens the project as a normal editable timeline.
 See **docs/SHOTCUT.md** for details and limitations.
+
+## Development
+
+- Follow **docs/CONTRIBUTING.md** and **PYTHON_STYLE.md** for coding conventions.
+- Use `pip install -r pip_requirements.txt` in a virtual environment to sync tooling.
+- Check **AGENTS.md** to understand who maintains each subsystem.
+- Review **docs/CHANGELOG.md** before shipping user-facing changes.
 
 ## Format stability
 
