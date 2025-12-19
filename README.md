@@ -15,7 +15,7 @@ I did a search for other command line editors, but did not find any at the time,
 
 but they did not have any good documentation, [see stackexchange](https://video.stackexchange.com/questions/7459/)
 
->  "powerful, if somewhat obscure, multitrack command line oriented video editor…"
+>  "powerful, if somewhat obscure, multitrack command line oriented video editor"
 
 # Usage
 
@@ -42,9 +42,9 @@ save the following code to the file `gangnam.yml`:
   file: Psy-Gangnam_Style.mp4
   timing:
     '00:18.1': {type: normal, }
-    '00:21.5': {type: skip }   
+    '00:21.5': {type: skip }
     '00:25.5': {type: normal, }
-    '00:27.7': {type: skip, } 
+    '00:27.7': {type: skip, }
     '00:29.5': {type: normal, }
     '00:31.1': {type: skip, }
     '01:11.4': {type: normal, }
