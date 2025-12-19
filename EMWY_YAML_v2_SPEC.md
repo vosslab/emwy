@@ -77,6 +77,15 @@ Rules:
 - Mandatory v2 rounding rule is `nearest_frame`.
 - `in_frame` and `out_frame` may be supported as an advanced override for zero-rounding authoring.
 
+Definition: `nearest_frame`
+
+Let `f` be the exact rational frame index for a time `t` at the project rate (so `f = t * fps`).
+
+- If `f` is not halfway between two integers, round to the nearest integer frame.
+- If `f` is exactly halfway (fractional part is exactly 1/2), round **up** to the next frame (half-up tie-break).
+
+This tie-break rule is mandatory to keep compilation deterministic across machines and languages.
+
 All compiled MLT XML must use integer frame positions.
 
 ## Defaults
@@ -95,6 +104,15 @@ defaults:
 ## Assets
 
 Assets are named inputs and named generators. Assets compile to MLT producers.
+
+Per-entry producer instances
+
+Assets define reusable producer definitions. During compilation, emwy may create distinct per-entry producer instances (producer chains) as needed to apply entry-scoped filters, speed changes, stream remaps, or other per-entry properties without mutating the base asset.
+
+Author-facing impact:
+
+- Assets stay reusable and stable.
+- Entry-scoped processing stays local to the playlist entry.
 
 ```yaml
 assets:
@@ -166,8 +184,13 @@ Fields:
 
 Use blanks to align audio-only or video-only edits, and to align overlays.
 
+For video playlists, blanks can be either black (base track behavior) or transparent (overlay track behavior). Transparent blanks are important so an overlay track does not accidentally cover the base with black.
+
 ```yaml
-- blank: {duration: "00:02.0"}
+- blank: {duration: "00:02.0"}                 # defaults depend on playlist role
+- blank: {duration: "00:02.0", fill: black}    # video
+- blank: {duration: "00:02.0", fill: transparent}  # video overlays
+- blank: {duration: "00:02.0"}                 # audio blanks are silence
 ```
 
 #### Generator entry
@@ -197,6 +220,29 @@ Audio for generator entries is controlled by placement:
 
 - Put the generator on a video playlist, and place a matching blank or music entry on an audio playlist.
 - If you want a generator to carry audio, also place a generator or source entry on the audio playlist for the same duration.
+
+Convenience: generator paired audio (optional sugar)
+
+For fast lecture authoring, a generator entry may include a `paired_audio` block. If present, emwy expands it at compile time into a matching audio playlist entry of the same duration.
+
+This feature is optional and must be explicit.
+
+```yaml
+- generator:
+    kind: chapter_card
+    title: "Intro"
+    duration: "00:02.0"
+    style: chapter_style
+    paired_audio:
+      target_playlist: audio_main
+      source: {asset: music, in: "00:00.0"}
+      audio: {normalize: {level_db: -15}}
+```
+
+Compilation rule:
+
+- The paired audio entry duration matches the generator duration.
+- If `target_playlist` is omitted, emwy may use a configured default audio playlist (if defined). Otherwise compilation must fail with a clear error.
 
 ## Stack
 
@@ -265,9 +311,28 @@ Authoring form (recommended): attach a transition to the outgoing edge of an ent
       duration: "00:00.5"
 ```
 
+Semantics (mandatory for v2):
+
+- The transition duration is expressed in frames after compilation.
+- A transition does **not** extend the overall timeline duration.
+- The transition is centered on the cut: it steals frames from the tail of A and the head of B.
+
+Let the compiled transition duration be `d` frames.
+
+- `tailA = floor(d/2)`
+- `headB = d - tailA` (the incoming clip B receives the extra frame when `d` is odd)
+
+During the overlap window, A and B are blended according to the transition kind (dissolve, wipe, etc).
+
+Validation:
+
+- A must have at least `tailA` frames available at its end.
+- B must have at least `headB` frames available at its start.
+- If not, compilation must fail with a clear error unless a future version introduces an explicit policy.
+
 Implementation:
 
-- Compile to an MLT-style overlap and transition at the playlist level, using compiled frame counts.
+- Compile to an MLT-style overlap and playlist-level transition using compiled frame counts.
 
 ### Stack compositing transitions between tracks
 
@@ -290,10 +355,29 @@ stack:
       opacity: 1.0
 ```
 
+Validation:
+
+- overlays must reference playlists that are present in `stack.tracks`.
+
 Implementation:
 
 - Compile overlays to MLT transitions attached to the root timeline object, with track indices and keyframe-capable properties.
 - Wipes should compile to an MLT luma-style transition where available, with a luma resource.
+
+Overlay timing semantics (mandatory for v2):
+
+- Overlay `in` and `out` are interpreted in **stack time** (the time that results after playlist entries and blanks advance time).
+- An overlay transition only has an effect where both referenced video playlists produce frames.
+
+Clipping rule:
+
+- The effective overlay active range is the intersection of:
+  - the overlay's declared `[in, out)` range, and
+  - the time span where the overlay playlist produces non-transparent video.
+
+By default, overlay playlists should use `blank.fill: transparent` for gaps so that gaps in the overlay do not cover the base.
+
+If an overlay playlist uses `fill: black`, that black is treated as real pixels and will cover the base inside the overlay region.
 
 ## Filters
 
