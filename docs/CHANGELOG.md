@@ -7,6 +7,7 @@
 - Added v2 sample project with `.emwy.yaml` extension and run script.
 - Added MLT exporter module for v2 YAML projects.
 - Split media wrappers into `emwylib/media` for ffmpeg and sox helpers.
+- Added `paired_audio` expansion for generator entries when playlists are aligned.
 
 ## v1.0.0
 - Initial public release of emwy with YAML v2 parser and CLI.

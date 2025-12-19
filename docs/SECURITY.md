@@ -5,7 +5,7 @@
 - Tagged releases: critical fixes only.
 
 ## Reporting a Vulnerability
-Email the maintainer listed in `AGENTS.md` with:
+Email the maintainer listed in [AGENTS.md](../AGENTS.md) with:
 - A detailed description of the issue and how to reproduce it.
 - A proof-of-concept YAML or media file if appropriate.
 - Suggested mitigations.

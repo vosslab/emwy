@@ -10,7 +10,7 @@ This document lists the autonomous and human collaborators that interact with th
 - **Codex Assistant**: Provides implementation help inside the Codex CLI, following the PYTHON_STYLE guide and maintaining documentation.
 
 ## Collaboration Flow
-1. Spec Author proposes format changes in `docs/FORMAT.md`.
-2. Maintainer prioritizes work in `docs/ROADMAP.md` and assigns tasks.
+1. Spec Author proposes format changes in [docs/FORMAT.md](docs/FORMAT.md).
+2. Maintainer prioritizes work in [docs/ROADMAP.md](docs/ROADMAP.md) and assigns tasks.
 3. Codex Assistant implements the tasks, updating docs and code.
 4. Automation validates the work and posts the results to pull requests.

@@ -23,7 +23,7 @@ You need at least:
 - sox
 - mediainfo
 
-See **docs/INSTALL.md** for full platform-specific instructions.
+See **[docs/INSTALL.md](docs/INSTALL.md)** for full platform-specific instructions.
 
 Install Python dependencies with:
 
@@ -117,38 +117,41 @@ MLT XML can be saved and inspected, which makes emwy suitable for headless syste
 
 Deeper documentation lives in the **docs/** directory:
 
-- **docs/INSTALL.md**
+- **[docs/INSTALL.md](docs/INSTALL.md)**
   System dependencies, platform notes, and install verification.
 
-- **docs/FORMAT.md**
+- **[docs/FORMAT.md](docs/FORMAT.md)**
   Project file format, time rules, and minimal and complete examples.
 
-- **docs/COOKBOOK.md**
+- **[docs/COOKBOOK.md](docs/COOKBOOK.md)**
   Common editing recipes and reusable patterns.
 
-- **docs/CLI.md**
+- **[docs/CLI.md](docs/CLI.md)**
   Command-line options, validation, dry runs, and logging.
 
-- **docs/SHOTCUT.md**
+- **[docs/SHOTCUT.md](docs/SHOTCUT.md)**
   Shotcut-compatible export mode and round-tripping notes.
 
-- **docs/DEBUGGING.md**
+- **[docs/DEBUGGING.md](docs/DEBUGGING.md)**
   Common errors, diagnostics, and media inspection tips.
 
-- **docs/FAQ.md**
+- **[docs/FAQ.md](docs/FAQ.md)**
   Design decisions, limitations, and common questions.
 
-- **docs/CHANGELOG.md**
+- **[docs/CHANGELOG.md](docs/CHANGELOG.md)**
   User-facing changes and format migration notes.
 
-- **docs/CONTRIBUTING.md**
+- **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)**
   Developer setup, tests, and contribution guidelines.
+
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
+  High-level code structure and module responsibilities.
 
 Optional planning and policy documents:
 
-- **docs/ROADMAP.md**
-- **docs/SECURITY.md**
-- **AGENTS.md**
+- **[docs/ROADMAP.md](docs/ROADMAP.md)**
+- **[docs/SECURITY.md](docs/SECURITY.md)**
+- **[AGENTS.md](AGENTS.md)**
 
 ## Compatibility
 
@@ -159,14 +162,14 @@ Optional planning and policy documents:
 ### Shotcut
 
 emwy can export **Shotcut-compatible MLT XML** so Shotcut opens the project as a normal editable timeline.
-See **docs/SHOTCUT.md** for details and limitations.
+See **[docs/SHOTCUT.md](docs/SHOTCUT.md)** for details and limitations.
 
 ## Development
 
-- Follow **docs/CONTRIBUTING.md** and **PYTHON_STYLE.md** for coding conventions.
+- Follow **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** and **[PYTHON_STYLE.md](PYTHON_STYLE.md)** for coding conventions.
 - Use `pip install -r pip_requirements.txt` in a virtual environment to sync tooling.
-- Check **AGENTS.md** to understand who maintains each subsystem.
-- Review **docs/CHANGELOG.md** before shipping user-facing changes.
+- Check **[AGENTS.md](AGENTS.md)** to understand who maintains each subsystem.
+- Review **[docs/CHANGELOG.md](docs/CHANGELOG.md)** before shipping user-facing changes.
 
 ## Format stability
 
@@ -174,7 +177,7 @@ See **docs/SHOTCUT.md** for details and limitations.
 - The format is still evolving
 - Validation is strict by default, with warnings where safe
 
-The authoritative specification is in **docs/FORMAT.md**.
+The authoritative specification is in **[docs/FORMAT.md](docs/FORMAT.md)**.
 
 ## MLT Export
 

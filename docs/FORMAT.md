@@ -1,6 +1,6 @@
 # EMWY YAML Format
 
-This document summarizes the v2 source format consumed by `emwy`. The complete specification lives in `EMWY_YAML_v2_SPEC.md`, while this guide highlights how to author everyday projects. The recommended filename extension is `.emwy.yaml`.
+This document summarizes the v2 source format consumed by `emwy`. The complete specification lives in [EMWY_YAML_v2_SPEC.md](../EMWY_YAML_v2_SPEC.md), while this guide highlights how to author everyday projects. The recommended filename extension is `.emwy.yaml`.
 
 ## Version Header
 Every project starts with `emwy: 2` to declare the schema version. Future releases may add `emwy: 3`; the CLI validates and refuses unknown versions.
@@ -16,7 +16,8 @@ Every project starts with `emwy: 2` to declare the schema version. Future releas
 - Base video + main audio stack rendering is supported.
 - `source`, `blank`, and basic `generator` entries are supported.
 - Frame override suffixes (`@frame`) are reserved but not yet implemented.
-- Overlays, transitions, stream mapping, and paired audio are planned but not yet implemented.
+- `paired_audio` is supported when the target audio playlist is in lockstep with the generator position.
+- Overlays, transitions, and stream mapping are planned but not yet implemented.
 
 ## Timecodes
 - Accept `HH:MM:SS.sss`, `MM:SS.sss`, or frame counts with `@frame` suffix.
@@ -28,4 +29,4 @@ Every project starts with `emwy: 2` to declare the schema version. Future releas
 - Track roles must include one `base` video and one `main` audio.
 - Output file extension determines the container unless overridden.
 
-For migration tips from v1, see `docs/COOKBOOK.md`. When in doubt, open the generated MLT XML to verify structure before running a full render.
+For migration tips from v1, see [COOKBOOK.md](COOKBOOK.md). When in doubt, open the generated MLT XML to verify structure before running a full render.
