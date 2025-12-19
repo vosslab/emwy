@@ -117,7 +117,6 @@ Guidance:
 
 ```yaml
 defaults:
-  action: keep
   video:
     speed: 1.1
   audio:
@@ -127,8 +126,7 @@ defaults:
 
 Notes:
 
-- `defaults.action` is commonly `keep`.
-- If `defaults.action` is `keep`, the timeline normally lists only the parts to remove or modify.
+- The timeline normally lists only the parts you want to include in the final output.
 
 Processing vs encoding guidance:
 
@@ -203,6 +201,7 @@ There are three event families:
 - `range`: take a time range from a source asset and do something with it.
 - `insert`: insert generated content or external content into the output timeline.
 - `marker`: metadata-only marker such as a chapter marker (no frames inserted).
+- `end`: terminate the output timeline at this point.
 
 ### Event ids
 
@@ -218,7 +217,6 @@ Example:
     src: lecture
     in:  "06:10.0"
     out: "18:40.0"
-    action: keep
 ```
 
 ### Range events
@@ -229,7 +227,6 @@ Range event schema:
 - `src`: required asset ID (typically from `assets.video.*`)
 - `in`: required time
 - `out`: required time
-- `action`: optional, default from `defaults.action`
 - `video`: optional video modifiers
 - `audio`: optional audio modifiers
 - `streams`: optional stream selection and mapping
@@ -246,7 +243,6 @@ Example:
     src: lecture
     in:  "06:10.0"
     out: "18:40.0"
-    action: keep
     video: {speed: 1.15}
     chapter: "Problem 1"
     subchapter: "Setup"
@@ -282,6 +278,21 @@ Example chapter card:
       duration: 2.0
       style: chapter_style
   chapter: "Problem 2"
+```
+
+### End events
+
+End events terminate the output timeline. They insert no frames.
+
+Schema:
+
+- `end`: required (empty mapping is fine)
+- `note`: optional free text
+
+Example:
+
+```yaml
+- end: {}
 ```
 
 ### Marker events
@@ -324,41 +335,75 @@ Absolute marker in output time (discouraged for hand-authoring):
     at: "12:34.0"
 ```
 
-## Actions for a range## Actions for a range
+## Clip inclusion model
 
-`action` controls the basic fate of the source range. Effects are modifiers.
+YAML v2 is output-focused. The timeline describes what appears in the final program, in order.
 
-Supported actions:
+Implication:
 
-- `keep`: include the range in the output.
-- `skip`: exclude the range from the output.
-- `replace`: replace the range with something else.
-- `stop`: terminate processing at this point.
+- `range` events are always inclusive. A `range` event means "put this source range into the output".
+- Skips are represented by omission. If a source segment should not appear, do not include it in the timeline.
+- Replacements are represented by inserting something else (for example a `black` insert, a `silence` insert, a `chapter_card`, or an inserted `clip`) between the surrounding included ranges.
+- To end early, either stop listing events or use an explicit `end` event.
 
-Optional advanced actions:
+This keeps the authoring model simple and avoids mixing "what you do not want" into the program description.
 
-- `audio_only`: include only audio from the range, with black video inserted for the same duration.
-- `video_only`: include only video from the range, with silence for the same duration.
+### Range events
 
-### Replace action
+Range event schema:
 
-`replace` requires a `replacement` block:
+- `id`: optional unique string
+- `src`: required asset ID (typically from `assets.video.*`)
+- `in`: required time
+- `out`: required time
+- `video`: optional video modifiers
+- `audio`: optional audio modifiers
+- `streams`: optional stream selection and mapping
+- `filters`: optional list of filters
+- `chapter`, `subchapter`, `subsubchapter`: optional headings that become markers at the start of the event
+- `markers`: optional list of markers relative to the start of the event
+- `note`: optional free text
+
+Example:
 
 ```yaml
 - range:
+    id: p1_setup
     src: lecture
-    in: "10:05.0"
-    out: "10:07.0"
-    action: replace
-    replacement:
-      kind: beep            # beep | silence | blur | card | clip
-      beep_hz: 1000
+    in:  "06:10.0"
+    out: "18:40.0"
+    video: {speed: 1.15}
+    chapter: "Problem 1"
+    subchapter: "Setup"
 ```
 
-Notes:
+### Ending a timeline early
 
-- `blur` implies video replacement only, audio is handled via `audio` modifiers.
-- `card` is a short title card insert that matches the replaced duration unless explicitly set.
+An explicit end event:
+
+```yaml
+- end: {}
+```
+
+or with a note:
+
+```yaml
+- end: {note: "Stop after Problem 2"}
+```
+
+### Replacing a removed segment
+
+Remove the source segment by omitting it, then insert a replacement of the desired duration:
+
+```yaml
+- range: {src: lecture, in: "10:00.0", out: "10:05.0"}
+
+- insert:
+    black: {duration: 2.0}
+
+- range: {src: lecture, in: "10:07.0", out: "12:00.0"}
+```
+
 
 ## Video modifiers
 
@@ -413,7 +458,6 @@ Example fast-forward with muted lecture audio and replacement music:
     src: lecture
     in: "04:38.7"
     out: "06:00.1"
-    action: keep
     video: {speed: 40}
     audio:
       mute: true
@@ -499,8 +543,8 @@ tracks:
   video_base:
     kind: video
     timeline:
-      - range: {src: lecture, in: "00:00.0", out: "02:00.0", action: keep}
-      - range: {src: screen,  in: "00:00.0", out: "02:00.0", action: keep}
+      - range: {src: lecture, in: "00:00.0", out: "02:00.0"}
+      - range: {src: screen,  in: "00:00.0", out: "02:00.0"}
 ```
 
 This produces a single output timeline that alternates between sources.
@@ -518,7 +562,7 @@ tracks:
   video_overlay_slides:
     kind: video
     timeline:
-      - range: {src: screen, in: "00:00.0", out: "30:00.0", action: keep}
+      - range: {src: screen, in: "00:00.0", out: "30:00.0"}
 
 mix:
   compositor: over
@@ -688,7 +732,6 @@ profile:
   audio: {sample_rate: 48000, channels: stereo}
 
 defaults:
-  action: keep
   video: {speed: 1.1}
   audio:
     normalize: {level_db: -2}
@@ -716,7 +759,6 @@ tracks:
           src: lecture
           in:  "00:00.0"
           out: "00:30.0"
-          action: skip
           note: "Noise and settling in"
 
       - insert:
@@ -746,7 +788,6 @@ tracks:
           src: lecture
           in:  "18:40.0"
           out: "19:20.0"
-          action: keep
           video: {speed: 40}
           audio:
             mute: true
@@ -757,7 +798,7 @@ tracks:
   video_overlay_slides:
     kind: video
     timeline:
-      - range: {src: slides, in: "00:30.0", out: "19:20.0", action: keep}
+      - range: {src: slides, in: "00:30.0", out: "19:20.0"}
 
 mix:
   compositor: over
