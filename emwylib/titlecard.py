@@ -6,7 +6,6 @@
 
 import re
 import sys
-import copy
 import numpy
 import random
 import subprocess
