@@ -1,6 +1,6 @@
 # EMWY YAML v2 Specification
 
-Status: Draft, intended for implementation in emwy v2  
+Status: Draft, intended for implementation in emwy v2
 Filename suggestion: `EMWY_YAML_v2_SPEC.md`
 
 This document defines a human-readable YAML format for producing a single, finished video from one or more raw sources using the command line. The format is designed to stay pleasant to author by hand while keeping the door open for interoperability with MLT XML.
