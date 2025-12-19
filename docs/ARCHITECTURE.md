@@ -8,6 +8,8 @@ This document describes the current emwy code layout and where new features belo
 3. **Render**: The renderer runs ffmpeg/sox and produces the final output.
 4. **Export**: Optional exporters (MLT, future OTIO) read the project model.
 
+MLT XML is treated as the canonical compiled form, even when rendering natively.
+
 ## Core Modules
 - `emwylib/core/loader.py`
   - Parses YAML v2 and builds a `ProjectData` instance.
