@@ -1,0 +1,48 @@
+emwy: 2
+
+profile:
+  fps: "30000/1001"
+  resolution: [1920, 1080]
+  audio: {sample_rate: 48000, channels: stereo}
+
+defaults:
+  video: {speed: 0.8}
+  audio: {normalize: {level_db: -2}}
+
+assets:
+  video:
+    gangnam: {file: Psy-Gangnam_Style.mp4}
+  audio:
+    gangnam: {file: Psy-Gangnam_Style.mp4}
+
+playlists:
+  video_base:
+    kind: video
+    playlist:
+      - source: {asset: gangnam, in: "00:18.1", out: "00:21.5"}
+      - source: {asset: gangnam, in: "00:25.5", out: "00:27.7"}
+      - source: {asset: gangnam, in: "00:29.5", out: "00:31.1"}
+      - source: {asset: gangnam, in: "01:11.4", out: "01:14.6"}
+      - source: {asset: gangnam, in: "01:24.0", out: "01:27.0"}
+      - source: {asset: gangnam, in: "02:54.8", out: "02:59.9"}
+
+  audio_main:
+    kind: audio
+    playlist:
+      - source: {asset: gangnam, in: "00:18.1", out: "00:21.5"}
+      - source: {asset: gangnam, in: "00:25.5", out: "00:27.7"}
+      - source: {asset: gangnam, in: "00:29.5", out: "00:31.1"}
+      - source: {asset: gangnam, in: "01:11.4", out: "01:14.6"}
+      - source: {asset: gangnam, in: "01:24.0", out: "01:27.0"}
+      - source: {asset: gangnam, in: "02:54.8", out: "02:59.9"}
+
+stack:
+  tracks:
+    - {playlist: video_base, role: base}
+    - {playlist: audio_main, role: main}
+
+output:
+  file: Psy-Gangnam_Style-Only_Horses-v2.mkv
+  container: mkv
+  video_codec: libx265
+  crf: 26
