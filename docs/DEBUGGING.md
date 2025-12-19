@@ -7,7 +7,7 @@
 
 ## Useful Commands
 - `emwy --dry-run project.yaml`: Run validators only.
-- `emwy --save-mlt out.mlt project.yaml`: Inspect the generated timeline.
+- `python3 -m emwylib.exporters.mlt -y project.emwy.yaml -o out.mlt`: Inspect the generated timeline.
 - `melt out.mlt`: Render directly with melt to isolate FFmpeg issues.
 - `ffmpeg -i clip.mp4 -hide_banner`: Inspect codecs and durations.
 

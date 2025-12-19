@@ -9,10 +9,14 @@ emwy [options] project.emwy.yaml
 
 ## Common Flags
 - `-o, --output FILE`: Override `output.file` from the YAML.
-- `-p, --profile NAME`: Force a named profile preset.
-- `-s, --save-mlt PATH`: Export the intermediate MLT XML without rendering.
 - `-n, --dry-run`: Validate and exit without rendering.
-- `-v, --verbose`: Increase logging (can be repeated for debug).
+
+## MLT Export
+Use the exporter module to write MLT XML for inspection or melt rendering:
+
+```bash
+python3 -m emwylib.exporters.mlt -y project.emwy.yaml -o project.mlt
+```
 
 ## Environment Variables
 - `EMWY_CACHE_DIR`: Overrides the temp directory for decoded clips.

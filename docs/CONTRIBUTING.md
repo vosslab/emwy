@@ -9,6 +9,7 @@
 - Follow `PYTHON_STYLE.md` (tabs only, `main()` entry point, type hints at function boundaries).
 - Keep line length under 100 characters and prefer small, focused functions.
 - Write docstrings using Google style.
+- Media tool wrappers live under `emwylib/media` and should stay split by intent (extract, render, normalize, edit).
 
 ## Tests
 - Place automated tests under `tests/` mirroring the package structure.

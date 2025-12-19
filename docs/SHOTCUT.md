@@ -3,7 +3,7 @@
 emwy can emit Shotcut-compatible MLT XML so you can open the project inside Shotcut for manual tweaking.
 
 ## Enabling Export
-- Run `emwy project.emwy.yaml --save-mlt shotcut.mlt`.
+- Run `python3 -m emwylib.exporters.mlt -y project.emwy.yaml -o shotcut.mlt`.
 - Copy the MLT file plus referenced media into a Shotcut-accessible folder.
 
 ## Limitations

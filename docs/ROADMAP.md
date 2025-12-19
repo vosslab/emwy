@@ -2,6 +2,7 @@
 
 ## Near Term
 - Finalize EMWY YAML v2 spec and parser.
+- Add MLT import path to complement the exporter.
 - Implement playlist transitions (crossfades, dips).
 - Add regression tests that re-render sample lectures nightly.
 

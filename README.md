@@ -33,7 +33,7 @@ pip install -r pip_requirements.txt
 
 ### Create a minimal project
 
-Save as `example.emwy.yaml`:
+Save as `example.emwy.yaml` (recommended extension for v2):
 
 ```yaml
 emwy: 2
@@ -175,6 +175,14 @@ See **docs/SHOTCUT.md** for details and limitations.
 - Validation is strict by default, with warnings where safe
 
 The authoritative specification is in **docs/FORMAT.md**.
+
+## MLT Export
+
+To export MLT XML for inspection or melt rendering:
+
+```bash
+python3 -m emwylib.exporters.mlt -y example.emwy.yaml -o example.mlt
+```
 
 ## License and attribution
 

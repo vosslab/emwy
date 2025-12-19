@@ -25,6 +25,6 @@ This cookbook captures reusable patterns for common editing tasks.
 
 ## Batch Rendering
 - Place multiple `stack` definitions under different YAML files.
-- Use a shell script to loop over them: `for f in projects/*.yaml; do emwy "$f"; done`.
+- Use a shell script to loop over them: `for f in projects/*.emwy.yaml; do emwy "$f"; done`.
 
 Feel free to copy and tweak these recipes for your own workflow.

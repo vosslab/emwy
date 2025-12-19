@@ -22,7 +22,7 @@
 
 ## Post-Install Checks
 1. Run `tests/run_samples.sh` to ensure the CLI renders bundled sample projects.
-2. Confirm `emwy --save-mlt sample.emwy.yaml sample.mlt` writes MLT XML.
+2. Confirm `python3 -m emwylib.exporters.mlt -y sample.emwy.yaml -o sample.mlt` writes MLT XML.
 3. Inspect generated artifacts under `samples/output/` for AV-sync, resolution, and card placement.
 
 If any tool is missing, re-run installation for that component and ensure its binary is accessible.
