@@ -2,8 +2,8 @@
 
 import argparse
 import os
-import xml.etree.ElementTree
-import emwy
+import lxml.etree
+from emwylib.core.project import EmwyProject
 
 #============================================
 
@@ -36,7 +36,7 @@ class MltExporter():
 	def __init__(self, yaml_file: str, output_file: str = None):
 		self.yaml_file = yaml_file
 		self.output_file = output_file or self._default_output_path()
-		self.project = emwy.EmwyProject(self.yaml_file, output_override=None,
+		self.project = EmwyProject(self.yaml_file, output_override=None,
 			dry_run=True)
 		self.producer_counter = 0
 		self.root = None
@@ -49,7 +49,7 @@ class MltExporter():
 
 	#============================
 	def export(self) -> None:
-		self.root = xml.etree.ElementTree.Element('mlt')
+		self.root = lxml.etree.Element('mlt')
 		self._emit_profile()
 		track_list = self._get_track_list()
 		for track in track_list:
@@ -66,7 +66,7 @@ class MltExporter():
 		frame_rate_num = fps.numerator
 		frame_rate_den = fps.denominator
 		(display_num, display_den) = reduce_fraction(width, height)
-		profile = xml.etree.ElementTree.SubElement(self.root, 'profile')
+		profile = lxml.etree.SubElement(self.root, 'profile')
 		profile.set('description', 'emwy')
 		profile.set('width', str(width))
 		profile.set('height', str(height))
@@ -92,7 +92,7 @@ class MltExporter():
 		playlist = self.project.playlists.get(playlist_id)
 		if playlist is None:
 			raise RuntimeError(f"playlist not found: {playlist_id}")
-		playlist_elem = xml.etree.ElementTree.SubElement(self.root, 'playlist')
+		playlist_elem = lxml.etree.SubElement(self.root, 'playlist')
 		playlist_elem.set('id', playlist_id)
 		for entry in playlist['entries']:
 			self._emit_playlist_entry(playlist_elem, playlist, entry)
@@ -105,7 +105,7 @@ class MltExporter():
 			producer_id = self._emit_source_producer(entry)
 			start_frame = entry['in_frame']
 			end_frame = entry['out_frame'] - 1
-			playlist_entry = xml.etree.ElementTree.SubElement(playlist_elem, 'entry')
+			playlist_entry = lxml.etree.SubElement(playlist_elem, 'entry')
 			playlist_entry.set('producer', producer_id)
 			playlist_entry.set('in', str(start_frame))
 			playlist_entry.set('out', str(end_frame))
@@ -122,7 +122,7 @@ class MltExporter():
 	def _emit_blank_entry(self, playlist_elem, duration_frames: int) -> None:
 		if duration_frames <= 0:
 			raise RuntimeError("blank duration must be positive")
-		blank_elem = xml.etree.ElementTree.SubElement(playlist_elem, 'blank')
+		blank_elem = lxml.etree.SubElement(playlist_elem, 'blank')
 		blank_elem.set('length', str(duration_frames))
 
 	#============================
@@ -136,7 +136,7 @@ class MltExporter():
 		if gen_kind not in ('black', 'chapter_card', 'title_card'):
 			raise RuntimeError(f"generator kind not supported for MLT export: {gen_kind}")
 		producer_id = self._emit_color_producer(entry['duration_frames'])
-		playlist_entry = xml.etree.ElementTree.SubElement(playlist_elem, 'entry')
+		playlist_entry = lxml.etree.SubElement(playlist_elem, 'entry')
 		playlist_entry.set('producer', producer_id)
 		playlist_entry.set('in', '0')
 		playlist_entry.set('out', str(entry['duration_frames'] - 1))
@@ -144,7 +144,7 @@ class MltExporter():
 	#============================
 	def _emit_source_producer(self, entry: dict) -> str:
 		producer_id = self._next_producer_id('source')
-		producer = xml.etree.ElementTree.SubElement(self.root, 'producer')
+		producer = lxml.etree.SubElement(self.root, 'producer')
 		producer.set('id', producer_id)
 		speed = float(entry.get('speed', 1.0))
 		if abs(speed - 1.0) > 0.0001:
@@ -160,7 +160,7 @@ class MltExporter():
 	#============================
 	def _emit_color_producer(self, duration_frames: int) -> str:
 		producer_id = self._next_producer_id('color')
-		producer = xml.etree.ElementTree.SubElement(self.root, 'producer')
+		producer = lxml.etree.SubElement(self.root, 'producer')
 		producer.set('id', producer_id)
 		self._set_property(producer, 'mlt_service', 'color')
 		self._set_property(producer, 'resource', '#000000')
@@ -170,18 +170,18 @@ class MltExporter():
 
 	#============================
 	def _emit_tractor(self, track_list: list) -> None:
-		tractor = xml.etree.ElementTree.SubElement(self.root, 'tractor')
+		tractor = lxml.etree.SubElement(self.root, 'tractor')
 		tractor.set('id', 'tractor0')
 		self._set_property(tractor, 'emwy:version', '2')
-		multitrack = xml.etree.ElementTree.SubElement(tractor, 'multitrack')
+		multitrack = lxml.etree.SubElement(tractor, 'multitrack')
 		for track in track_list:
 			playlist_id = track.get('playlist')
-			track_elem = xml.etree.ElementTree.SubElement(multitrack, 'track')
+			track_elem = lxml.etree.SubElement(multitrack, 'track')
 			track_elem.set('producer', playlist_id)
 
 	#============================
 	def _set_property(self, parent, name: str, value: str) -> None:
-		prop = xml.etree.ElementTree.SubElement(parent, 'property')
+		prop = lxml.etree.SubElement(parent, 'property')
 		prop.set('name', name)
 		prop.text = value
 
@@ -193,7 +193,7 @@ class MltExporter():
 	#============================
 	def _write_output(self) -> None:
 		os.makedirs(os.path.dirname(self.output_file) or '.', exist_ok=True)
-		tree = xml.etree.ElementTree.ElementTree(self.root)
+		tree = lxml.etree.ElementTree(self.root)
 		tree.write(self.output_file, encoding='utf-8', xml_declaration=True)
 
 #============================================
