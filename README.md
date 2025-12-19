@@ -1,85 +1,174 @@
-# About emwy
+# emwy
 
-**emwy** stands for "*<u>e</u>dit <u>m</u>ovies <u>w</u>ith <u>y</u>aml*" it is a command line tool for splicing and combining movies, with many custom features that really only I wanted.
+**emwy** is a command-line video editor for turning long, raw recordings into clean, watchable videos using a simple YAML project file. It is designed for lecture capture, problem-solving videos, and other educational or technical recordings where speed, repeatability, and precision matter.
 
-**emwy** is pronounced as one syllable like a child attempting to say the name "Emily", but getting the "W" sound instead of the "L" sound and skipping the "i" in the middle, i.e., "em-wee" or em'wi.
+Internally, emwy compiles your project into **MLT XML** and renders it using **melt**, with FFmpeg handling encoding and muxing.
 
-## Why create emwy?
+emwy is pronounced as one syllable, like a child trying to say "Emily" but replacing the "L" sound with a "W": *em-wee*.
 
-Most GUI based NLE (non-linear editors) have a high latency while editing which slowed things down and did not match my style.
+## 30-second quickstart
 
-I did a search for other command line editors, but did not find any at the time, so I wrote my own. Since I have found two:
+### Install emwy
 
-* [AviSynth](http://avisynth.nl/index.php/Main_Page)
-* [MLT Multimedia Framework](https://www.mltframework.org/)
-
-but they did not have any good documentation, [see stackexchange](https://video.stackexchange.com/questions/7459/)
-
->  "powerful, if somewhat obscure, multitrack command line oriented video editor"
-
-# Usage
-
-## Sample yaml code
-
-download a sample youtube video ([using youtube-dl](https://rg3.github.io/youtube-dl/)) and we'll use yaml to splice the video
-
-```youtube-dl http://youtu.be/9bZkp7q19f0 -o Psy-Gangnam_Style.mp4```
-
-save the following code to the file `gangnam.yml`:
-
-```
-- type: global
-  quality: fast  #options: high, fast
-  speed:
-    normal: 1.1
-  audio:
-    norm_level: -2
-    audio_format: MP3
-    audio_mode: stereo
-  output_file: Psy-Gangnam_Style-Only_Horses.mkv
-
-- type: movie
-  file: Psy-Gangnam_Style.mp4
-  timing:
-    '00:18.1': {type: normal, }
-    '00:21.5': {type: skip }
-    '00:25.5': {type: normal, }
-    '00:27.7': {type: skip, }
-    '00:29.5': {type: normal, }
-    '00:31.1': {type: skip, }
-    '01:11.4': {type: normal, }
-    '01:14.6': {type: skip, }
-    '01:24.0': {type: normal, }
-    '01:27.0': {type: skip, }
-    '02:54.8': {type: normal, }
-    '02:59.9': {type: skip, }
-    '04:00.0': {type: stop, }
+```bash
+pip install emwy
 ```
 
-then run the command:
+### Install system dependencies
 
-```emwy.py -y gangnam.yml```
+You need at least:
 
-the code with cut and splice the video to create `Psy-Gangnam_Style-Only_Horses.mkv`
+- ffmpeg
+- mlt / melt
+- sox
+- mediainfo
 
-# Installation
+See **docs/INSTALL.md** for full platform-specific instructions.
 
-## Software pre-requisities
+### Create a minimal project
 
-emwy is a python package, so it does not need to be compiled,
-but it expects several packages to exist on the system already.
+Save as `example.emwy.yaml`:
 
-### software packages:
-* [ffmpeg (with x264 codec)](https://www.ffmpeg.org)
-* [lame](http://lame.sourceforge.net)
-* [mediainfo](https://mediaarea.net/MediaInfo) ; version 18.03 or newer from March 2018
-* [mkvtoolnix](https://mkvtoolnix.download/)
-* [python](https://python.org), tested on python 2.7 and 3.8
-* [sox](http://sox.sourceforge.net)
+```yaml
+emwy: 2
 
-### python modules:
-* [numpy](https://www.numpy.org)
-* [pillow](https://pillow.readthedocs.io)
-* [scipy](https://www.scipy.org)
-* [tqdm](https://github.com/tqdm/tqdm)
-* [yaml](https://pyyaml.org)
+profile:
+  fps: "30000/1001"
+  resolution: [1920, 1080]
+  audio: {sample_rate: 48000, channels: stereo}
+
+assets:
+  video:
+    lecture: {file: lecture.mp4}
+
+playlists:
+  video_base:
+    kind: video
+    playlist:
+      - source: {asset: lecture, in: "00:10.0", out: "05:00.0"}
+
+  audio_main:
+    kind: audio
+    playlist:
+      - source: {asset: lecture, in: "00:10.0", out: "05:00.0"}
+
+stack:
+  tracks:
+    - {playlist: video_base, role: base}
+    - {playlist: audio_main, role: main}
+
+output:
+  file: lecture_trimmed.mkv
+```
+
+### Run emwy
+
+```bash
+emwy example.emwy.yaml
+```
+
+### Output
+
+```
+lecture_trimmed.mkv
+```
+
+## What emwy is for
+
+- Trimming lectures and screen recordings
+- Speeding up silent or repetitive sections
+- Adding chapter cards and YouTube chapters
+- Simple overlays like picture-in-picture or slides
+- Audio cleanup such as normalization and noise reduction
+- Fully scriptable, reproducible edits
+
+## What emwy is not for
+
+- Complex motion graphics
+- Color grading
+- Visual effects or animation-heavy edits
+- Replacing full GUI NLEs for cinematic workflows
+
+## How it works
+
+The pipeline is intentionally simple:
+
+```
+.emwy.yaml
+   ->
+validated project graph
+   ->
+generated MLT XML
+   ->
+rendered by melt
+   ->
+encoded / muxed output
+```
+
+MLT XML can be saved and inspected, which makes emwy suitable for headless systems, servers, and CI pipelines.
+
+## Documentation
+
+Deeper documentation lives in the **docs/** directory:
+
+- **docs/INSTALL.md**
+  System dependencies, platform notes, and install verification.
+
+- **docs/FORMAT.md**
+  Project file format, time rules, and minimal and complete examples.
+
+- **docs/COOKBOOK.md**
+  Common editing recipes and reusable patterns.
+
+- **docs/CLI.md**
+  Command-line options, validation, dry runs, and logging.
+
+- **docs/SHOTCUT.md**
+  Shotcut-compatible export mode and round-tripping notes.
+
+- **docs/DEBUGGING.md**
+  Common errors, diagnostics, and media inspection tips.
+
+- **docs/FAQ.md**
+  Design decisions, limitations, and common questions.
+
+- **docs/CHANGELOG.md**
+  User-facing changes and format migration notes.
+
+- **docs/CONTRIBUTING.md**
+  Developer setup, tests, and contribution guidelines.
+
+Optional planning and policy documents:
+
+- **docs/ROADMAP.md**
+- **docs/SECURITY.md**
+
+## Compatibility
+
+- OS: tested primarily on Linux
+- Python: 3.8+
+- Render engine: MLT / melt
+
+### Shotcut
+
+emwy can export **Shotcut-compatible MLT XML** so Shotcut opens the project as a normal editable timeline.
+See **docs/SHOTCUT.md** for details and limitations.
+
+## Format stability
+
+- Current format version: **emwy YAML v2**
+- The format is still evolving
+- Validation is strict by default, with warnings where safe
+
+The authoritative specification is in **docs/FORMAT.md**.
+
+## License and attribution
+
+See **LICENSE**.
+
+emwy builds on excellent upstream tools:
+
+- MLT Multimedia Framework
+- FFmpeg
+- SoX
+- MediaInfo
