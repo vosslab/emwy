@@ -1,119 +1,87 @@
 # EMWY YAML v2 Specification
 
-Status: Draft, intended for implementation in emwy v2
-Filename suggestion: `EMWY_YAML_v2_SPEC.md`
+Status: Draft, intended for emwy v2
+This document defines a hand-editable YAML format for building one finished movie file from one or more inputs. The design intentionally follows MLT concepts closely so readers can use existing MLT documentation and so emwy can export and import MLT XML.
 
-This document defines a human-readable YAML format for producing a single, finished video from one or more raw sources using the command line. The format is designed to stay pleasant to author by hand while keeping the door open for interoperability with MLT XML.
+## Design goals
 
-## Goals
+- Simple lecture editing stays simple: cut, speed up, normalize, add cards, export YouTube chapters.
+- Multiple sources are first-class: switch between sources, and optionally composite sources (picture-in-picture).
+- One YAML file produces one output file.
+- The canonical compiled form is MLT XML plus an emwy metadata block.
 
-- Make the simple case simple: cut a lecture, speed up boring parts, normalize audio, export chapters.
-- Support multiple source videos and switching between them inside one timeline.
-- Support visual inserts (title cards, chapter cards) and metadata inserts (chapter markers).
-- Support multiple input video tracks for compositing (picture-in-picture, slides overlay), while producing a single output video stream.
-- Preserve all source streams by default (multiple audio tracks, subtitles) when cutting, unless the user remaps streams.
-- Provide a structure that can be translated to and from a useful subset of MLT XML.
+## Core mental model
 
-## Non-goals
+A project is a **stack of tracks**.
 
-- Full fidelity round-trip with every MLT XML feature.
-- Replacing a full GUI NLE for complex motion graphics or deep color workflows.
-- Multi-output builds inside one YAML file. One YAML file describes one output render.
+- A **track** is a **playlist**.
+- A playlist is an ordered list of **playlist entries**.
+- Playlist entries occupy time and can be source excerpts, generated cards, or blanks.
+- The final output is the stack rendered from bottom to top for video, and mixed for audio.
 
-## Format overview
+This matches common NLE thinking, maps cleanly to OTIO thinking, and compiles directly to MLT (playlist, multitrack, tractor, transitions, filters, consumer).
 
-EMWY YAML v2 is a single YAML document with a top-level mapping.
+## Glossary and MLT crosswalk
 
-Top-level keys:
+Author-facing term to MLT term mapping:
 
-- `emwy`: required integer version. Must be `2`.
-- `project`: optional metadata (title, author, notes).
-- `profile`: required output specs (fps, resolution, audio sample rate, channel layout).
-- `defaults`: optional defaults for actions, audio, video, filters.
-- `assets`: optional named inputs and generated assets (video files, audio files, images, card templates).
-- `tracks`: required timeline tracks (at minimum, one base video track).
-- `mix`: optional compositing rules for overlay tracks.
-- `output`: required output filename and encoding container defaults.
-- `exports`: optional extra outputs (YouTube chapters text, MLT XML export, show notes).
+- **asset**: producer definition (MLT producer)
+- **playlist**: track playlist (MLT playlist)
+- **playlist entry**: an item inside a playlist (MLT playlist entry)
+- **stack**: multitrack inside the root timeline object (MLT multitrack inside a tractor)
+- **overlay**: compositing transition between tracks (MLT transition on the tractor)
+- **output**: render target (MLT consumer, commonly avformat)
 
-## Data types
+In YAML, the author-facing names are primary. MLT names are referenced to guide implementation and interoperability.
 
-### Time values
+## Top-level structure
 
-Time values in YAML v2 are strings in one of these forms:
+Required keys:
 
-- `HH:MM:SS.sss`
-- `MM:SS.sss`
-- `SS.sss`
-- Integer seconds are allowed but discouraged.
+- `emwy`: must be `2`
+- `profile`: output profile (fps, resolution, audio rate)
+- `assets`: named media and generated templates
+- `playlists`: track playlists with entries
+- `stack`: how playlists are arranged and composited
+- `output`: output file and delivery encoding settings
 
-Parsing rules:
+Optional keys:
 
-- `out` is exclusive. A segment is `[in, out)`.
-- All times are interpreted as real time seconds. Internally, emwy may convert to frame counts based on `profile.fps`.
+- `defaults`: default processing intent (speed, loudness, fades)
+- `filters`: global filters applied after compositing
+- `transitions`: explicit transitions (advanced)
+- `exports`: sidecar outputs (YouTube chapters, OTIO, MLT XML)
 
-### Duration values
+## Profile
 
-Duration values are seconds as a number, for example `2.0`.
-
-### IDs
-
-Asset IDs and track IDs are strings matching `[A-Za-z][A-Za-z0-9_]*`.
-
-## Project metadata
-
-`project` is optional and has no effect on rendering.
-
-```yaml
-project:
-  title: "Protein Problem Set 1"
-  author: "Neil Voss"
-  notes: "Cut pauses, add chapter cards, export YouTube chapters."
-```
-
-## Output profile
-
-`profile` is required. It defines the final technical specs for the rendered output.
-
-### Fractional-first fps and internal time
-
-Real projects frequently use fractional frame rates such as 23.976 (24000/1001), 29.97 (30000/1001), and 59.94 (60000/1001). YAML v2 therefore allows `profile.fps` as:
-
-- an integer, for example `60`
-- a rational string, for example `"60000/1001"`
-
-Implementation rule:
-
-- emwy must convert `profile.fps` into a rational value (numerator, denominator) and use that consistently throughout the build.
-
-Event times in YAML remain human-friendly strings like `HH:MM:SS.sss`. Internally, emwy should represent time as a rational duration in seconds (not a float) to avoid drift on long timelines and fractional frame rates.
-
-Conversion rule from a time string to internal rational seconds:
-
-- Parse the string into whole seconds plus a fractional decimal part.
-- Convert the fractional decimal part into a rational fraction exactly based on the digits provided.
-- Store the result as a rational number of seconds.
-
-When emwy must convert a rational time to frames, it must define and document a rounding mode. Recommended default is `nearest_frame`, with `floor` as an optional strict mode.
+`profile` defines final delivery timing and geometry. `profile.fps` must support fractional rates.
 
 ```yaml
 profile:
-  fps: "60000/1001"         # examples: 24, "24000/1001", 30, "30000/1001", 60, "60000/1001"
+  fps: "30000/1001"          # also allowed: 24, "24000/1001", 60, "60000/1001"
   resolution: [1920, 1080]
   pixel_format: yuv420p
   audio:
     sample_rate: 48000
-    channels: stereo        # mono | stereo | 5.1 | 7.1
+    channels: stereo         # mono | stereo | 5.1 | 7.1
 ```
 
-Guidance:
+### Canonical time and frames
 
-- If sources differ from `profile`, emwy should resample and scale as needed.
-- If `profile` is missing, emwy should fail with a clear error.
+MLT is frame-based. YAML v2 keeps human-friendly time strings but defines a deterministic compile step to integer frames at `profile.fps`.
+
+Rules:
+
+- Parse time strings as exact decimal seconds, not floats.
+- Convert seconds to frames at `profile.fps` using the mandatory rounding rule.
+- Mandatory v2 rounding rule is `nearest_frame`.
+- `in_frame` and `out_frame` may be supported as an advanced override for zero-rounding authoring.
+
+All compiled MLT XML must use integer frame positions.
 
 ## Defaults
 
-`defaults` sets project-wide defaults. Any event may override.
+`defaults` sets project-wide processing intent. It must not include delivery codec choices.
 
 ```yaml
 defaults:
@@ -124,20 +92,9 @@ defaults:
       level_db: -2
 ```
 
-Notes:
-
-- The timeline normally lists only the parts you want to include in the final output.
-
-Processing vs encoding guidance:
-
-- `defaults` should describe editorial and signal-processing intent (speed, fades, loudness normalization).
-- Container and codec choices belong under `output` (and `exports`), not under `defaults`.
-
 ## Assets
 
-`assets` defines named reusable inputs and generated templates.
-
-### Source assets
+Assets are named inputs and named generators. Assets compile to MLT producers.
 
 ```yaml
 assets:
@@ -145,333 +102,206 @@ assets:
     lecture: {file: "lecture_camera.mkv"}
     screen:  {file: "screen_capture.mkv"}
   audio:
-    music: {file: "Graze.mp3"}
+    music:   {file: "Graze.mp3"}
   image:
     watermark: {file: "vosslab.jpg"}
-```
-
-### Card templates
-
-Cards are generated assets. Templates let you reuse styling.
-
-```yaml
-assets:
   cards:
     chapter_style:
       kind: chapter_card_style
       font_size: 96
       resolution: [1920, 1080]
-      background: black
-      text_color: white
-      audio:
-        file: "Graze.mp3"
-        normalize:
-          level_db: -15
 ```
 
-## Tracks
+## Playlists and playlist entries
 
-A project must have at least one base video track. The final output has a single video stream after compositing.
+`playlists` is a mapping from playlist id to a playlist definition.
+
+A playlist has:
+
+- `kind`: `video` or `audio`
+- `playlist`: an ordered list of playlist entries
 
 ```yaml
-tracks:
+playlists:
   video_base:
     kind: video
-    timeline: [ ... ]
+    playlist:
+      - source: {asset: lecture, in: "00:30.0", out: "06:10.0"}
 ```
 
-Optional additional tracks:
+### Playlist entry types
 
-- `video_overlay_*`: overlay video tracks composited onto `video_base`
-- `audio_*`: additional audio tracks or derived mixes
+A playlist entry is a mapping with exactly one of these keys:
 
-### Track kind
+- `source`: excerpt from an asset
+- `blank`: time advances with no media (black for video, silence for audio)
+- `generator`: generated media (chapter cards, title cards, black, silence, still)
+- `nested`: a nested stack treated as one entry (advanced, maps to a nested tractor)
 
-Supported `kind` values:
-
-- `video`
-- `audio`
-
-## Timeline events
-
-A timeline is an ordered list of events. Events are processed in list order.
-
-There are three event families:
-
-- `range`: take a time range from a source asset and do something with it.
-- `insert`: insert generated content or external content into the output timeline.
-- `marker`: metadata-only marker such as a chapter marker (no frames inserted).
-- `end`: terminate the output timeline at this point.
-
-### Event ids
-
-Any event may include an optional `id`. If present, it must be unique within the file.
-
-Event ids exist primarily so you can attach markers relative to structure without needing to precompute final output time.
-
-Example:
+#### Source entry
 
 ```yaml
-- range:
-    id: p1_setup
-    src: lecture
-    in:  "06:10.0"
-    out: "18:40.0"
-```
-
-### Range events
-
-Range event schema:
-
-- `id`: optional unique string
-- `src`: required asset ID (typically from `assets.video.*`)
-- `in`: required time
-- `out`: required time
-- `video`: optional video modifiers
-- `audio`: optional audio modifiers
-- `streams`: optional stream selection and mapping
-- `filters`: optional list of filters
-- `chapter`, `subchapter`, `subsubchapter`: optional headings that become markers at the start of the event
-- `markers`: optional list of markers relative to the start of the event
-- `note`: optional free text
-
-Example:
-
-```yaml
-- range:
-    id: p1_setup
-    src: lecture
-    in:  "06:10.0"
-    out: "18:40.0"
-    video: {speed: 1.15}
-    chapter: "Problem 1"
-    subchapter: "Setup"
+- source:
+    id: intro
+    asset: lecture
+    in:  "00:30.0"
+    out: "06:10.0"
+    video: {speed: 1.1}
+    audio: {normalize: {level_db: -2}}
     markers:
-      - {title: "Key idea", level: 2, offset: "03:10.0"}
+      - {title: "Goals", level: 2, offset: "00:10.0"}
 ```
 
-### Insert events
+Fields:
 
-Insert event schema:
+- `id`: optional unique id for anchoring markers and transitions
+- `asset`: required asset id
+- `in`, `out`: required time strings
+- `video`, `audio`: optional processing intent
+- `streams`: optional stream mapping (see Streams)
+- `filters`: optional per-entry filters
+- `markers`: optional marker list relative to the start of this entry
 
-- `id`: optional unique string
-- `insert`: required object describing what to insert
-- `chapter`, `subchapter`, `subsubchapter`: optional headings for a marker at the start of the insert
-- `markers`: optional list of markers relative to the start of the insert (rare)
-- `note`: optional free text
+#### Blank entry
 
-Supported insert types:
-
-- `title_card`: a visual card with text and optional audio
-- `chapter_card`: a visual divider card intended to be a chapter boundary
-- `clip`: insert an external media asset (video or audio)
-- `silence`: insert silence for a duration
-- `black`: insert black frames for a duration
-
-Example chapter card:
+Use blanks to align audio-only or video-only edits, and to align overlays.
 
 ```yaml
-- insert:
-    id: card_p2
-    chapter_card:
-      title: "Problem 2"
-      duration: 2.0
-      style: chapter_style
-  chapter: "Problem 2"
+- blank: {duration: "00:02.0"}
 ```
 
-### End events
+#### Generator entry
 
-End events terminate the output timeline. They insert no frames.
+A generator entry inserts media that emwy creates.
 
-Schema:
+Common generator kinds:
 
-- `end`: required (empty mapping is fine)
-- `note`: optional free text
-
-Example:
+- `chapter_card`
+- `title_card`
+- `black`
+- `silence`
+- `still`
 
 ```yaml
-- end: {}
+- generator:
+    id: card_p1
+    kind: chapter_card
+    title: "Problem 1"
+    duration: "00:02.0"
+    style: chapter_style
+    markers:
+      - {title: "Problem 1", level: 1, offset: "00:00.0"}
 ```
 
-### Marker events
+Audio for generator entries is controlled by placement:
 
-Marker events add metadata only. They insert no frames.
+- Put the generator on a video playlist, and place a matching blank or music entry on an audio playlist.
+- If you want a generator to carry audio, also place a generator or source entry on the audio playlist for the same duration.
 
-Two placement modes exist:
+## Stack
 
-- structural placement (preferred): headings and `markers` attached to `range` or `insert` events
-- absolute placement (optional): a marker at an output-time `at` position
-
-Structural markers round-trip better and are deterministic without having to render first.
-
-Marker schema:
-
-- `title`: required
-- `level`: optional integer, default `1`
-- `offset`: time string relative to the start of the referenced event (structural mode)
-- `ref`: `{event: <event_id>}` (structural mode)
-- `at`: required only for absolute placement, time in output timeline time (absolute mode)
-
-Examples:
-
-Structural marker relative to an event:
+`stack` defines how playlists are arranged and composited into one output.
 
 ```yaml
-- marker:
-    title: "Important definition"
-    level: 2
-    ref: {event: p1_setup}
-    offset: "03:10.0"
+stack:
+  tracks:
+    - {playlist: video_base, role: base}
+    - {playlist: audio_main, role: main}
 ```
 
-Absolute marker in output time (discouraged for hand-authoring):
+Common roles:
+
+- video: `base`, `overlay`
+- audio: `main`, `commentary`, `music`
+
+The final output video is a single composed video stream. Additional video playlists must resolve into that single output by compositing transitions.
+
+## Streams and subtitles
+
+Default behavior is to preserve all streams from a source asset when possible, including multiple audio tracks and subtitles.
+
+When switching source assets within the same playlist, stream compatibility must be defined.
+
+Compatibility requirements (default):
+
+- same number of selected audio streams
+- compatible channel layouts per selected stream, or explicit remap
+- subtitle handling consistent with the playlist kind and output container
+
+Explicit mapping is provided via `streams` on a source entry.
 
 ```yaml
-- marker:
-    title: "Office hours"
-    level: 1
-    at: "12:34.0"
+- source:
+    asset: lecture
+    in: "10:00.0"
+    out: "10:20.0"
+    streams:
+      audio:
+        - {src_index: 0, name: "main"}
+        - {src_index: 1, name: "commentary"}
+      subtitles: keep
 ```
 
-## Clip inclusion model
+If compatibility fails and no mapping is provided, emwy must fail with a clear error.
 
-YAML v2 is output-focused. The timeline describes what appears in the final program, in order.
+## Transitions
 
-Implication:
+Transitions fall into two families.
 
-- `range` events are always inclusive. A `range` event means "put this source range into the output".
-- Skips are represented by omission. If a source segment should not appear, do not include it in the timeline.
-- Replacements are represented by inserting something else (for example a `black` insert, a `silence` insert, a `chapter_card`, or an inserted `clip`) between the surrounding included ranges.
-- To end early, either stop listing events or use an explicit `end` event.
+### Adjacent transitions inside a playlist
 
-This keeps the authoring model simple and avoids mixing "what you do not want" into the program description.
+These are transitions between neighboring playlist entries on the same playlist, such as cross-dissolve or dip-to-black.
 
-### Range events
-
-Range event schema:
-
-- `id`: optional unique string
-- `src`: required asset ID (typically from `assets.video.*`)
-- `in`: required time
-- `out`: required time
-- `video`: optional video modifiers
-- `audio`: optional audio modifiers
-- `streams`: optional stream selection and mapping
-- `filters`: optional list of filters
-- `chapter`, `subchapter`, `subsubchapter`: optional headings that become markers at the start of the event
-- `markers`: optional list of markers relative to the start of the event
-- `note`: optional free text
-
-Example:
+Authoring form (recommended): attach a transition to the outgoing edge of an entry.
 
 ```yaml
-- range:
-    id: p1_setup
-    src: lecture
-    in:  "06:10.0"
-    out: "18:40.0"
-    video: {speed: 1.15}
-    chapter: "Problem 1"
-    subchapter: "Setup"
+- source:
+    id: a
+    asset: lecture
+    in: "00:30.0"
+    out: "01:00.0"
+    transition_to_next:
+      kind: dissolve
+      duration: "00:00.5"
 ```
 
-### Ending a timeline early
+Implementation:
 
-An explicit end event:
+- Compile to an MLT-style overlap and transition at the playlist level, using compiled frame counts.
+
+### Stack compositing transitions between tracks
+
+These are transitions that define how an overlay track is composited onto a base track, including picture-in-picture.
+
+Convenience form (recommended): define overlays on the stack.
 
 ```yaml
-- end: {}
+stack:
+  tracks:
+    - {playlist: video_base, role: base}
+    - {playlist: video_slides, role: overlay}
+  overlays:
+    - a: video_base
+      b: video_slides
+      kind: over
+      in:  "00:30.0"
+      out: "19:20.0"
+      geometry: [0.64, 0.06, 0.34, 0.34]   # normalized x, y, w, h
+      opacity: 1.0
 ```
 
-or with a note:
+Implementation:
 
-```yaml
-- end: {note: "Stop after Problem 2"}
-```
-
-### Replacing a removed segment
-
-Remove the source segment by omitting it, then insert a replacement of the desired duration:
-
-```yaml
-- range: {src: lecture, in: "10:00.0", out: "10:05.0"}
-
-- insert:
-    black: {duration: 2.0}
-
-- range: {src: lecture, in: "10:07.0", out: "12:00.0"}
-```
-
-
-## Video modifiers
-
-`video` is a mapping. Supported keys are intended to be composable.
-
-Common keys:
-
-- `speed`: number or named preset (for example `fast_forward`)
-- `crop`: `[x, y, w, h]`
-- `scale`: `[w, h]`
-- `pad`: `[w, h, x, y]`
-- `rotate`: degrees
-- `fade_in`: seconds
-- `fade_out`: seconds
-- `watermark`: asset ID from `assets.image.*`
-- `overlay_text`: text overlay definition
-
-Example:
-
-```yaml
-video:
-  speed: 40
-  watermark: watermark
-  fade_in: 0.2
-```
-
-### Speed and audio coupling
-
-Speed changes affect both video and audio duration unless audio is explicitly replaced or muted. A speed of `2.0` means double speed, half duration.
-
-## Audio modifiers
-
-`audio` is a mapping. Supported keys are intended to be composable.
-
-Common keys:
-
-- `normalize`: `{level_db: -2}` or `{lufs: -16, true_peak_db: -1.5}`
-- `gain_db`: number
-- `mute`: boolean
-- `replace_with`: asset ID from `assets.audio.*`
-- `duck`: ducking config for background tracks
-- `highpass_hz`: number
-- `lowpass_hz`: number
-- `fade_in`: seconds
-- `fade_out`: seconds
-- `denoise`: `{profile: "room_tone", amount: 0.5}`
-
-Example fast-forward with muted lecture audio and replacement music:
-
-```yaml
-- range:
-    src: lecture
-    in: "04:38.7"
-    out: "06:00.1"
-    video: {speed: 40}
-    audio:
-      mute: true
-      replace_with: music
-      normalize: {level_db: -15}
-```
+- Compile overlays to MLT transitions attached to the root timeline object, with track indices and keyframe-capable properties.
+- Wipes should compile to an MLT luma-style transition where available, with a luma resource.
 
 ## Filters
 
-`filters` is a list of named filters with parameters. Filters may be applied at:
+Filters may be attached at:
 
-- clip scope: `range.filters`
-- track scope: `tracks.<id>.filters`
-- global scope: `defaults.filters` or `output.filters`
+- playlist entry scope: filters on a playlist entry apply only to that entry
+- playlist scope: filters on a playlist apply to every entry in that playlist
+- stack scope: filters applied after compositing
 
 Filter schema:
 
@@ -481,9 +311,9 @@ filters:
     params: {amount: 0.4}
 ```
 
-### Keyframes
+Keyframes:
 
-Any numeric parameter may accept keyframes:
+Any numeric parameter may accept keyframes. Keyframe time `t` is relative to the start of the entry unless otherwise specified.
 
 ```yaml
 params:
@@ -492,234 +322,118 @@ params:
     - {t: "00:05.0", v: 0.6}
 ```
 
-`t` in keyframes is relative to the start of the event.
+## Markers, chapters, and educational outlines
 
-## Streams and subtitles
+Markers are metadata. They should be anchored to structure, not to output absolute time.
 
-By default, emwy should keep all streams present in the selected source asset, including:
+Preferred authoring:
 
-- primary audio
-- commentary audio tracks
-- subtitle tracks
+- Attach `markers` to playlist entries, using `offset` relative to entry start.
+- Use a heading path for educational outlines.
 
-This makes classroom edits of movies sane.
+Recommended marker levels:
 
-Stream selection is controlled via `streams`:
-### Compatibility when switching sources
-
-When `keep_all: true` and the timeline switches `src` between assets, emwy must decide whether streams are compatible.
-
-Required compatibility (default):
-
-- same number of video streams (usually 1)
-- same number of audio streams selected into the output
-- same number of subtitle streams if `subtitles: keep`
-- audio channel layouts must match per stream, or be explicitly remapped
-
-If compatibility fails and no explicit mapping is provided, emwy must fail with a clear error describing the mismatch.
-
-Optional explicit mapping:
-
-- Users may name output streams and map each source stream index into those names per asset.
-
-
-```yaml
-streams:
-  keep_all: true
-  audio:
-    - {src_index: 0, name: "main"}
-    - {src_index: 1, name: "commentary"}
-  subtitles: keep
-```
-
-If the user switches sources mid-timeline, stream selection should be validated for compatibility. If incompatible, emwy should fail unless explicit remapping is provided.
-
-## Multiple sources and interlacing
-
-Switching between sources is done by changing `src` per `range` event on the base video track.
-
-```yaml
-tracks:
-  video_base:
-    kind: video
-    timeline:
-      - range: {src: lecture, in: "00:00.0", out: "02:00.0"}
-      - range: {src: screen,  in: "00:00.0", out: "02:00.0"}
-```
-
-This produces a single output timeline that alternates between sources.
-
-## Overlays and picture-in-picture
-
-Overlay tracks are separate video tracks. They are composited onto the base track in `mix`.
-
-```yaml
-tracks:
-  video_base:
-    kind: video
-    timeline: [ ... ]
-
-  video_overlay_slides:
-    kind: video
-    timeline:
-      - range: {src: screen, in: "00:00.0", out: "30:00.0"}
-
-mix:
-  compositor: over
-  layers:
-    - track: video_overlay_slides
-      mode: pip
-      rect: [0.65, 0.05, 0.33, 0.33]   # normalized x, y, w, h
-      opacity: 1.0
-```
-
-Notes:
-
-- `rect` is normalized to the output resolution.
-- `pip` is a convenience mode for an `over` compositor with a rect.
-
-## Chapters and educational outlines
-
-Headings are attached to events:
-
-- `chapter`: level 1
-- `subchapter`: level 2
-- `subsubchapter`: level 3
-
-A heading on an event creates a marker at the start of that event in output timeline time.
+- level 1: chapter
+- level 2: subchapter
+- level 3: subsubchapter
 
 Example:
 
 ```yaml
-- insert:
-    chapter_card:
-      title: "Problem 2"
-      duration: 2.0
-      style: chapter_style
-  chapter: "Problem 2"
+- generator:
+    kind: chapter_card
+    title: "Problem 2"
+    duration: "00:02.0"
+    style: chapter_style
+    markers:
+      - {title: "Problem 2", level: 1, offset: "00:00.0"}
 ```
 
-### Exporting YouTube chapters
+### YouTube chapters export
 
 YouTube chapters are flat. Export rules:
 
-- Use only `chapter` (level 1).
-- Output format is lines like `MM:SS Title`.
-- First chapter should be at `00:00`.
-- Enforce YouTube constraints in exporter when possible (minimum chapter length, increasing order).
-
-Export configuration:
-
-```yaml
-exports:
-  youtube_chapters:
-    file: "chapters.txt"
-```
+- emit level 1 markers only
+- format lines as `MM:SS Title`
+- ensure the first is `00:00` and marker times are increasing
 
 ## Output
 
-`output` defines the main render output.
-Encoding and container decisions belong here. YAML v2 treats these as delivery choices, separate from editorial decisions and signal processing.
-
+`output` contains delivery choices, separate from editorial and processing intent.
 
 ```yaml
 output:
-  file: "Unordered_Tetrad-2021-Nov.mkv"
+  file: "Lecture_ProblemSet1.mkv"
   container: mkv
   video_codec: libx264
   audio_codec: aac
+  crf: 18
 ```
 
-Guidance:
+## Canonical compiled form
 
-- One YAML file should produce one output file.
-- If you want multiple outputs, create multiple YAML files, optionally sharing common config via `include`.
+For v2, the canonical compiled form is:
 
-## Include and reuse
+- MLT XML that melt can render directly, plus
+- an emwy metadata block stored as properties on the root timeline object
 
-To avoid duplication across variants, YAML v2 may support `include`.
+The metadata block preserves information MLT does not represent natively, such as structured marker paths. Exporters may also emit sidecar files (for example YouTube chapters).
 
-```yaml
-include:
-  - "common_defaults.yml"
+## Interoperability
 
-output:
-  file: "Lecture_short.mkv"
-```
+### MLT XML export and import
 
-Merge rules:
+Export mapping:
 
-- Included files load first.
-- The main file overrides included values.
-- Lists replace by default. If you want list concatenation, define it explicitly in v2 later.
+- assets compile to producers
+- playlists compile to MLT playlists
+- stack compiles to multitrack inside a tractor
+- overlays compile to transitions
+- output compiles to a consumer
 
-## MLT XML interoperability
+Import should be best-effort and must warn about unsupported features.
 
-MLT XML import and export is an interoperability feature, not the core representation.
-## OTIO interoperability
+### OTIO export and import
 
-OpenTimelineIO (OTIO) is a modern interchange format for editorial timelines. YAML v2 is designed to map to OTIO concepts cleanly (timeline, tracks, clips, transitions, markers), even if the initial implementation supports only a subset.
+OTIO is a useful interchange target for editorial tooling.
 
 Suggested subset export:
 
-- base video track and any overlay tracks as OTIO tracks
-- `range` events as OTIO clips referencing media
-- `insert` cards as OTIO generator clips
-- headings and structural markers as OTIO markers
+- playlists and stack export to OTIO tracks and stacks
+- playlist entries export to OTIO clips and gaps
+- markers export to OTIO markers
 
 Suggested subset import:
 
-- clips and cuts into `range` events
-- markers into headings or `marker` events
-- ignore or warn on unsupported OTIO effects and transitions
-
-Configuration:
-
-```yaml
-exports:
-  otio:
-    file: "edit.otio"
-```
-
-
-### Export to MLT XML (subset)
-
-A YAML v2 project can export to MLT XML using this mapping:
-
-- `assets.video.*` -> MLT producers
-- `tracks.*.timeline` -> MLT playlists
-- `mix.layers` -> MLT multitrack compositing and transitions
-- `filters` -> MLT filters where a known name mapping exists
-- `profile` -> MLT profile
-
-Limitations:
-
-- Only supported filters and transitions will map.
-- Unknown ops should either be dropped with warnings or cause export failure depending on a strictness flag.
-
-### Import from MLT XML (subset)
-
-MLT XML import should create:
-
-- `profile` from the MLT profile
-- `assets` from producers
-- `tracks` from playlists
-- `mix` from multitrack structure when present
-
-Import should be best-effort and should record unmapped MLT features in `project.notes` or an `imports.warnings` block.
+- OTIO clips and gaps import as playlist entries
+- OTIO markers import as playlist entry markers
 
 ## Validation
 
 An emwy v2 validator should check:
 
-- Required keys exist: `emwy`, `profile`, `tracks`, `output`
-- `in` and `out` exist for every `range`
-- `in < out` for every `range`
-- Timeline order is non-decreasing in output time construction
-- Overlaps on the base track are not allowed unless explicitly supported in a future version
-- Asset IDs exist and files are readable
-- Stream remapping is consistent across source switches when `keep_all` is true
-- Chapter exports are consistent and do not land inside skipped content
+- required keys exist and `emwy: 2`
+- every source entry has `in < out` after frame compilation
+- referenced assets exist
+- overlay transitions reference valid playlists and have valid time ranges
+- stream mappings are compatible across asset switches when preserving streams
+- marker offsets do not exceed entry duration
+
+## Conformance tests
+
+A recommended conformance test is to render the same project two ways:
+
+1. Render with emwy native rendering.
+2. Export MLT XML, render with melt, and compare outputs.
+
+Comparison should include:
+
+- frame count equality (ffprobe)
+- duration equality
+- checksum or perceptual comparison on decoded frames (sample every N frames or all frames)
+- audio duration and sample count equality (or a tolerant audio hash)
+
+This test should use fractional fps such as 30000/1001 and include transitions and overlays.
 
 ## Complete example: lecture with chapters, speed, cards, and PiP
 
@@ -727,98 +441,81 @@ An emwy v2 validator should check:
 emwy: 2
 
 profile:
-  fps: 60
+  fps: "60000/1001"
   resolution: [1920, 1080]
   audio: {sample_rate: 48000, channels: stereo}
 
 defaults:
   video: {speed: 1.1}
-  audio:
-    normalize: {level_db: -2}
+  audio: {normalize: {level_db: -2}}
 
 assets:
   video:
     lecture: {file: "lecture_camera.mkv"}
-    slides: {file: "screen_capture.mkv"}
+    screen:  {file: "screen_capture.mkv"}
   audio:
     music: {file: "Graze.mp3"}
-  image:
-    watermark: {file: "vosslab.jpg"}
   cards:
     chapter_style:
       kind: chapter_card_style
       font_size: 96
       resolution: [1920, 1080]
-      audio: {file: "Graze.mp3", normalize: {level_db: -15}}
 
-tracks:
+playlists:
   video_base:
     kind: video
-    timeline:
-      - range:
-          src: lecture
-          in:  "00:00.0"
-          out: "00:30.0"
-          note: "Noise and settling in"
-
-      - insert:
-          chapter_card: {title: "Intro", duration: 2.0, style: chapter_style}
-        chapter: "Intro"
-
-      - range:
-          src: lecture
-          in:  "00:30.0"
-          out: "06:10.0"
-          chapter: "Intro"
-          subchapter: "Goals"
-
-      - insert:
-          chapter_card: {title: "Problem 1", duration: 2.0, style: chapter_style}
-        chapter: "Problem 1"
-
-      - range:
-          src: lecture
+    playlist:
+      - source: {asset: lecture, in: "00:30.0", out: "06:10.0"}
+      - generator:
+          kind: chapter_card
+          title: "Problem 1"
+          duration: "00:02.0"
+          style: chapter_style
+          markers:
+            - {title: "Problem 1", level: 1, offset: "00:00.0"}
+      - source:
+          asset: lecture
           in:  "06:10.0"
           out: "18:40.0"
-          chapter: "Problem 1"
-          subchapter: "Setup"
           video: {speed: 1.15}
-
-      - range:
-          src: lecture
+      - source:
+          asset: lecture
           in:  "18:40.0"
           out: "19:20.0"
           video: {speed: 40}
-          audio:
-            mute: true
-            replace_with: music
-            normalize: {level_db: -15}
-          note: "Fast forward silent work"
 
-  video_overlay_slides:
+  video_slides:
     kind: video
-    timeline:
-      - range: {src: slides, in: "00:30.0", out: "19:20.0"}
+    playlist:
+      - blank: {duration: "00:30.0"}
+      - source: {asset: screen, in: "00:30.0", out: "19:20.0"}
 
-mix:
-  compositor: over
-  layers:
-    - track: video_overlay_slides
-      mode: pip
-      rect: [0.64, 0.06, 0.34, 0.34]
+  audio_main:
+    kind: audio
+    playlist:
+      - source: {asset: lecture, in: "00:30.0", out: "18:40.0"}
+      - source:
+          asset: music
+          in:  "00:00.0"
+          out: "00:40.0"
+          audio: {normalize: {level_db: -15}}
+
+stack:
+  tracks:
+    - {playlist: video_base, role: base}
+    - {playlist: video_slides, role: overlay}
+    - {playlist: audio_main, role: main}
+  overlays:
+    - a: video_base
+      b: video_slides
+      kind: over
+      in:  "00:30.0"
+      out: "19:20.0"
+      geometry: [0.64, 0.06, 0.34, 0.34]
       opacity: 1.0
 
 output:
   file: "Lecture_ProblemSet1.mkv"
   container: mkv
-
-exports:
-  youtube_chapters: {file: "chapters.txt"}
 ```
-
-## Versioning and forward compatibility
-
-- A file must declare `emwy: 2`.
-- Minor extensions should be additive.
-- Unknown keys should cause a warning by default and may be fatal in strict mode.
 
