@@ -14,7 +14,7 @@ This document lists the autonomous and human collaborators that interact with th
 2. Maintainer prioritizes work in [docs/ROADMAP.md](docs/ROADMAP.md) and assigns tasks.
 3. Codex Assistant implements the tasks, updating docs and code.
 4. Automation validates the work and posts the results to pull requests.
-See Python coding style in PYTHON_STYLE.md.
+See Python coding style in docs/PYTHON_STYLE.md.
 ## Coding Style
-See Markdown style in MARKDOWN_STYLE.md.
-When making edits, document them in CHANGELOG.md.
+See Markdown style in docs/MARKDOWN_STYLE.md.
+When making edits, document them in docs/CHANGELOG.md.

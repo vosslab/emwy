@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+<<<<<<< HEAD
 #ignore movie files
 *.mkv
 *.mp4
@@ -10,6 +11,10 @@ __pycache__/
 
 .DS_Store
 pyflakes.txt
+=======
+# macOS
+.DS_Store
+>>>>>>> 2cafafe (clean up md files)
 
 # C extensions
 *.so

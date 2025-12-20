@@ -133,10 +133,10 @@ Deeper documentation lives in the **docs/** directory:
 - **[docs/CHANGELOG.md](docs/CHANGELOG.md)**
   User-facing changes and format migration notes.
 
-- **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)**
+- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)**
   Developer setup, tests, and contribution guidelines.
 
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
+- **[docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md)**
   High-level code structure and module responsibilities.
 
 Optional planning and policy documents:
@@ -158,7 +158,7 @@ See **[docs/SHOTCUT.md](docs/SHOTCUT.md)** for details and limitations.
 
 ## Development
 
-- Follow **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** and **[PYTHON_STYLE.md](PYTHON_STYLE.md)** for coding conventions.
+- Follow **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** and **[docs/PYTHON_STYLE.md](docs/PYTHON_STYLE.md)** for coding conventions.
 - Use `pip install -r pip_requirements.txt` in a virtual environment to sync tooling.
 - Check **[AGENTS.md](AGENTS.md)** to understand who maintains each subsystem.
 - Review **[docs/CHANGELOG.md](docs/CHANGELOG.md)** before shipping user-facing changes.

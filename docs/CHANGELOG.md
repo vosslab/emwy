@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- Resolved AGENTS documentation links to use `docs/` paths.
+- Added `.DS_Store` to `.gitignore`.
+- Fixed documentation links to `docs/PYTHON_STYLE.md`.
+- Moved contributor guidance to `docs/DEVELOPMENT.md`.
+- Renamed `docs/ARCHITECTURE.md` to `docs/CODE_ARCHITECTURE.md`.
 - Added documentation scaffolding and agent descriptions.
 - Introduced pip requirements file for development tooling.
 - Documented installation, CLI usage, cookbook recipes, and troubleshooting tips.
