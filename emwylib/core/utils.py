@@ -20,6 +20,9 @@ def runCmd(cmd: str) -> None:
 
 #============================================
 
+
+#============================================
+
 def parse_fps(raw_fps) -> Fraction:
 	if raw_fps is None:
 		raise RuntimeError("profile.fps is required")

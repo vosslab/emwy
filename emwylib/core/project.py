@@ -8,9 +8,9 @@ from emwylib.core.timeline import TimelinePlanner
 
 class EmwyProject():
 	def __init__(self, yaml_file: str, output_override: str = None,
-		dry_run: bool = False):
+		dry_run: bool = False, keep_temp: bool = False, cache_dir: str = None):
 		loader = ProjectLoader(yaml_file, output_override=output_override,
-			dry_run=dry_run)
+			dry_run=dry_run, keep_temp=keep_temp, cache_dir=cache_dir)
 		self._project = loader.load()
 		self._timeline = TimelinePlanner(self._project)
 		self._timeline.apply_paired_audio()
@@ -39,3 +39,7 @@ class EmwyProject():
 			print("dry run: validation complete")
 			return
 		self._renderer.render()
+
+	#============================
+	def validate(self) -> None:
+		self._timeline.validate_timeline()

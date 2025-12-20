@@ -10,6 +10,9 @@ emwy [options] project.emwy.yaml
 ## Common Flags
 - `-o, --output FILE`: Override `output.file` from the YAML.
 - `-n, --dry-run`: Validate and exit without rendering.
+- `-c, --cache-dir PATH`: Directory for temporary render files.
+- `-k, --keep-temp`: Preserve intermediate files for inspection.
+- `-K, --no-keep-temp`: Remove intermediate files after rendering (default).
 
 ## MLT Export
 Use the exporter module to write MLT XML for inspection or melt rendering:
@@ -17,10 +20,6 @@ Use the exporter module to write MLT XML for inspection or melt rendering:
 ```bash
 python3 -m emwylib.exporters.mlt -y project.emwy.yaml -o project.mlt
 ```
-
-## Environment Variables
-- `EMWY_CACHE_DIR`: Overrides the temp directory for decoded clips.
-- `EMWY_KEEP_TEMP=1`: Preserve intermediate files for inspection.
 
 ## Exit Codes
 - `0`: Success.

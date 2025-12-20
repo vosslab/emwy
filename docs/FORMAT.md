@@ -7,26 +7,58 @@ Every project starts with `emwy: 2` to declare the schema version. Future releas
 
 ## Sections
 1. **profile**: Declares fps, resolution, color space hints, and audio defaults (sample rate, channel layout).
-2. **assets**: A typed registry of media items (`video`, `audio`, `image`). Each asset object lists a `file` path plus optional metadata such as `speed_map` or `color_space`.
-3. **playlists**: Named playlists referencing assets. Each entry describes `kind`, `playlist` items with `source.asset`, optional `in`/`out`, and optional filters (speed, gain, overlays).
-4. **stack**: Orders playlists onto virtual tracks. A track entry contains `{playlist: name, role: base|main|overlay, transitions: []}`.
-5. **output**: Specifies the muxed file, container hints, preview settings, and export toggles (`save_mlt`, `dry_run`).
+2. **assets**: A typed registry of media items (`video`, `audio`, `image`, `cards`). Each asset object lists a `file` path plus optional metadata.
+3. **timeline**: Ordered list of segments. Each segment is an A/V/S unit with `source`, `blank`, or `generator` entries and optional per-segment `video`/`audio` processing.
+4. **output**: Specifies the muxed file, container hints, preview settings, and export toggles (`save_mlt`, `dry_run`).
+5. **compiled** (advanced): Optional compiled playlists/stack for export/debugging.
+
+Notes:
+- `timeline.segments` is required for all v2 authoring.
+- Top-level `playlists` and `stack` are compiled-only details and must not appear in v2 YAML.
 
 ## Current v2 Support Notes
-- Base video + main audio stack rendering is supported.
-- `source`, `blank`, and basic `generator` entries are supported.
+- `source`, `blank`, and basic `generator` segments are supported.
 - Frame override suffixes (`@frame`) are defined in the v2 spec but not yet implemented.
-- `paired_audio` is supported when the target audio playlist is in lockstep with the generator position.
-- Overlays, transitions, and stream mapping are defined in the v2 spec but not yet implemented.
+- Overlays, transitions, and advanced stream mapping are defined in the v2 spec but not yet implemented.
+
+## Assets
+- Assets under `assets.video` are assumed to be A/V by default (common camera recordings).
+- Do not duplicate A/V files under `assets.audio`.
+- For audio-only or video-only assets, use `fill_missing` on the segment.
+
+Example (A/V source):
+
+```yaml
+assets:
+  video:
+    source: {file: "lecture_camera.mkv"}
+timeline:
+  segments:
+    - source: {asset: source, in: "00:00.0", out: "00:30.0"}
+```
+
+Example (audio-only):
+
+```yaml
+assets:
+  audio:
+    music: {file: "intro.mp3"}
+timeline:
+  segments:
+    - source:
+        asset: music
+        in: "00:00.0"
+        out: "00:12.0"
+        fill_missing: {video: black}
+```
 
 ## Timecodes
 - Accept `HH:MM:SS.sss`, `MM:SS.sss`, or frame counts with `@frame` suffix.
 - All times must include leading zeros to avoid ambiguity (`00:03.0`).
-- For loops or jumps, playlists may specify `repeat: n` or `markers: []`.
 
 ## Validation Rules
-- Assets must be referenced by at least one playlist or `emwy` warns.
-- Track roles must include one `base` video and one `main` audio.
+- Assets must be referenced by at least one segment or `emwy` warns.
+- Missing required streams in a segment are errors unless `fill_missing` is set.
 - Output file extension determines the container unless overridden.
 
 For migration tips from v1, see [COOKBOOK.md](COOKBOOK.md). When in doubt, open the generated MLT XML to verify structure before running a full render.

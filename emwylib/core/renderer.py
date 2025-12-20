@@ -14,34 +14,38 @@ class Renderer():
 
 	#============================
 	def render(self) -> None:
-		video_track = self._render_video_playlist(self.project.stack['base_video'])
-		audio_track = self._render_audio_playlist(self.project.stack['main_audio'])
-		self._mux_output(video_track, audio_track, self.project.output['file'])
+		segment_track = self._render_segment_playlist(
+			self.project.stack['base_video'],
+			self.project.stack['main_audio']
+		)
+		self._finalize_output(segment_track, self.project.output['file'])
 		if not self.project.keep_temp:
-			self._cleanup_temp([video_track, audio_track])
+			self._cleanup_temp([segment_track])
 
 	#============================
-	def _render_video_playlist(self, playlist_id: str) -> str:
-		playlist = self.project.playlists[playlist_id]
+	def _render_segment_playlist(self, video_playlist_id: str,
+		audio_playlist_id: str) -> str:
+		video_playlist = self.project.playlists[video_playlist_id]
+		audio_playlist = self.project.playlists[audio_playlist_id]
+		video_entries = video_playlist.get('entries', [])
+		audio_entries = audio_playlist.get('entries', [])
+		if len(video_entries) != len(audio_entries):
+			raise RuntimeError("video and audio segment counts do not match")
 		segment_files = []
-		for index, entry in enumerate(playlist['entries'], start=1):
-			segment_file = self._render_video_entry(entry, index)
+		for index, (video_entry, audio_entry) in enumerate(
+			zip(video_entries, audio_entries), start=1
+		):
+			if video_entry['duration_frames'] != audio_entry['duration_frames']:
+				raise RuntimeError("video and audio segment durations do not match")
+			video_file = self._render_video_entry(video_entry, index)
+			audio_file = self._render_audio_entry(audio_entry, index)
+			segment_file = self._make_temp_path(f"segment-{index:03d}.mkv")
+			self._mux_segment(video_file, audio_file, segment_file)
+			if not self.project.keep_temp:
+				self._cleanup_temp([video_file, audio_file])
 			segment_files.append(segment_file)
-		output_file = self._make_temp_path(f"video-track-{playlist_id}.mkv")
+		output_file = self._make_temp_path(f"segment-track-{video_playlist_id}.mkv")
 		self._concatenate_video(segment_files, output_file)
-		if not self.project.keep_temp:
-			self._cleanup_temp(segment_files)
-		return output_file
-
-	#============================
-	def _render_audio_playlist(self, playlist_id: str) -> str:
-		playlist = self.project.playlists[playlist_id]
-		segment_files = []
-		for index, entry in enumerate(playlist['entries'], start=1):
-			segment_file = self._render_audio_entry(entry, index)
-			segment_files.append(segment_file)
-		output_file = self._make_temp_path(f"audio-track-{playlist_id}.wav")
-		self._concatenate_audio(segment_files, output_file)
 		if not self.project.keep_temp:
 			self._cleanup_temp(segment_files)
 		return output_file
@@ -250,28 +254,35 @@ class Renderer():
 		utils.ensure_file_exists(output_file)
 
 	#============================
-	def _concatenate_audio(self, segment_files: list, output_file: str) -> None:
-		if len(segment_files) == 0:
-			raise RuntimeError("no audio segments to concatenate")
-		if len(segment_files) == 1:
-			shutil.copy(segment_files[0], output_file)
-			return
-		cmd = "sox "
-		for segment in segment_files:
-			cmd += f" {segment} "
-		cmd += f" {output_file} "
+	def _mux_segment(self, video_file: str, audio_file: str, output_file: str) -> None:
+		cmd = f"mkvmerge -A -S {video_file} -D -S {audio_file} -o {output_file}"
 		utils.runCmd(cmd)
 		utils.ensure_file_exists(output_file)
 
 	#============================
-	def _mux_output(self, video_file: str, audio_file: str, output_file: str) -> None:
-		encoded_audio = self._encode_audio_if_needed(audio_file)
-		cmd = f"mkvmerge -A -S {video_file} -D -S {encoded_audio} -o {output_file}"
+	def _finalize_output(self, segment_track: str, output_file: str) -> None:
+		audio_codec = self.project.output.get('audio_codec', 'pcm_s16le')
+		if audio_codec in ('pcm_s16le', 'wav', 'pcm', 'copy'):
+			if segment_track != output_file:
+				shutil.move(segment_track, output_file)
+			utils.ensure_file_exists(output_file)
+			print(f"mpv {output_file}")
+			return
+		encoded_file = self._make_temp_path("output-encoded.mkv")
+		cmd = "ffmpeg -y "
+		cmd += f" -i '{segment_track}' "
+		cmd += " -codec:v copy "
+		cmd += f" -codec:a {audio_codec} "
+		cmd += f" -ar {self.project.profile['sample_rate']} "
+		cmd += f" -ac {self.project.profile['channels']} "
+		cmd += f" '{encoded_file}' "
 		utils.runCmd(cmd)
+		utils.ensure_file_exists(encoded_file)
+		shutil.move(encoded_file, output_file)
 		utils.ensure_file_exists(output_file)
 		print(f"mpv {output_file}")
-		if not self.project.keep_temp and encoded_audio != audio_file:
-			os.remove(encoded_audio)
+		if not self.project.keep_temp and segment_track != output_file:
+			os.remove(segment_track)
 
 	#============================
 	def _cleanup_temp(self, temp_files: list) -> None:
@@ -286,19 +297,3 @@ class Renderer():
 		return os.path.join(self.project.cache_dir, f"{tag}-{filename}")
 
 	#============================
-	def _encode_audio_if_needed(self, audio_file: str) -> str:
-		audio_codec = self.project.output.get('audio_codec', 'pcm_s16le')
-		if audio_codec in ('pcm_s16le', 'wav', 'pcm'):
-			return audio_file
-		if audio_codec == 'copy':
-			return audio_file
-		encoded_file = self._make_temp_path("audio-encoded.mka")
-		cmd = "ffmpeg -y "
-		cmd += f" -i '{audio_file}' "
-		cmd += f" -acodec {audio_codec} "
-		cmd += f" -ar {self.project.profile['sample_rate']} -ac {self.project.profile['channels']} "
-		cmd += " -f matroska "
-		cmd += f" '{encoded_file}' "
-		utils.runCmd(cmd)
-		utils.ensure_file_exists(encoded_file)
-		return encoded_file

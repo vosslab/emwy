@@ -81,7 +81,7 @@ class MltExporter():
 
 	#============================
 	def _get_track_list(self) -> list:
-		stack = self.project.data.get('stack', {})
+		stack = self.project.stack if self.project.stack is not None else {}
 		tracks = stack.get('tracks', [])
 		if not isinstance(tracks, list) or len(tracks) == 0:
 			raise RuntimeError("stack.tracks is required for MLT export")

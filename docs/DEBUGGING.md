@@ -13,7 +13,7 @@
 
 ## Troubleshooting Steps
 1. Re-render a small subsection by trimming playlists to narrow the problem.
-2. Set `EMWY_KEEP_TEMP=1` to keep intermediate audio/video for inspection.
+2. Use `--keep-temp` to keep intermediate audio/video for inspection.
 3. Compare the timestamps in the YAML vs. MediaInfo to catch timecode typos.
 4. Run `pyflakes` and unit tests to make sure helper scripts are clean.
 

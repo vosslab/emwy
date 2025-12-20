@@ -129,6 +129,9 @@ Deeper documentation lives in the **docs/** directory:
 - **[docs/CLI.md](docs/CLI.md)**
   Command-line options, validation, dry runs, and logging.
 
+- **[docs/TOOLS.md](docs/TOOLS.md)**
+  Helper scripts in `tools/` and how to use them.
+
 - **[docs/SHOTCUT.md](docs/SHOTCUT.md)**
   Shotcut-compatible export mode and round-tripping notes.
 

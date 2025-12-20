@@ -12,23 +12,35 @@ This document defines a hand-editable YAML format for building one finished movi
 
 ## Core mental model
 
-A project is a **stack of tracks**.
+A project is one **timeline** with an ordered list of **segments**.
 
-- A **track** is a **playlist**.
-- A playlist is an ordered list of **playlist entries**.
-- Playlist entries occupy time and can be source excerpts, generated cards, or blanks.
-- The final output is the stack rendered from bottom to top for video, and mixed for audio.
+- Each segment is an A/V/S unit: video, audio, and subtitles (if present and not dropped).
+- Segments occupy time and can be source excerpts, generated cards, or blanks.
+- The authoring surface is the segment list. Playlists and track stacks are compiled details.
 
-This matches common NLE thinking, maps cleanly to OTIO thinking, and compiles directly to MLT (playlist, multitrack, tractor, transitions, filters, consumer).
+This matches how people think about edits and still compiles deterministically to MLT
+(playlist, multitrack, tractor, transitions, filters, consumer) for export.
+
+### Segment stream expectations
+
+By default, a segment expects the referenced asset to include audio and video.
+
+- If the asset is missing a required stream, emwy must fail unless the segment explicitly
+  opts into fill behavior (see `fill_missing`).
+- Subtitles are kept by default when present, with per-segment opt-out.
+
+Assets in `assets.video` are assumed to be A/V by default (common camera recordings).
+You should not duplicate them under `assets.audio`.
 
 ## Glossary and MLT crosswalk
 
 Author-facing term to MLT term mapping:
 
 - **asset**: producer definition (MLT producer)
-- **playlist**: track playlist (MLT playlist)
-- **playlist entry**: an item inside a playlist (MLT playlist entry)
-- **stack**: multitrack inside the root timeline object (MLT multitrack inside a tractor)
+- **segment**: a compiled A/V/S unit (maps to one or more MLT playlist entries)
+- **timeline**: ordered segment list (compiles to MLT playlists and a multitrack)
+- **playlist**: compiled track playlist (MLT playlist)
+- **stack**: compiled multitrack inside the root timeline object (MLT multitrack inside a tractor)
 - **overlay**: compositing transition between tracks (MLT transition on the tractor)
 - **output**: render target (MLT consumer, commonly avformat)
 
@@ -41,8 +53,7 @@ Required keys:
 - `emwy`: must be `2`
 - `profile`: output profile (fps, resolution, audio rate)
 - `assets`: named media and generated templates
-- `playlists`: track playlists with entries
-- `stack`: how playlists are arranged and composited
+- `timeline`: ordered segment list (authoring surface)
 - `output`: output file and delivery encoding settings
 
 Optional keys:
@@ -51,6 +62,13 @@ Optional keys:
 - `filters`: global filters applied after compositing
 - `transitions`: explicit transitions (advanced)
 - `exports`: sidecar outputs (YouTube chapters, OTIO, MLT XML)
+- `compiled`: advanced/diagnostic compiled model (playlists, stack)
+
+Notes:
+
+- `timeline.segments` is required for all v2 authoring.
+- Top-level `playlists` and `stack` are compiled-only details and must not appear
+  in v2 YAML.
 
 ## Profile
 
@@ -112,7 +130,7 @@ Assets define reusable producer definitions. During compilation, emwy may create
 Author-facing impact:
 
 - Assets stay reusable and stable.
-- Entry-scoped processing stays local to the playlist entry.
+- Entry-scoped processing stays local to the segment.
 
 ```yaml
 assets:
@@ -130,31 +148,25 @@ assets:
       resolution: [1920, 1080]
 ```
 
-## Playlists and playlist entries
+## Timeline and segments
 
-`playlists` is a mapping from playlist id to a playlist definition.
-
-A playlist has:
-
-- `kind`: `video` or `audio`
-- `playlist`: an ordered list of playlist entries
+`timeline` is the authoring surface. It is an ordered list of segments that always
+represent audio, video, and subtitles (when present and not dropped).
 
 ```yaml
-playlists:
-  video_base:
-    kind: video
-    playlist:
-      - source: {asset: lecture, in: "00:30.0", out: "06:10.0", title: "Intro"}
+timeline:
+  segments:
+    - source: {asset: lecture, in: "00:30.0", out: "06:10.0", title: "Intro"}
 ```
 
-### Playlist entry types
+### Segment entry types
 
-A playlist entry is a mapping with exactly one of these keys:
+A segment entry is a mapping with exactly one of these keys:
 
 - `source`: excerpt from an asset
-- `blank`: time advances with no media (black for video, silence for audio)
+- `blank`: time advances with no media (black video + silence audio)
 - `generator`: generated media (chapter cards, title cards, black, silence, still)
-- `nested`: a nested stack treated as one entry (advanced, maps to a nested tractor)
+- `nested`: a nested timeline treated as one entry (advanced)
 
 #### Source entry
 
@@ -169,6 +181,8 @@ A playlist entry is a mapping with exactly one of these keys:
     out: "06:10.0"
     video: {speed: 1.1}
     audio: {normalize: {level_db: -2}}
+    subtitles: keep
+    fill_missing: {video: black, audio: silence}
     markers:
       - {title: "Goals", level: 2, offset: "00:10.0"}
 ```
@@ -183,21 +197,70 @@ Fields:
 - `asset`: required asset id
 - `in`, `out`: required time strings
 - `video`, `audio`: optional processing intent
+- `subtitles`: optional selector, `keep` (default) or `drop`
+- `fill_missing`: optional fill behavior for missing streams. If `true`, it implies
+  `{video: black, audio: silence}`. If a mapping, allowed keys are `video` and
+  `audio` with values `black` or `silence` respectively.
 - `streams`: optional stream mapping (see Streams)
 - `filters`: optional per-entry filters
 - `markers`: optional marker list relative to the start of this entry
 
-#### Blank entry
+Missing streams on a source asset are errors unless `fill_missing` is provided.
 
-Use blanks to align audio-only or video-only edits, and to align overlays.
+Examples:
 
-For video playlists, blanks can be either black (base track behavior) or transparent (overlay track behavior). Transparent blanks are important so an overlay track does not accidentally cover the base with black.
+Single A/V asset (no duplicate audio asset):
 
 ```yaml
-- blank: {duration: "00:02.0"}                 # defaults depend on playlist role
-- blank: {duration: "00:02.0", fill: black}    # video
-- blank: {duration: "00:02.0", fill: transparent}  # video overlays
-- blank: {duration: "00:02.0"}                 # audio blanks are silence
+assets:
+  video:
+    lecture: {file: "lecture_camera.mkv"}
+
+timeline:
+  segments:
+    - source: {asset: lecture, in: "00:00.0", out: "00:30.0"}
+```
+
+Audio-only asset with explicit video fill:
+
+```yaml
+assets:
+  audio:
+    music: {file: "intro.mp3"}
+
+timeline:
+  segments:
+    - source:
+        asset: music
+        in: "00:00.0"
+        out: "00:12.0"
+        fill_missing: {video: black}
+```
+
+Video-only asset with explicit audio fill:
+
+```yaml
+assets:
+  video:
+    broll: {file: "broll_no_audio.mp4"}
+
+timeline:
+  segments:
+    - source:
+        asset: broll
+        in: "00:00.0"
+        out: "00:08.0"
+        fill_missing: {audio: silence}
+```
+
+#### Blank entry
+
+Blank segments advance time with no media.
+
+```yaml
+- blank: {duration: "00:02.0"}                 # black video + silence audio
+- blank: {duration: "00:02.0", fill: black}    # explicit black fill
+- blank: {duration: "00:02.0", fill: transparent}  # for advanced overlays
 ```
 
 #### Generator entry
@@ -229,43 +292,25 @@ Notes:
       - {title: "Problem 1", level: 1, offset: "00:00.0"}
 ```
 
-Audio for generator entries is controlled by placement:
+Generator kinds produce their natural streams (video for cards/black/still, audio
+for silence). Use `fill_missing` to explicitly fill the missing stream when needed.
 
-- Put the generator on a video playlist, and place a matching blank or music entry on an audio playlist.
-- If you want a generator to carry audio, also place a generator or source entry on the audio playlist for the same duration.
+## Compiled model (advanced)
 
-Convenience: generator paired audio (optional sugar)
-
-For fast lecture authoring, a generator entry may include a `paired_audio` block. If present, emwy expands it at compile time into a matching audio playlist entry of the same duration.
-
-This feature is optional and must be explicit.
+`playlists` and `stack` are internal compiled details that emwy may emit for export
+targets like MLT. They are not part of the authoring surface for v2.
 
 ```yaml
-- generator:
-    kind: chapter_card
-    title: "Intro"
-    duration: "00:02.0"
-    style: chapter_style
-    paired_audio:
-      target_playlist: audio_main
-      source: {asset: music, in: "00:00.0"}
-      audio: {normalize: {level_db: -15}}
-```
-
-Compilation rule:
-
-- The paired audio entry duration matches the generator duration.
-- If `target_playlist` is omitted, emwy may use a configured default audio playlist (if defined). Otherwise compilation must fail with a clear error.
-
-## Stack
-
-`stack` defines how playlists are arranged and composited into one output.
-
-```yaml
-stack:
-  tracks:
-    - {playlist: video_base, role: base}
-    - {playlist: audio_main, role: main}
+compiled:
+  playlists:
+    video_base:
+      kind: video
+      playlist:
+        - source: {asset: lecture, in: "00:30.0", out: "06:10.0"}
+  stack:
+    tracks:
+      - {playlist: video_base, role: base}
+      - {playlist: audio_main, role: main}
 ```
 
 Common roles:
@@ -273,19 +318,20 @@ Common roles:
 - video: `base`, `overlay`
 - audio: `main`, `commentary`, `music`
 
-The final output video is a single composed video stream. Additional video playlists must resolve into that single output by compositing transitions.
-
 ## Streams and subtitles
 
-Default behavior is to preserve all streams from a source asset when possible, including multiple audio tracks and subtitles.
+Default behavior is to preserve all streams from a source asset when possible,
+including multiple audio tracks and subtitles. Subtitles are kept by default; a
+segment may opt out with `subtitles: drop` or `streams: {subtitles: drop}`.
 
-When switching source assets within the same playlist, stream compatibility must be defined.
+When switching source assets within the same timeline, stream compatibility must
+be defined.
 
 Compatibility requirements (default):
 
 - same number of selected audio streams
 - compatible channel layouts per selected stream, or explicit remap
-- subtitle handling consistent with the playlist kind and output container
+- subtitle handling consistent with the output container
 
 Explicit mapping is provided via `streams` on a source entry.
 
@@ -347,30 +393,31 @@ Implementation:
 
 - Compile to an MLT-style overlap and playlist-level transition using compiled frame counts.
 
-### Stack compositing transitions between tracks
+### Stack compositing transitions between tracks (advanced)
 
-These are transitions that define how an overlay track is composited onto a base track, including picture-in-picture.
-
-Convenience form (recommended): define overlays on the stack.
+These are transitions that define how an overlay track is composited onto a base track,
+including picture-in-picture. They are layered on top of the primary segment list and
+live in the compiled model.
 
 ```yaml
-stack:
-  tracks:
-    - {playlist: video_base, role: base}
-    - {playlist: video_slides, role: overlay}
-  overlays:
-    - a: video_base
-      b: video_slides
-      kind: over
-      in:  "00:30.0"
-      out: "19:20.0"
-      geometry: [0.64, 0.06, 0.34, 0.34]   # normalized x, y, w, h
-      opacity: 1.0
+compiled:
+  stack:
+    tracks:
+      - {playlist: video_base, role: base}
+      - {playlist: video_slides, role: overlay}
+    overlays:
+      - a: video_base
+        b: video_slides
+        kind: over
+        in:  "00:30.0"
+        out: "19:20.0"
+        geometry: [0.64, 0.06, 0.34, 0.34]   # normalized x, y, w, h
+        opacity: 1.0
 ```
 
 Validation:
 
-- overlays must reference playlists that are present in `stack.tracks`.
+- overlays must reference playlists that are present in `compiled.stack.tracks`.
 
 Implementation:
 
@@ -396,13 +443,15 @@ If an overlay playlist uses `fill: black`, that black is treated as real pixels 
 
 ### v1 parity notes
 
-v1 included several audio processing steps and conveniences (normalize, highpass/lowpass, avsync-style delay, optional noise reduction). In v2 these should be expressed as named filters at playlist entry, playlist, or stack scope.
+v1 included several audio processing steps and conveniences (normalize, highpass/lowpass,
+avsync-style delay, optional noise reduction). In v2 these should be expressed as named
+filters at segment, timeline, or compiled stack scope.
 
 Filters may be attached at:
 
-- playlist entry scope: filters on a playlist entry apply only to that entry
-- playlist scope: filters on a playlist apply to every entry in that playlist
-- stack scope: filters applied after compositing
+- segment scope: filters on a segment apply only to that segment
+- timeline scope: filters on the timeline apply to every segment
+- compiled stack scope: filters applied after compositing
 
 Filter schema:
 
@@ -414,7 +463,8 @@ filters:
 
 Keyframes:
 
-Any numeric parameter may accept keyframes. Keyframe time `t` is relative to the start of the entry unless otherwise specified.
+Any numeric parameter may accept keyframes. Keyframe time `t` is relative to the start
+of the segment unless otherwise specified.
 
 ```yaml
 params:
@@ -427,11 +477,11 @@ params:
 
 ### MKV chapters from titles
 
-Playlist entry `title` values are treated as chapters by default.
+Segment `title` values are treated as chapters by default.
 
 Rules:
 
-- If a playlist entry has `title` and `enabled: true`, emwy creates a chapter at the start of that entry in output timeline time.
+- If a segment has `title` and `enabled: true`, emwy creates a chapter at the start of that entry in output timeline time.
 - If `enabled: false`, the entry is ignored for rendering and does not create a chapter.
 - Chapters are emitted into MKV output when the output container supports it. If the muxing tool requires it, emwy may generate an intermediate chapters file, but authors do not need to configure an export section for this behavior.
 - To label an entry without creating a chapter, set `chapter: false` on that entry.
@@ -566,7 +616,7 @@ Suggested subset export:
 Suggested subset import:
 
 - OTIO clips and gaps import as playlist entries
-- OTIO markers import as playlist entry markers
+- OTIO markers import as segment markers
 
 ## Validation
 
@@ -595,7 +645,7 @@ Comparison should include:
 
 This test should use fractional fps such as 30000/1001 and include transitions and overlays.
 
-## Complete example: lecture with chapters, speed, cards, and PiP
+## Complete example: lecture with chapters, speed, and cards
 
 ```yaml
 emwy: 2
@@ -612,71 +662,35 @@ defaults:
 assets:
   video:
     lecture: {file: "lecture_camera.mkv"}
-    screen:  {file: "screen_capture.mkv"}
-  audio:
-    music: {file: "Graze.mp3"}
   cards:
     chapter_style:
       kind: chapter_card_style
       font_size: 96
       resolution: [1920, 1080]
 
-playlists:
-  video_base:
-    kind: video
-    playlist:
-      - source: {asset: lecture, in: "00:30.0", out: "06:10.0", title: "Intro"}
-      - generator:
-          kind: chapter_card
-          title: "Problem 1"
-          duration: "00:02.0"
-          style: chapter_style
-          markers:
-            - {title: "Problem 1", level: 1, offset: "00:00.0"}
-      - source:
-          asset: lecture
-          in:  "06:10.0"
-          out: "18:40.0"
-          video: {speed: 1.15}
-      - source:
-          asset: lecture
-          in:  "18:40.0"
-          out: "19:20.0"
-          video: {speed: 40}
-
-  video_slides:
-    kind: video
-    playlist:
-      - blank: {duration: "00:30.0"}
-      - source: {asset: screen, in: "00:30.0", out: "19:20.0"}
-
-  audio_main:
-    kind: audio
-    playlist:
-      - source: {asset: lecture, in: "00:30.0", out: "18:40.0"}
-      - source:
-          asset: music
-          in:  "00:00.0"
-          out: "00:40.0"
-          audio: {normalize: {level_db: -15}}
-
-stack:
-  tracks:
-    - {playlist: video_base, role: base}
-    - {playlist: video_slides, role: overlay}
-    - {playlist: audio_main, role: main}
-  overlays:
-    - a: video_base
-      b: video_slides
-      kind: over
-      in:  "00:30.0"
-      out: "19:20.0"
-      geometry: [0.64, 0.06, 0.34, 0.34]
-      opacity: 1.0
+timeline:
+  segments:
+    - source: {asset: lecture, in: "00:30.0", out: "06:10.0", title: "Intro"}
+    - generator:
+        kind: chapter_card
+        title: "Problem 1"
+        duration: "00:02.0"
+        style: chapter_style
+        fill_missing: {audio: silence}
+        markers:
+          - {title: "Problem 1", level: 1, offset: "00:00.0"}
+    - source:
+        asset: lecture
+        in:  "06:10.0"
+        out: "18:40.0"
+        video: {speed: 1.15}
+    - source:
+        asset: lecture
+        in:  "18:40.0"
+        out: "19:20.0"
+        video: {speed: 40}
 
 output:
   file: "Lecture_ProblemSet1.mkv"
   container: mkv
 ```
-
-
