@@ -3,6 +3,14 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+#ignore movie files
+*.mkv
+*.mp4
+*.avi
+
+.DS_Store
+pyflakes.txt
+
 # C extensions
 *.so
 

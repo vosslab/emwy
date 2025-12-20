@@ -55,7 +55,7 @@ class EmwyYamlWriterTest(unittest.TestCase):
 		self.assertNotIn("stack:", yaml_text)
 		self.assertIn("assets:", yaml_text)
 		self.assertIn("video:", yaml_text)
-		self.assertNotIn("  audio:", yaml_text)
+		self.assertNotIn("assets:\n  audio:", yaml_text)
 		self.assertIn("asset: source", yaml_text)
 		self.assertEqual(yaml_text.count("video: {speed"), 1)
 		self.assertEqual(yaml_text.count("audio: {speed"), 1)

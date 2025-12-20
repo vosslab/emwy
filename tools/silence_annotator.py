@@ -21,7 +21,6 @@ import wave
 
 # PIP3 modules
 import numpy
-import matplotlib.pyplot
 
 # local repo modules
 import emwy_yaml_writer
@@ -942,8 +941,12 @@ def write_debug_plot(output_file: str, frame_db: numpy.ndarray,
 	"""
 	if frame_db.size == 0:
 		return
+	try:
+		import matplotlib.pyplot as pyplot
+	except ImportError as exc:
+		raise RuntimeError("matplotlib is required for --debug plots") from exc
 	times = numpy.arange(frame_db.size) * hop_seconds + (frame_seconds * 0.5)
-	plotter = matplotlib.pyplot
+	plotter = pyplot
 	plotter.figure(figsize=(12, 4))
 	plotter.plot(times, frame_db, linewidth=0.6, alpha=0.4, label="raw")
 	if smooth_db is not None and smooth_db.size == frame_db.size:

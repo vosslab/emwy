@@ -31,7 +31,7 @@ Common flags:
 - `-d, --debug` Enable verbose debug output and write `<input>.silence.debug.txt` and `.png`
 - `-u, --auto-threshold` Auto-raise threshold until silence is detected
 
-Dependencies: `ffmpeg`, `ffprobe`, `numpy`, `matplotlib`
+Dependencies: `ffmpeg`, `ffprobe`, `numpy`. `matplotlib` is required for `--debug` plots.
 
 ## video_scruncher.py
 
