@@ -4,18 +4,18 @@ This document describes the current emwy code layout and where new features belo
 
 ## High-Level Flow
 1. **Load**: YAML is parsed into a normalized project model.
-2. **Plan**: Timeline planning expands conveniences such as paired audio.
-3. **Render**: The renderer runs ffmpeg/sox and produces the final output.
-4. **Export**: Optional exporters (MLT, future OTIO) read the project model.
+2. **Compile**: Timeline segments are expanded into a renderable plan and compiled playlists for exporters.
+3. **Render**: The renderer runs ffmpeg/sox per segment, muxes A/V, and concatenates the results.
+4. **Export**: Optional exporters (MLT, future OTIO) read the compiled model.
 
-MLT XML is treated as the canonical compiled form, even when rendering natively.
+MLT XML is an optional export format, not the canonical render path.
 
 ## Core Modules
 - `emwylib/core/loader.py`
   - Parses YAML v2 and builds a `ProjectData` instance.
-  - Handles defaults, playlist entry parsing, and basic validation.
+  - Handles defaults, timeline segment parsing, and basic validation.
 - `emwylib/core/timeline.py`
-  - Timeline planner that expands paired audio and checks track alignment.
+  - Timeline compiler that expands segments into compiled playlists/stack.
 - `emwylib/core/renderer.py`
   - Executes the render plan using ffmpeg/sox and muxes the final output.
 - `emwylib/core/project.py`
@@ -33,7 +33,7 @@ MLT XML is treated as the canonical compiled form, even when rendering natively.
 
 ## Where to Add New Features
 - **New YAML fields**: update `emwylib/core/loader.py` first.
-- **Timeline behavior** (paired audio, transitions, overlays): update `emwylib/core/timeline.py`.
+- **Timeline behavior** (segment compilation, overlays, transitions): update `emwylib/core/timeline.py`.
 - **Rendering changes** (filters, codecs, mux rules): update `emwylib/core/renderer.py`.
 - **Interchange formats** (OTIO, Shotcut): add under `emwylib/exporters/` or future `emwylib/importers/`.
 

@@ -2,7 +2,7 @@
 
 **emwy** is a command-line video editor for turning long, raw recordings into clean, watchable videos using a simple YAML project file. It is designed for lecture capture, problem-solving videos, and other educational or technical recordings where speed, repeatability, and precision matter.
 
-Internally, emwy compiles your project into **MLT XML** and renders it using **melt**, with FFmpeg handling encoding and muxing.
+Internally, emwy compiles timeline segments into a render plan, renders A/V segments with FFmpeg/SoX, and concatenates them with mkvmerge. MLT export is optional for interoperability.
 
 emwy is pronounced as one syllable, like a child trying to say "Emily" but replacing the "L" sound with a "W": *em-wee*.
 
@@ -19,9 +19,10 @@ pip install emwy
 You need at least:
 
 - ffmpeg
-- mlt / melt
 - sox
+- mkvmerge (mkvtoolnix)
 - mediainfo
+- mlt / melt (optional, for MLT export)
 
 See **[docs/INSTALL.md](docs/INSTALL.md)** for full platform-specific instructions.
 
@@ -47,21 +48,9 @@ assets:
   video:
     lecture: {file: lecture.mp4}
 
-playlists:
-  video_base:
-    kind: video
-    playlist:
-      - source: {asset: lecture, in: "00:10.0", out: "05:00.0"}
-
-  audio_main:
-    kind: audio
-    playlist:
-      - source: {asset: lecture, in: "00:10.0", out: "05:00.0"}
-
-stack:
-  tracks:
-    - {playlist: video_base, role: base}
-    - {playlist: audio_main, role: main}
+timeline:
+  segments:
+    - source: {asset: lecture, in: "00:10.0", out: "05:00.0"}
 
 output:
   file: lecture_trimmed.mkv
@@ -104,14 +93,14 @@ The pipeline is intentionally simple:
    ->
 validated project graph
    ->
-generated MLT XML
+compiled render plan
    ->
-rendered by melt
+per-segment A/V renders
    ->
-encoded / muxed output
+concatenated output
 ```
 
-MLT XML can be saved and inspected, which makes emwy suitable for headless systems, servers, and CI pipelines.
+MLT XML can be exported and inspected, which makes emwy suitable for headless systems, servers, and CI pipelines.
 
 ## Documentation
 
@@ -160,7 +149,7 @@ Optional planning and policy documents:
 
 - OS: tested primarily on Linux
 - Python: 3.8+
-- Render engine: MLT / melt
+- Render engine: FFmpeg/SoX + mkvmerge (MLT optional for export)
 
 ### Shotcut
 
@@ -196,7 +185,8 @@ See **LICENSE**.
 
 emwy builds on excellent upstream tools:
 
-- MLT Multimedia Framework
 - FFmpeg
 - SoX
 - MediaInfo
+- mkvmerge (mkvtoolnix)
+- MLT Multimedia Framework (export)

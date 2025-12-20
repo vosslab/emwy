@@ -7,12 +7,13 @@
 
 ## Useful Commands
 - `emwy --dry-run project.yaml`: Run validators only.
+- `emwy --dump-plan project.yaml`: Print the compiled playlists for inspection.
 - `python3 -m emwylib.exporters.mlt -y project.emwy.yaml -o out.mlt`: Inspect the generated timeline.
-- `melt out.mlt`: Render directly with melt to isolate FFmpeg issues.
+- `melt out.mlt`: Render directly with melt to isolate FFmpeg issues (requires MLT).
 - `ffmpeg -i clip.mp4 -hide_banner`: Inspect codecs and durations.
 
 ## Troubleshooting Steps
-1. Re-render a small subsection by trimming playlists to narrow the problem.
+1. Re-render a small subsection by trimming `timeline.segments` to narrow the problem.
 2. Use `--keep-temp` to keep intermediate audio/video for inspection.
 3. Compare the timestamps in the YAML vs. MediaInfo to catch timecode typos.
 4. Run `pyflakes` and unit tests to make sure helper scripts are clean.

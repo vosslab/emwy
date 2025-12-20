@@ -61,4 +61,4 @@ timeline:
 - Missing required streams in a segment are errors unless `fill_missing` is set.
 - Output file extension determines the container unless overridden.
 
-For migration tips from v1, see [COOKBOOK.md](COOKBOOK.md). When in doubt, open the generated MLT XML to verify structure before running a full render.
+For migration tips from v1, see [COOKBOOK.md](COOKBOOK.md). When in doubt, export MLT XML to verify structure before running a full render.

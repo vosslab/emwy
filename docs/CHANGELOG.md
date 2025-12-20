@@ -8,6 +8,10 @@
 - Added MLT exporter module for v2 YAML projects.
 - Split media wrappers into `emwylib/media` for ffmpeg and sox helpers.
 - Added `paired_audio` expansion for generator entries when playlists are aligned.
+- Made `timeline.segments` the required authoring surface; playlists/stack are compiled-only.
+- Removed `take` support from v2 loader and timeline.
+- Updated rendering to process and mux A/V per segment before concatenation.
+- Added CLI flags for temp retention and cache directory (`--keep-temp`, `--cache-dir`).
 
 ## v1.0.0
 - Initial public release of emwy with YAML v2 parser and CLI.
