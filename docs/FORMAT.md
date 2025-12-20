@@ -52,6 +52,56 @@ timeline:
         fill_missing: {video: black}
 ```
 
+Example (chapter card with image background):
+
+```yaml
+assets:
+  image:
+    chapter_bg: {file: "chapter_bg.png"}
+  cards:
+    chapter_style:
+      kind: chapter_card_style
+      font_size: 96
+      font_file: "fonts/Inter-Bold.ttf"
+      text_color: "#ffffff"
+      background: {kind: image, asset: chapter_bg}
+timeline:
+  segments:
+    - generator:
+        kind: chapter_card
+        title: "Problem 1"
+        duration: "00:02.0"
+        style: chapter_style
+        fill_missing: {audio: silence}
+```
+
+Example (chapter card with gradient background):
+
+```yaml
+assets:
+  cards:
+    chapter_style:
+      kind: chapter_card_style
+      font_size: 96
+      font_file: "fonts/Inter-Bold.ttf"
+      text_color: "#ffffff"
+      background:
+        kind: gradient
+        from: "#101820"
+        to: "#2b5876"
+        direction: vertical
+timeline:
+  segments:
+    - generator:
+        kind: chapter_card
+        title: "Problem 2"
+        duration: "00:02.0"
+        style: chapter_style
+        fill_missing: {audio: silence}
+```
+
+Tip: set `font_file` for consistent sizing across machines.
+
 ## Timecodes
 - Accept `HH:MM:SS.sss`, `MM:SS.sss`, or frame counts with `@frame` suffix.
 - All times must include leading zeros to avoid ambiguity (`00:03.0`).

@@ -246,6 +246,15 @@ class ProjectLoader():
 		has_audio = gen_kind in audio_kinds
 		if not has_video and not has_audio:
 			raise RuntimeError(f"unsupported generator kind {gen_kind}")
+		if gen_kind in ('chapter_card', 'title_card'):
+			title_text = entry_data.get('title', entry_data.get('text', ''))
+			if title_text == '':
+				raise RuntimeError("chapter_card/title_card requires title or text")
+			style_id = entry_data.get('style')
+			if style_id is not None:
+				style = project.assets.get('cards', {}).get(style_id)
+				if style is None:
+					raise RuntimeError(f"card style {style_id} not found in assets.cards")
 		fill_missing = self._normalize_fill_missing(entry_data.get('fill_missing'))
 		duration = entry_data.get('duration')
 		if duration is None:

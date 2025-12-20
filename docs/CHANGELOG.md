@@ -12,6 +12,7 @@
 - Removed `take` support from v2 loader and timeline.
 - Updated rendering to process and mux A/V per segment before concatenation.
 - Added CLI flags for temp retention and cache directory (`--keep-temp`, `--cache-dir`).
+- Added title/chapter card backgrounds (image, color, gradient) with font overrides.
 
 ## v1.0.0
 - Initial public release of emwy with YAML v2 parser and CLI.

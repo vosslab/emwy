@@ -4,14 +4,16 @@
 #set of programs to create a title card video
 ###
 
-import re
-import sys
-import numpy
+import os
 import random
+import re
+import shutil
+import sys
+import tempfile
+import numpy
 import subprocess
 from tqdm import tqdm
 from PIL import Image
-from scipy import misc
 from PIL import ImageDraw
 from PIL import ImageFont
 from scipy.ndimage import filters
@@ -40,7 +42,7 @@ class TitleCard(object):
 		self.width = 1600
 		self.height = 900
 		self.crf = 28
-		self.fontfile = "/Users/vosslab/Library/Fonts/OpenDyslexic-Regular.ttf"
+		self.fontfile = None
 		self.bgcolor = (51, 153, 255)
 		self.textcolor = (142, 71, 0)
 		self.fnt = None
@@ -49,10 +51,11 @@ class TitleCard(object):
 		self.imgcode = "aaadahsdgg"
 		self.outfile = "titlecard.mkv"
 		self.randimg = None
+		self.temp_dir = None
 		
 	#===============================
 	def setType(self):
-		self.fnt = ImageFont.truetype(self.fontfile, self.size)
+		self.fnt = self._load_font()
 		textsize = self.fnt.getsize(self.text)
 		self.w = int(round(self.width/2.0 - textsize[0]/2.0))
 		self.h = int(round(self.height/2.0 - textsize[1]/2.0))
@@ -111,7 +114,7 @@ class TitleCard(object):
 			# Extract the pixels in the upper left quadrant
 			quadrant = base_pattern[:subimg_size, :subimg_size]
 			# Up-sample the quadrant to the original image size
-			upsampled_pattern = misc.imresize(quadrant, (self.height, self.width), interp='bicubic')
+			upsampled_pattern = self._resize_array(quadrant, self.width, self.height)
 			# Add the new noise pattern to the result
 			turbulence_pattern += upsampled_pattern / subimg_size
 		# Normalize values
@@ -127,6 +130,11 @@ class TitleCard(object):
 	def createCards(self):
 		if self.fnt is None:
 			self.setType()
+		temp_dir = self.temp_dir
+		owns_temp = False
+		if temp_dir is None:
+			temp_dir = tempfile.mkdtemp(prefix="emwy-titlecard-")
+			owns_temp = True
 		self.numimages = int(round(self.length * self.framerate))
 		bgcolor = self.bgcolor
 		textcolor = self.textcolor
@@ -151,14 +159,32 @@ class TitleCard(object):
 			rectcolor = self.alterColor(rectcolor, self.defaultshift)
 			d.rectangle([0, self.topband, self.width, self.bottomband], fill=rectcolor, outline='black')
 			d.text((w,h), self.text, font=self.fnt, fill=textcolor)
-			imgname = "%s%05d.png"%(self.imgcode, i)
+			imgname = os.path.join(temp_dir, "%s%05d.png"%(self.imgcode, i))
 			im.save(imgname, "PNG")
 			imglist.append(imgname)
 		sys.stderr.write("\n")
 		self.makeMovieFromImages(imglist)
-		cmd = "rm %s%s.png "%(self.imgcode, "*")
-		runCmd(cmd)
+		if owns_temp:
+			shutil.rmtree(temp_dir, ignore_errors=True)
 		print("done")
+		return
+
+	#===============================
+	def _load_font(self):
+		if self.fontfile is not None and os.path.exists(self.fontfile):
+			return ImageFont.truetype(self.fontfile, self.size)
+		try:
+			return ImageFont.truetype("DejaVuSans.ttf", self.size)
+		except OSError:
+			return ImageFont.load_default()
+
+	#===============================
+	def _resize_array(self, array: numpy.ndarray, width: int, height: int) -> numpy.ndarray:
+		"""Resize a 2D array to (width, height) using PIL."""
+		array_uint8 = numpy.clip(array, 0, 255).astype(numpy.uint8)
+		image = Image.fromarray(array_uint8, mode='L')
+		image = image.resize((width, height), resample=Image.BICUBIC)
+		return numpy.array(image, dtype=numpy.float64)
 
 #===============================
 #===============================

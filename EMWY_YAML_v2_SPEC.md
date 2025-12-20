@@ -141,11 +141,13 @@ assets:
     music:   {file: "Graze.mp3"}
   image:
     watermark: {file: "vosslab.jpg"}
+    chapter_bg: {file: "chapter_bg.png"}
   cards:
     chapter_style:
       kind: chapter_card_style
       font_size: 96
       resolution: [1920, 1080]
+      background: {kind: image, asset: chapter_bg}
 ```
 
 ## Timeline and segments
@@ -294,6 +296,28 @@ Notes:
 
 Generator kinds produce their natural streams (video for cards/black/still, audio
 for silence). Use `fill_missing` to explicitly fill the missing stream when needed.
+
+Card styles (`assets.cards`) can define default appearance for `chapter_card` and
+`title_card` generators. Supported fields:
+
+- `font_size`: integer font size
+- `font_file`: path to a TTF/OTF font file
+- `text_color`: color string like `#ffffff` or `rgb(255,255,255)`
+- `background`: mapping that selects a background kind
+
+Supported `background` mappings:
+
+- `kind: image` with `asset` id under `assets.image`
+- `kind: color` with `color` (default `#000000`)
+- `kind: gradient` with `from`, `to`, and `direction` (`vertical` or `horizontal`)
+
+Planned extensions for `background.kind` include `video` and `source_blur` (not yet implemented).
+
+Notes:
+
+- For consistent typography across machines, set `font_file`. If omitted, emwy
+  falls back to a bundled system font when available and otherwise uses Pillow's
+  default bitmap font (which renders small).
 
 ## Compiled model (advanced)
 

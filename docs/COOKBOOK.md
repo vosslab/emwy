@@ -15,6 +15,33 @@ This cookbook captures reusable patterns for common editing tasks.
 ## Add Title Cards
 - Use a `generator` segment with a fixed `duration`.
 - Use `fill_missing: {audio: silence}` if the card has no audio.
+- For image backgrounds, define a `cards` style with `background: {kind: image, asset: ...}`.
+- For solid backgrounds, use `background: {kind: color, color: "#101820"}`.
+- For gradients, use `background: {kind: gradient, from: "#101820", to: "#2b5876", direction: vertical}`.
+- Use `font_file` in the card style for consistent sizing across machines.
+
+Example:
+
+```yaml
+assets:
+  image:
+    chapter_bg: {file: "chapter_bg.png"}
+  cards:
+    chapter_style:
+      kind: chapter_card_style
+      font_size: 96
+      font_file: "fonts/Inter-Bold.ttf"
+      text_color: "#ffffff"
+      background: {kind: image, asset: chapter_bg}
+timeline:
+  segments:
+    - generator:
+        kind: chapter_card
+        title: "Problem 1"
+        duration: "00:02.0"
+        style: chapter_style
+        fill_missing: {audio: silence}
+```
 
 ## Picture-in-Picture
 Picture-in-picture requires overlays, which are not yet supported in the v2 authoring surface. Use the MLT export for advanced layering until overlays are implemented.
