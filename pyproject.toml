@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "emwy"
+dynamic = ["version"]
+description = "Edit Movies with YAML"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+keywords = ["video", "editor", "yaml", "mlt", "ffmpeg"]
+classifiers = [
+	"License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+	"Programming Language :: Python :: 3",
+	"Programming Language :: Python :: 3 :: Only",
+	"Topic :: Multimedia :: Video",
+]
+dependencies = [
+	"lxml",
+	"numpy",
+	"pillow",
+	"pyyaml",
+	"scipy",
+	"tqdm",
+]
+
+[project.optional-dependencies]
+debug = ["matplotlib"]
+
+[project.scripts]
+emwy = "emwy:main"
+
+[tool.setuptools]
+py-modules = ["emwy"]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "emwylib.version.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["emwylib*"]

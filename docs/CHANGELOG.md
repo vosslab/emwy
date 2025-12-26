@@ -8,7 +8,17 @@
 - Fixed pyflakes runner to avoid null-separated sort errors.
 - Documented MLT interop mapping and added export test coverage.
 - Added silence annotator config file support and simplified CLI flags.
+- Polished silence annotator config validation and defaults handling.
 - Added MLT import/export specification docs.
+- Added `pyproject.toml` and `MANIFEST.in` for packaging metadata.
+- Added centralized version file and release history doc.
+- Expanded pyflakes runner output with categorized error counts.
+- Expanded pyflakes error categorization patterns.
+- Expanded pyflakes syntax error matching.
+- Added output for unclassified pyflakes errors.
+- Filtered pyflakes summaries to true error lines and added warning category.
+- Filtered first/random/last pyflakes output to error lines only.
+- Implemented MKV chapter export from segment titles.
 - Reshaped README introduction to lead with the EMWY acronym and MLT compatibility.
 - Clarified the EMWY acronym in the README.
 - Resolved AGENTS documentation links to use `docs/` paths.

@@ -1,0 +1,13 @@
+include README.md
+include LICENSE
+include AGENTS.md
+include MARKDOWN_STYLE.md
+include EMWY_YAML_v1_SPEC.md
+include EMWY_YAML_v2_SPEC.md
+include emwy.py
+include emwy.wav
+include pip_requirements.txt
+recursive-include docs *.md
+recursive-include samples *
+recursive-include tools *.py
+recursive-include tests *.py *.sh

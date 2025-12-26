@@ -2,6 +2,8 @@
 
 import os
 import shutil
+import decimal
+from fractions import Fraction
 from emwylib.core import utils
 from emwylib.media import sox
 from emwylib import titlecard
@@ -25,7 +27,8 @@ class Renderer():
 		overlays = self.project.stack.get('overlays', [])
 		if len(overlays) > 0:
 			segment_track = self._apply_overlays(segment_track, overlays)
-		self._finalize_output(segment_track, self.project.output['file'])
+		chapters = self._collect_chapters()
+		self._finalize_output(segment_track, self.project.output['file'], chapters)
 		if not self.project.keep_temp:
 			self._cleanup_temp([segment_track])
 
@@ -667,12 +670,15 @@ class Renderer():
 		utils.ensure_file_exists(output_file)
 
 	#============================
-	def _finalize_output(self, segment_track: str, output_file: str) -> None:
+	def _finalize_output(self, segment_track: str, output_file: str,
+		chapters: list) -> None:
 		audio_codec = self.project.output.get('audio_codec', 'pcm_s16le')
 		if audio_codec in ('pcm_s16le', 'wav', 'pcm', 'copy'):
 			if segment_track != output_file:
 				shutil.move(segment_track, output_file)
 			utils.ensure_file_exists(output_file)
+			if len(chapters) > 0:
+				self._apply_chapters(output_file, chapters)
 			print(f"mpv {output_file}")
 			return
 		encoded_file = self._make_temp_path("output-encoded.mkv")
@@ -687,6 +693,8 @@ class Renderer():
 		utils.ensure_file_exists(encoded_file)
 		shutil.move(encoded_file, output_file)
 		utils.ensure_file_exists(output_file)
+		if len(chapters) > 0:
+			self._apply_chapters(output_file, chapters)
 		print(f"mpv {output_file}")
 		if not self.project.keep_temp and segment_track != output_file:
 			os.remove(segment_track)
@@ -702,5 +710,128 @@ class Renderer():
 		self.project.temp_counter += 1
 		tag = f"{utils.make_timestamp()}-{self.project.temp_counter:04d}"
 		return os.path.join(self.project.cache_dir, f"{tag}-{filename}")
+
+	#============================
+
+	def _collect_chapters(self) -> list:
+		timeline = self.project.timeline or {}
+		segments = timeline.get('segments', [])
+		if not isinstance(segments, list) or len(segments) == 0:
+			return []
+		chapters = []
+		current_frames = 0
+		for segment in segments:
+			if not isinstance(segment, dict) or len(segment.keys()) != 1:
+				raise RuntimeError("timeline.segments entries must have one key")
+			entry_type = list(segment.keys())[0]
+			entry_data = segment.get(entry_type)
+			if isinstance(entry_data, dict) and entry_data.get('enabled') is False:
+				continue
+			if isinstance(entry_data, dict):
+				title = entry_data.get('title')
+				chapter_flag = entry_data.get('chapter')
+				if title and chapter_flag is not False:
+					chapters.append({
+						'start_frames': current_frames,
+						'title': title,
+					})
+			duration_frames = self._calculate_segment_output_frames(entry_type,
+				entry_data)
+			current_frames += duration_frames
+		return chapters
+
+	#============================
+	def _calculate_segment_output_frames(self, entry_type: str,
+		entry_data: dict) -> int:
+		fps = self.project.profile['fps']
+		if entry_type == 'source':
+			if not isinstance(entry_data, dict):
+				raise RuntimeError("source segment must be a mapping")
+			in_time = utils.parse_timecode(entry_data.get('in'))
+			out_time = utils.parse_timecode(entry_data.get('out'))
+			in_frame = utils.frames_from_seconds(in_time, fps)
+			out_frame = utils.frames_from_seconds(out_time, fps)
+			if out_frame <= in_frame:
+				raise RuntimeError("source entry requires in < out")
+			source_frames = out_frame - in_frame
+			speed_value = None
+			if entry_data.get('video') is not None:
+				speed_value = entry_data['video'].get('speed')
+			if speed_value is None and entry_data.get('audio') is not None:
+				speed_value = entry_data['audio'].get('speed')
+			speed = utils.parse_speed(speed_value, self.project.defaults['speed'])
+			if speed <= 0:
+				raise RuntimeError("speed must be positive")
+			speed_fraction = utils.decimal_to_fraction(speed)
+			if speed_fraction == 0:
+				raise RuntimeError("speed must be non-zero")
+			output_frames = utils.round_half_up_fraction(
+				Fraction(source_frames, 1) / speed_fraction
+			)
+			if output_frames <= 0:
+				raise RuntimeError("source entry duration is zero after speed change")
+			return output_frames
+		if entry_type == 'blank' or entry_type == 'generator':
+			if not isinstance(entry_data, dict):
+				raise RuntimeError("segment entry must be a mapping")
+			duration = utils.parse_timecode(entry_data.get('duration'))
+			duration_frames = utils.frames_from_seconds(duration, fps)
+			if duration_frames <= 0:
+				raise RuntimeError("segment duration must be positive")
+			return duration_frames
+		raise RuntimeError(f"unsupported segment type {entry_type}")
+
+	#============================
+	def _apply_chapters(self, output_file: str, chapters: list) -> None:
+		if not self._output_supports_chapters(output_file):
+			return
+		if len(chapters) == 0:
+			return
+		chapter_file = self._make_temp_path("chapters.txt")
+		self._write_chapters_file(chapter_file, chapters)
+		temp_output = self._make_temp_path("output-chapters.mkv")
+		cmd = "mkvmerge "
+		cmd += f" -o '{temp_output}' --chapters '{chapter_file}' "
+		cmd += f" '{output_file}' "
+		utils.runCmd(cmd)
+		utils.ensure_file_exists(temp_output)
+		shutil.move(temp_output, output_file)
+		if not self.project.keep_temp:
+			self._cleanup_temp([chapter_file])
+
+	#============================
+	def _output_supports_chapters(self, output_file: str) -> bool:
+		ext = os.path.splitext(output_file)[1].lower()
+		return ext in ('.mkv', '.mka', '.mk3d', '.mks')
+
+	#============================
+	def _write_chapters_file(self, chapter_file: str, chapters: list) -> None:
+		lines = []
+		for index, chapter in enumerate(chapters, start=1):
+			num = f"{index:02d}"
+			start_seconds = utils.seconds_from_frames(
+				chapter['start_frames'], self.project.profile['fps']
+			)
+			lines.append(f"CHAPTER{num}={self._format_chapter_time(start_seconds)}")
+			title = str(chapter['title']).replace("\n", " ").strip()
+			lines.append(f"CHAPTER{num}NAME={title}")
+		lines.append("")
+		with open(chapter_file, 'w', encoding='utf-8') as handle:
+			handle.write("\n".join(lines))
+
+	#============================
+	def _format_chapter_time(self, seconds: float) -> str:
+		value = decimal.Decimal(str(seconds)) * decimal.Decimal("1000")
+		millis = int(value.quantize(decimal.Decimal("1"),
+			rounding=decimal.ROUND_HALF_UP))
+		if millis < 0:
+			millis = 0
+		hours = millis // 3600000
+		remainder = millis % 3600000
+		minutes = remainder // 60000
+		remainder = remainder % 60000
+		seconds_part = remainder // 1000
+		millis_part = remainder % 1000
+		return f"{hours:02d}:{minutes:02d}:{seconds_part:02d}.{millis_part:03d}"
 
 	#============================

@@ -159,6 +159,7 @@ Optional planning and policy documents:
 
 - **[docs/ROADMAP.md](docs/ROADMAP.md)**
 - **[docs/SECURITY.md](docs/SECURITY.md)**
+- **[docs/RELEASE_HISTORY.md](docs/RELEASE_HISTORY.md)**
 - **[AGENTS.md](AGENTS.md)**
 
 ## Compatibility

@@ -22,6 +22,7 @@ Notes:
 - Overlays are supported in the authoring surface for native rendering.
 - MLT export currently ignores overlay tracks.
 - Transitions and advanced stream mapping are defined in the v2 spec but not yet implemented.
+- MKV chapters are emitted from segment `title` fields (unless `chapter: false`).
 
 ## Assets
 - Assets under `assets.video` are assumed to be A/V by default (common camera recordings).
