@@ -1,6 +1,13 @@
 # emwy
 
-**emwy** is a command-line video editor for turning long, raw recordings into clean, watchable videos using a simple YAML project file. It is designed for lecture capture, problem-solving videos, and other educational or technical recordings where speed, repeatability, and precision matter.
+**emwy** is a command-line video editor for turning long, raw recordings into clean, watchable videos using a simple YAML project file.
+
+Two core ideas guide the project:
+
+- EMWY stands for Edit Movies with YAML.
+- EMWY is a human-editable version of MLT XML, designed to be import/export compatible.
+
+It is designed for lecture capture, problem-solving videos, and other educational or technical recordings where speed, repeatability, and precision matter.
 
 Internally, emwy compiles timeline segments into a render plan, renders A/V segments with FFmpeg/SoX, and concatenates them with mkvmerge. MLT export is optional for interoperability.
 

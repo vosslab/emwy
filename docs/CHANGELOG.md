@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- Added overlay tracks with transparent blanks and overlay rendering support.
+- Added `still` generator support and transparent card backgrounds for overlays.
+- Documented overlay authoring and updated Shotcut export limitations.
+- Reshaped README introduction to lead with the EMWY acronym and MLT compatibility.
+- Clarified the EMWY acronym in the README.
 - Resolved AGENTS documentation links to use `docs/` paths.
 - Added `.DS_Store` to `.gitignore`.
 - Fixed documentation links to `docs/PYTHON_STYLE.md`.

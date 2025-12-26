@@ -39,12 +39,13 @@ Repo-wide conventions for this project and related repos.
 - `AGENTS.md`: agent instructions, tool constraints, and repo-specific workflow guardrails.
 - `README.md`: project purpose, quick start, and links to deeper documentation.
 - `LICENSE`: legal terms for using and redistributing the project; keep exact license text.
-- `docs/CHANGELOG.md`: chronological, user-facing changes by date/version; canonical release history.
+- `docs/CHANGELOG.md`: chronological, user facing record of changes, grouped by date. Timeline of what changed and when.
 - `docs/CODE_ARCHITECTURE.md`: high-level system design, major components, and data flow.
 - `docs/FILE_STRUCTURE.md`: directory map with what belongs where, including generated assets.
 - `docs/INSTALL.md`: setup steps, dependencies, and environment requirements.
 - `docs/NEWS.md`: curated release highlights and announcements, not a full changelog.
 - `docs/RELATED_PROJECTS.md`: sibling repos, shared libraries, and integration touchpoints.
+- `docs/RELEASE_HISTORY.md`: organized log of released versions and their release dates. Summarizes notable shipped qualities, including notes, major fixes, and compatibility notes.
 - `docs/ROADMAP.md`: planned work, priorities, and what is intentionally not started.
 - `docs/TODO.md`: backlog scratchpad for small tasks without timelines.
 - `docs/TROUBLESHOOTING.md`: known issues, fixes, and debugging steps with symptoms.

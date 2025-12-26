@@ -44,7 +44,41 @@ timeline:
 ```
 
 ## Picture-in-Picture
-Picture-in-picture requires overlays, which are not yet supported in the v2 authoring surface. Use the MLT export for advanced layering until overlays are implemented.
+Picture-in-picture can be modeled as an overlay track.
+
+Example (PiP with a slide deck overlay):
+
+```yaml
+timeline:
+  segments:
+    - source: {asset: lecture, in: "00:00.0", out: "10:00.0"}
+  overlays:
+    - id: slides
+      geometry: [0.64, 0.06, 0.34, 0.34]
+      opacity: 1.0
+      segments:
+        - source: {asset: slides, in: "00:00.0", out: "10:00.0"}
+```
+
+## Fast Forward Watermark
+Use a transparent title card on an overlay track.
+
+```yaml
+timeline:
+  segments:
+    - source: {asset: lecture, in: "00:00.0", out: "00:10.0"}
+    - source: {asset: lecture, in: "00:10.0", out: "00:20.0", video: {speed: 40}}
+  overlays:
+    - id: fast_forward
+      geometry: [0.1, 0.4, 0.8, 0.2]
+      opacity: 0.9
+      segments:
+        - generator:
+            kind: title_card
+            title: "Fast Forward 40X >>>"
+            duration: "00:10.0"
+            background: {kind: transparent}
+```
 
 ## Batch Rendering
 - Place multiple `.emwy.yaml` files in a directory.

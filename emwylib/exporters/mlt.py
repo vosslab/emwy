@@ -85,7 +85,19 @@ class MltExporter():
 		tracks = stack.get('tracks', [])
 		if not isinstance(tracks, list) or len(tracks) == 0:
 			raise RuntimeError("stack.tracks is required for MLT export")
-		return tracks
+		base_track = None
+		main_track = None
+		for track in tracks:
+			if track.get('role') == 'base':
+				base_track = track
+			if track.get('role') == 'main':
+				main_track = track
+		if base_track is None:
+			raise RuntimeError("stack.tracks must include base for MLT export")
+		result = [base_track]
+		if main_track is not None:
+			result.append(main_track)
+		return result
 
 	#============================
 	def _emit_playlist(self, playlist_id: str) -> None:
@@ -133,7 +145,7 @@ class MltExporter():
 			return
 		if playlist['kind'] != 'video':
 			raise RuntimeError("generator entries are only supported on video playlists")
-		if gen_kind not in ('black', 'chapter_card', 'title_card'):
+		if gen_kind not in ('black', 'chapter_card', 'title_card', 'still'):
 			raise RuntimeError(f"generator kind not supported for MLT export: {gen_kind}")
 		producer_id = self._emit_color_producer(entry['duration_frames'])
 		playlist_entry = lxml.etree.SubElement(playlist_elem, 'entry')

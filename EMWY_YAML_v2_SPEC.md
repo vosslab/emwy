@@ -280,6 +280,7 @@ Common generator kinds:
 Notes:
 
 - Generator entries may also include `note` for internal annotation.
+- `still` requires `asset` referencing `assets.image`.
 
 ```yaml
 - generator:
@@ -292,6 +293,15 @@ Notes:
     style: chapter_style
     markers:
       - {title: "Problem 1", level: 1, offset: "00:00.0"}
+```
+
+Still image generator example:
+
+```yaml
+- generator:
+    kind: still
+    asset: watermark
+    duration: "00:03.0"
 ```
 
 Generator kinds produce their natural streams (video for cards/black/still, audio
@@ -310,6 +320,9 @@ Supported `background` mappings:
 - `kind: image` with `asset` id under `assets.image`
 - `kind: color` with `color` (default `#000000`)
 - `kind: gradient` with `from`, `to`, and `direction` (`vertical` or `horizontal`)
+- `kind: transparent` for overlay text
+
+Note: `transparent` backgrounds are intended for overlay tracks.
 
 Planned extensions for `background.kind` include `video` and `source_blur` (not yet implemented).
 
@@ -318,6 +331,36 @@ Notes:
 - For consistent typography across machines, set `font_file`. If omitted, emwy
   falls back to a bundled system font when available and otherwise uses Pillow's
   default bitmap font (which renders small).
+
+### Overlay tracks (authoring surface)
+
+`timeline.overlays` is a list of overlay tracks. Each overlay track is video-only
+and compiles into the stack as a role `overlay` track plus an overlay transition.
+
+Overlay track fields:
+
+- `id`: optional id used to name the overlay playlist.
+- `geometry`: `[x, y, w, h]` normalized values between 0 and 1.
+- `opacity`: `0.0` to `1.0`.
+- `segments`: list of `source`, `blank`, or `generator` entries (video-only).
+
+Example:
+
+```yaml
+timeline:
+  segments:
+    - source: {asset: lecture, in: "00:00.0", out: "00:20.0"}
+  overlays:
+    - id: fast_forward
+      geometry: [0.1, 0.4, 0.8, 0.2]
+      opacity: 0.9
+      segments:
+        - generator:
+            kind: title_card
+            title: "Fast Forward 40X >>>"
+            duration: "00:10.0"
+            background: {kind: transparent}
+```
 
 ## Compiled model (advanced)
 

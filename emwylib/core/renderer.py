@@ -22,6 +22,9 @@ class Renderer():
 			self.project.stack['base_video'],
 			self.project.stack['main_audio']
 		)
+		overlays = self.project.stack.get('overlays', [])
+		if len(overlays) > 0:
+			segment_track = self._apply_overlays(segment_track, overlays)
 		self._finalize_output(segment_track, self.project.output['file'])
 		if not self.project.keep_temp:
 			self._cleanup_temp([segment_track])
@@ -55,12 +58,82 @@ class Renderer():
 		return output_file
 
 	#============================
-	def _render_video_entry(self, entry: dict, index: int) -> str:
-		fps_value = self.project.profile['fps_float']
-		pixel_format = self.project.profile['pixel_format']
+	def _apply_overlays(self, base_file: str, overlays: list) -> str:
+		current_file = base_file
+		for index, overlay in enumerate(overlays, start=1):
+			overlay_playlist_id = overlay.get('b')
+			if overlay_playlist_id is None:
+				raise RuntimeError("overlay missing b playlist")
+			overlay_file = self._render_overlay_playlist(overlay_playlist_id, index)
+			out_file = self._make_temp_path(f"overlay-{index:02d}.mkv")
+			self._composite_overlay(current_file, overlay_file, out_file, overlay)
+			if not self.project.keep_temp:
+				self._cleanup_temp([current_file, overlay_file])
+			current_file = out_file
+		return current_file
+
+	#============================
+	def _render_overlay_playlist(self, playlist_id: str, overlay_index: int) -> str:
+		playlist = self.project.playlists.get(playlist_id)
+		if playlist is None:
+			raise RuntimeError(f"overlay playlist not found: {playlist_id}")
+		if playlist.get('kind') != 'video':
+			raise RuntimeError("overlay playlists must be video")
+		segment_files = []
+		for index, entry in enumerate(playlist.get('entries', []), start=1):
+			video_file = self._render_video_entry(entry, index, codec='ffv1',
+				pixel_format='rgba', allow_transparent=True)
+			segment_files.append(video_file)
+		if len(segment_files) == 0:
+			raise RuntimeError("overlay playlist has no entries")
+		output_file = self._make_temp_path(f"overlay-track-{overlay_index:02d}.mkv")
+		self._concatenate_video(segment_files, output_file)
+		if not self.project.keep_temp:
+			self._cleanup_temp(segment_files)
+		return output_file
+
+	#============================
+	def _composite_overlay(self, base_file: str, overlay_file: str,
+		output_file: str, overlay: dict) -> None:
 		width = self.project.profile['width']
 		height = self.project.profile['height']
-		codec = self.project.output['video_codec']
+		geometry = overlay.get('geometry', [0.0, 0.0, 1.0, 1.0])
+		opacity = overlay.get('opacity', 1.0)
+		x = int(round(width * geometry[0]))
+		y = int(round(height * geometry[1]))
+		w = int(round(width * geometry[2]))
+		h = int(round(height * geometry[3]))
+		start_time = utils.seconds_from_frames(overlay['in_frames'],
+			self.project.profile['fps'])
+		end_time = utils.seconds_from_frames(overlay['out_frames'],
+			self.project.profile['fps'])
+		if w <= 0 or h <= 0:
+			raise RuntimeError("overlay geometry results in zero-sized region")
+		filter_chain = (
+			f"[1:v]scale={w}:{h},format=rgba,colorchannelmixer=aa={opacity}[ovr];"
+			f"[0:v][ovr]overlay={x}:{y}:enable='between(t,{start_time:.6f},{end_time:.6f})'"
+			"[vout]"
+		)
+		cmd = "ffmpeg -y "
+		cmd += f" -i '{base_file}' -i '{overlay_file}' "
+		cmd += f" -filter_complex \"{filter_chain}\" "
+		cmd += " -map \"[vout]\" -map 0:a? "
+		cmd += self._video_codec_args(self.project.output['video_codec'],
+			self.project.output['crf'])
+		cmd += f" -pix_fmt {self.project.profile['pixel_format']} "
+		cmd += " -codec:a copy "
+		cmd += f" '{output_file}' "
+		utils.runCmd(cmd)
+		utils.ensure_file_exists(output_file)
+
+	#============================
+	def _render_video_entry(self, entry: dict, index: int, codec: str = None,
+		pixel_format: str = None, allow_transparent: bool = False) -> str:
+		fps_value = self.project.profile['fps_float']
+		pixel_format = pixel_format or self.project.profile['pixel_format']
+		width = self.project.profile['width']
+		height = self.project.profile['height']
+		codec = codec or self.project.output['video_codec']
 		crf = self.project.output['crf']
 		if entry['type'] == 'source':
 			start_seconds = utils.seconds_from_frames(
@@ -76,15 +149,18 @@ class Renderer():
 				duration, speed, fps_value, codec, crf, pixel_format)
 			return out_file
 		if entry['type'] == 'blank':
+			fill = entry.get('fill', 'black')
+			if fill == 'transparent' and not allow_transparent:
+				raise RuntimeError("transparent blanks are only supported in overlays")
 			duration = utils.seconds_from_frames(
 				entry['duration_frames'], self.project.profile['fps']
 			)
 			out_file = self._make_temp_path(f"video-blank-{index:03d}.mkv")
-			self._render_black_video(out_file, duration, fps_value, width, height,
-				codec, crf, pixel_format)
+			self._render_blank_video(out_file, duration, fps_value, width, height,
+				codec, crf, pixel_format, fill)
 			return out_file
 		if entry['type'] == 'generator':
-			return self._render_video_generator(entry, index)
+			return self._render_video_generator(entry, index, codec, crf, pixel_format)
 		raise RuntimeError("unsupported video entry type")
 
 	#============================
@@ -126,7 +202,7 @@ class Renderer():
 		cmd += f" -ss {start_seconds:.3f} -t {duration:.3f} "
 		cmd += f" -i '{source_file}' "
 		cmd += " -sn -an -map_chapters -1 -map_metadata -1 "
-		cmd += f" -codec:v {codec} -crf {crf} -preset ultrafast "
+		cmd += self._video_codec_args(codec, crf)
 		cmd += f" -pix_fmt {pixel_format} -r {fps_value:.6f} "
 		if abs(speed - 1.0) > 0.0001:
 			cmd += f" -filter:v 'setpts={1.0 / speed:.8f}*PTS' "
@@ -135,13 +211,16 @@ class Renderer():
 		utils.ensure_file_exists(out_file)
 
 	#============================
-	def _render_black_video(self, out_file: str, duration: float,
+	def _render_blank_video(self, out_file: str, duration: float,
 		fps_value: float, width: int, height: int, codec: str, crf: int,
-		pixel_format: str) -> None:
+		pixel_format: str, fill: str) -> None:
+		color_value = 'black'
+		if fill == 'transparent':
+			color_value = 'black@0.0'
 		cmd = "ffmpeg -y -f lavfi "
-		cmd += f" -i color=c=black:s={width}x{height}:r={fps_value:.6f} "
+		cmd += f" -i color=c={color_value}:s={width}x{height}:r={fps_value:.6f} "
 		cmd += f" -t {duration:.3f} "
-		cmd += f" -codec:v {codec} -crf {crf} -preset ultrafast "
+		cmd += self._video_codec_args(codec, crf)
 		cmd += f" -pix_fmt {pixel_format} "
 		cmd += f" '{out_file}' "
 		utils.runCmd(cmd)
@@ -178,20 +257,26 @@ class Renderer():
 			shutil.move(current_file, out_file)
 
 	#============================
-	def _render_video_generator(self, entry: dict, index: int) -> str:
+	def _render_video_generator(self, entry: dict, index: int,
+		codec: str = None, crf: int = None, pixel_format: str = None) -> str:
+		codec = codec or self.project.output['video_codec']
+		crf = self.project.output['crf'] if crf is None else crf
+		pixel_format = pixel_format or self.project.profile['pixel_format']
 		gen_kind = entry['kind']
 		if gen_kind in ('chapter_card', 'title_card'):
-			return self._render_title_card(entry, index)
+			return self._render_title_card(entry, index, codec, crf, pixel_format)
+		if gen_kind == 'still':
+			return self._render_still_generator(entry, index, codec, crf,
+				pixel_format)
 		if gen_kind == 'black':
 			duration = utils.seconds_from_frames(
 				entry['duration_frames'], self.project.profile['fps']
 			)
 			out_file = self._make_temp_path(f"video-black-{index:03d}.mkv")
-			self._render_black_video(out_file, duration,
+			self._render_blank_video(out_file, duration,
 				self.project.profile['fps_float'],
 				self.project.profile['width'], self.project.profile['height'],
-				self.project.output['video_codec'], self.project.output['crf'],
-				self.project.profile['pixel_format'])
+				codec, crf, pixel_format, 'black')
 			return out_file
 		raise RuntimeError("unsupported video generator kind")
 
@@ -210,7 +295,8 @@ class Renderer():
 		raise RuntimeError("unsupported audio generator kind")
 
 	#============================
-	def _render_title_card(self, entry: dict, index: int) -> str:
+	def _render_title_card(self, entry: dict, index: int, codec: str = None,
+		crf: int = None, pixel_format: str = None) -> str:
 		data = entry.get('data', {})
 		text = data.get('title', data.get('text', ''))
 		if text == '':
@@ -234,14 +320,19 @@ class Renderer():
 			bg_kind = background.get('kind')
 			if bg_kind == 'image':
 				return self._render_image_card(text, background, duration, font_file,
-					font_size, text_color, index)
+					font_size, text_color, index, codec, crf, pixel_format)
 			if bg_kind == 'color':
 				return self._render_color_card(text, background, duration, font_file,
-					font_size, text_color, index)
+					font_size, text_color, index, codec, crf, pixel_format)
 			if bg_kind == 'gradient':
 				return self._render_gradient_card(text, background, duration, font_file,
-					font_size, text_color, index)
+					font_size, text_color, index, codec, crf, pixel_format)
+			if bg_kind == 'transparent':
+				return self._render_transparent_card(text, duration, font_file,
+					font_size, text_color, index, codec, crf, pixel_format)
 			raise RuntimeError(f"unsupported card background kind {bg_kind}")
+		if codec == 'ffv1':
+			raise RuntimeError("title_card requires a background for overlays")
 		out_file = self._make_temp_path(f"titlecard-{index:03d}.mkv")
 		tc = titlecard.TitleCard()
 		tc.text = text
@@ -287,7 +378,8 @@ class Renderer():
 
 	#============================
 	def _render_image_card(self, text: str, background: dict, duration: float,
-		font_file: str, font_size, text_color, index: int) -> str:
+		font_file: str, font_size, text_color, index: int, codec: str = None,
+		crf: int = None, pixel_format: str = None) -> str:
 		asset_id = background.get('asset')
 		if asset_id is None:
 			raise RuntimeError("background image requires asset id")
@@ -302,27 +394,31 @@ class Renderer():
 		self._render_card_image(text, image_file, card_image, font_file,
 			font_size, text_color)
 		out_file = self._make_temp_path(f"titlecard-{index:03d}.mkv")
-		self._render_still_image(card_image, out_file, duration)
+		self._render_still_image(card_image, out_file, duration, codec, crf,
+			pixel_format)
 		if not self.project.keep_temp:
 			self._cleanup_temp([card_image])
 		return out_file
 
 	#============================
 	def _render_color_card(self, text: str, background: dict, duration: float,
-		font_file: str, font_size, text_color, index: int) -> str:
+		font_file: str, font_size, text_color, index: int, codec: str = None,
+		crf: int = None, pixel_format: str = None) -> str:
 		color_value = background.get('color', '#000000')
 		card_image = self._make_temp_path(f"card-{index:03d}.png")
 		self._render_color_card_image(text, color_value, card_image, font_file,
 			font_size, text_color)
 		out_file = self._make_temp_path(f"titlecard-{index:03d}.mkv")
-		self._render_still_image(card_image, out_file, duration)
+		self._render_still_image(card_image, out_file, duration, codec, crf,
+			pixel_format)
 		if not self.project.keep_temp:
 			self._cleanup_temp([card_image])
 		return out_file
 
 	#============================
 	def _render_gradient_card(self, text: str, background: dict, duration: float,
-		font_file: str, font_size, text_color, index: int) -> str:
+		font_file: str, font_size, text_color, index: int, codec: str = None,
+		crf: int = None, pixel_format: str = None) -> str:
 		from_color = background.get('from', '#000000')
 		to_color = background.get('to', '#ffffff')
 		direction = background.get('direction', 'vertical')
@@ -330,10 +426,43 @@ class Renderer():
 		self._render_gradient_card_image(text, from_color, to_color, direction,
 			card_image, font_file, font_size, text_color)
 		out_file = self._make_temp_path(f"titlecard-{index:03d}.mkv")
-		self._render_still_image(card_image, out_file, duration)
+		self._render_still_image(card_image, out_file, duration, codec, crf,
+			pixel_format)
 		if not self.project.keep_temp:
 			self._cleanup_temp([card_image])
 		return out_file
+
+	#============================
+	def _render_transparent_card(self, text: str, duration: float,
+		font_file: str, font_size, text_color, index: int, codec: str = None,
+		crf: int = None, pixel_format: str = None) -> str:
+		card_image = self._make_temp_path(f"card-{index:03d}.png")
+		self._render_transparent_card_image(text, card_image, font_file,
+			font_size, text_color)
+		out_file = self._make_temp_path(f"titlecard-{index:03d}.mkv")
+		self._render_still_image(card_image, out_file, duration, codec, crf,
+			pixel_format)
+		if not self.project.keep_temp:
+			self._cleanup_temp([card_image])
+		return out_file
+
+	#============================
+	def _render_transparent_card_image(self, text: str, output_file: str,
+		font_file: str, font_size, text_color) -> None:
+		width = self.project.profile['width']
+		height = self.project.profile['height']
+		image = PIL.Image.new("RGBA", (width, height), color=(0, 0, 0, 0))
+		draw = PIL.ImageDraw.Draw(image)
+		font = self._load_font(font_file, font_size)
+		color = self._parse_color(text_color or "#ffffff")
+		color_rgba = (color[0], color[1], color[2], 255)
+		text_size = self._measure_text(draw, text, font)
+		x = (width - text_size[0]) / 2.0
+		y = (height - text_size[1]) / 2.0
+		draw.multiline_text((x, y), text, font=font, fill=color_rgba,
+			align="center")
+		image.save(output_file)
+		utils.ensure_file_exists(output_file)
 
 	#============================
 	def _render_card_image(self, text: str, background_file: str,
@@ -343,6 +472,46 @@ class Renderer():
 		image = PIL.Image.open(background_file).convert("RGB")
 		image = self._fit_image(image, width, height)
 		self._draw_card_text(image, text, font_file, font_size, text_color)
+		image.save(output_file)
+		utils.ensure_file_exists(output_file)
+
+	#============================
+	def _render_still_generator(self, entry: dict, index: int, codec: str = None,
+		crf: int = None, pixel_format: str = None) -> str:
+		data = entry.get('data', {})
+		asset_id = data.get('asset')
+		if asset_id is None:
+			raise RuntimeError("still generator requires asset")
+		image_asset = self.project.assets.get('image', {}).get(asset_id)
+		if image_asset is None:
+			raise RuntimeError(f"image asset {asset_id} not found in assets.image")
+		image_file = image_asset.get('file')
+		if image_file is None:
+			raise RuntimeError(f"image asset {asset_id} missing file")
+		utils.ensure_file_exists(image_file)
+		duration = utils.seconds_from_frames(
+			entry['duration_frames'], self.project.profile['fps']
+		)
+		card_image = self._make_temp_path(f"still-{index:03d}.png")
+		self._render_still_image_asset(image_file, card_image, pixel_format)
+		out_file = self._make_temp_path(f"still-{index:03d}.mkv")
+		self._render_still_image(card_image, out_file, duration, codec, crf,
+			pixel_format)
+		if not self.project.keep_temp:
+			self._cleanup_temp([card_image])
+		return out_file
+
+	#============================
+	def _render_still_image_asset(self, image_file: str, output_file: str,
+		pixel_format: str) -> None:
+		width = self.project.profile['width']
+		height = self.project.profile['height']
+		image = PIL.Image.open(image_file)
+		if pixel_format in ('rgba', 'argb', 'yuva420p', 'yuva444p'):
+			image = image.convert("RGBA")
+		else:
+			image = image.convert("RGB")
+		image = self._fit_image(image, width, height)
 		image.save(output_file)
 		utils.ensure_file_exists(output_file)
 
@@ -455,19 +624,26 @@ class Renderer():
 
 	#============================
 	def _render_still_image(self, image_file: str, out_file: str,
-		duration: float) -> None:
+		duration: float, codec: str = None, crf: int = None,
+		pixel_format: str = None) -> None:
 		fps_value = self.project.profile['fps_float']
-		pixel_format = self.project.profile['pixel_format']
-		codec = self.project.output['video_codec']
-		crf = self.project.output['crf']
+		pixel_format = pixel_format or self.project.profile['pixel_format']
+		codec = codec or self.project.output['video_codec']
+		crf = self.project.output['crf'] if crf is None else crf
 		cmd = "ffmpeg -y -loop 1 "
 		cmd += f" -i '{image_file}' -t {duration:.3f} "
 		cmd += f" -r {fps_value:.6f} "
-		cmd += f" -codec:v {codec} -crf {crf} -preset ultrafast "
+		cmd += self._video_codec_args(codec, crf)
 		cmd += f" -pix_fmt {pixel_format} "
 		cmd += f" '{out_file}' "
 		utils.runCmd(cmd)
 		utils.ensure_file_exists(out_file)
+
+	#============================
+	def _video_codec_args(self, codec: str, crf: int) -> str:
+		if codec == 'ffv1':
+			return f" -codec:v {codec} "
+		return f" -codec:v {codec} -crf {crf} -preset ultrafast "
 
 	#============================
 	def _concatenate_video(self, segment_files: list, output_file: str) -> None:

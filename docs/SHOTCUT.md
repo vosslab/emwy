@@ -8,6 +8,7 @@ emwy can emit Shotcut-compatible MLT XML so you can open the project inside Shot
 
 ## Limitations
 - Only one video track and one audio track are exported today.
+- Overlay tracks are ignored in MLT export.
 - Filters that Shotcut does not understand are skipped with warnings.
 - Title cards render as pre-composited clips rather than editable text.
 

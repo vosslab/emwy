@@ -150,6 +150,7 @@ class ProjectLoader():
 		audio_entries = []
 		for segment in segments:
 			self._compile_segment(project, segment, video_entries, audio_entries)
+		base_frames = self._calculate_playlist_frames(project, video_entries, 'video')
 		playlists = {
 			'video_base': {
 				'kind': 'video',
@@ -160,13 +161,187 @@ class ProjectLoader():
 				'playlist': audio_entries,
 			},
 		}
-		stack = {
-			'tracks': [
-				{'playlist': 'video_base', 'role': 'base'},
-				{'playlist': 'audio_main', 'role': 'main'},
-			]
-		}
+		tracks = [
+			{'playlist': 'video_base', 'role': 'base'},
+			{'playlist': 'audio_main', 'role': 'main'},
+		]
+		overlays = self._compile_overlay_tracks(project, timeline, playlists,
+			tracks, base_frames)
+		stack = {'tracks': tracks}
+		if len(overlays) > 0:
+			stack['overlays'] = overlays
 		return (playlists, stack)
+
+	#============================
+	def _compile_overlay_tracks(self, project: ProjectData, timeline: dict,
+		playlists: dict, tracks: list, base_frames: int) -> list:
+		overlays = []
+		overlay_tracks = timeline.get('overlays', [])
+		if overlay_tracks is None:
+			return overlays
+		if not isinstance(overlay_tracks, list):
+			raise RuntimeError("timeline.overlays must be a list")
+		for index, overlay in enumerate(overlay_tracks, start=1):
+			overlay_info = self._compile_overlay_track(project, overlay, index,
+				playlists, tracks, base_frames)
+			if overlay_info is not None:
+				overlays.append(overlay_info)
+		return overlays
+
+	#============================
+	def _compile_overlay_track(self, project: ProjectData, overlay: dict, index: int,
+		playlists: dict, tracks: list, base_frames: int) -> dict:
+		if not isinstance(overlay, dict):
+			raise RuntimeError("timeline.overlays entries must be mappings")
+		if overlay.get('enabled') is False:
+			return None
+		segments = overlay.get('segments')
+		if not isinstance(segments, list) or len(segments) == 0:
+			raise RuntimeError("overlay track requires non-empty segments list")
+		overlay_entries = []
+		for segment in segments:
+			self._compile_overlay_segment(project, segment, overlay_entries)
+		overlay_frames = self._calculate_playlist_frames(project, overlay_entries,
+			'video')
+		if overlay_frames < base_frames:
+			fill_frames = base_frames - overlay_frames
+			fill_duration = self._format_duration_from_frames(fill_frames,
+				project.profile['fps'])
+			overlay_entries.append({'blank': {
+				'duration': fill_duration,
+				'fill': 'transparent',
+			}})
+		if overlay_frames > base_frames:
+			raise RuntimeError("overlay track duration exceeds base timeline duration")
+		overlay_id = overlay.get('id', f"{index}")
+		playlist_id = f"video_overlay_{overlay_id}"
+		if playlists.get(playlist_id) is not None:
+			raise RuntimeError(f"overlay playlist id already exists: {playlist_id}")
+		playlists[playlist_id] = {
+			'kind': 'video',
+			'playlist': overlay_entries,
+		}
+		tracks.append({'playlist': playlist_id, 'role': 'overlay'})
+		duration = self._format_duration_from_frames(base_frames, project.profile['fps'])
+		geometry = overlay.get('geometry')
+		opacity = overlay.get('opacity')
+		overlays = {
+			'a': 'video_base',
+			'b': playlist_id,
+			'kind': overlay.get('kind', 'over'),
+			'in': '0',
+			'out': duration,
+		}
+		if geometry is not None:
+			overlays['geometry'] = geometry
+		if opacity is not None:
+			overlays['opacity'] = opacity
+		return overlays
+
+	#============================
+	def _compile_overlay_segment(self, project: ProjectData, segment: dict,
+		video_entries: list) -> None:
+		if not isinstance(segment, dict) or len(segment.keys()) != 1:
+			raise RuntimeError("overlay segments entries must have one key")
+		entry_type = list(segment.keys())[0]
+		entry_data = segment.get(entry_type)
+		if isinstance(entry_data, dict) and entry_data.get('enabled') is False:
+			return
+		if entry_type == 'source':
+			self._compile_overlay_source_segment(project, entry_data, video_entries)
+			return
+		if entry_type == 'blank':
+			if not isinstance(entry_data, dict):
+				raise RuntimeError("overlay blank segment must be a mapping")
+			fill = entry_data.get('fill', 'transparent')
+			if fill not in ('black', 'transparent'):
+				raise RuntimeError("overlay blank fill must be black or transparent")
+			video_entries.append({'blank': {
+				'duration': entry_data.get('duration'),
+				'fill': fill,
+			}})
+			return
+		if entry_type == 'generator':
+			self._compile_overlay_generator_segment(project, entry_data, video_entries)
+			return
+		raise RuntimeError(f"unsupported overlay segment type {entry_type}")
+
+	#============================
+	def _compile_overlay_source_segment(self, project: ProjectData,
+		entry_data: dict, video_entries: list) -> None:
+		if not isinstance(entry_data, dict):
+			raise RuntimeError("overlay source segment must be a mapping")
+		asset_id = entry_data.get('asset')
+		if asset_id is None:
+			raise RuntimeError("overlay source entry must include asset")
+		if asset_id not in project.assets.get('video', {}):
+			raise RuntimeError("overlay source entry requires a video asset")
+		video_entries.append({'source': entry_data})
+
+	#============================
+	def _compile_overlay_generator_segment(self, project: ProjectData,
+		entry_data: dict, video_entries: list) -> None:
+		if not isinstance(entry_data, dict):
+			raise RuntimeError("overlay generator segment must be a mapping")
+		gen_kind = entry_data.get('kind')
+		if gen_kind is None:
+			raise RuntimeError("overlay generator entry must include kind")
+		video_kinds = ('chapter_card', 'title_card', 'black', 'still')
+		if gen_kind not in video_kinds:
+			raise RuntimeError(f"unsupported overlay generator kind {gen_kind}")
+		if gen_kind in ('chapter_card', 'title_card'):
+			title_text = entry_data.get('title', entry_data.get('text', ''))
+			if title_text == '':
+				raise RuntimeError("chapter_card/title_card requires title or text")
+			style_id = entry_data.get('style')
+			if style_id is not None:
+				style = project.assets.get('cards', {}).get(style_id)
+				if style is None:
+					raise RuntimeError(f"card style {style_id} not found in assets.cards")
+		if gen_kind == 'still':
+			asset_id = entry_data.get('asset')
+			if asset_id is None:
+				raise RuntimeError("still generator requires asset")
+			image_asset = project.assets.get('image', {}).get(asset_id)
+			if image_asset is None:
+				raise RuntimeError(f"image asset {asset_id} not found in assets.image")
+		duration = entry_data.get('duration')
+		if duration is None:
+			raise RuntimeError("generator duration must be provided for overlay segments")
+		video_entries.append({'generator': entry_data})
+
+	#============================
+	def _calculate_playlist_frames(self, project: ProjectData, entries: list,
+		kind: str) -> int:
+		total_frames = 0
+		for entry in entries:
+			if not isinstance(entry, dict) or len(entry.keys()) != 1:
+				raise RuntimeError("playlist entries must have one key")
+			entry_type = list(entry.keys())[0]
+			entry_data = entry.get(entry_type)
+			total_frames += self._calculate_entry_frames(project, entry_type,
+				entry_data, kind)
+		return total_frames
+
+	#============================
+	def _calculate_entry_frames(self, project: ProjectData, entry_type: str,
+		entry_data: dict, kind: str) -> int:
+		if entry_type == 'source':
+			speed_value = None
+			if kind == 'video':
+				if entry_data.get('video') is not None:
+					speed_value = entry_data['video'].get('speed')
+			else:
+				if entry_data.get('audio') is not None:
+					speed_value = entry_data['audio'].get('speed')
+			return self._calculate_output_frames(project, entry_data, speed_value)
+		if entry_type == 'blank':
+			duration = utils.parse_timecode(entry_data.get('duration'))
+			return utils.frames_from_seconds(duration, project.profile['fps'])
+		if entry_type == 'generator':
+			duration = utils.parse_timecode(entry_data.get('duration'))
+			return utils.frames_from_seconds(duration, project.profile['fps'])
+		raise RuntimeError(f"unsupported entry type for duration calc {entry_type}")
 
 	#============================
 	def _compile_segment(self, project: ProjectData, segment: dict,
@@ -255,6 +430,16 @@ class ProjectLoader():
 				style = project.assets.get('cards', {}).get(style_id)
 				if style is None:
 					raise RuntimeError(f"card style {style_id} not found in assets.cards")
+			background = self._resolve_card_background(entry_data, style)
+			if isinstance(background, dict) and background.get('kind') == 'transparent':
+				raise RuntimeError("transparent card background is only supported in overlays")
+		if gen_kind == 'still':
+			asset_id = entry_data.get('asset')
+			if asset_id is None:
+				raise RuntimeError("still generator requires asset")
+			image_asset = project.assets.get('image', {}).get(asset_id)
+			if image_asset is None:
+				raise RuntimeError(f"image asset {asset_id} not found in assets.image")
 		fill_missing = self._normalize_fill_missing(entry_data.get('fill_missing'))
 		duration = entry_data.get('duration')
 		if duration is None:
@@ -299,6 +484,21 @@ class ProjectLoader():
 		if len(result) == 0:
 			raise RuntimeError("fill_missing must include video and/or audio")
 		return result
+
+	#============================
+	def _resolve_card_background(self, data: dict, style: dict) -> dict:
+		if isinstance(data, dict) and data.get('background') is not None:
+			return data.get('background')
+		if isinstance(style, dict) and style.get('background') is not None:
+			return style.get('background')
+		background_image = None
+		if isinstance(data, dict):
+			background_image = data.get('background_image')
+		if background_image is None and isinstance(style, dict):
+			background_image = style.get('background_image')
+		if background_image is not None:
+			return {'kind': 'image', 'asset': background_image}
+		return None
 
 	#============================
 	def _duration_for_missing_stream(self, project: ProjectData,
@@ -479,8 +679,6 @@ class ProjectLoader():
 		fill = entry_data.get('fill', 'black')
 		if kind == 'video' and fill not in ('black', 'transparent'):
 			raise RuntimeError("blank fill must be black or transparent")
-		if kind == 'video' and fill == 'transparent':
-			raise RuntimeError("transparent blanks not supported in base-only mode")
 		return {
 			'type': 'blank',
 			'duration_frames': duration_frames,
@@ -580,14 +778,96 @@ class ProjectLoader():
 		source_audio = stack.get('source_audio', True)
 		if not isinstance(source_audio, bool):
 			raise RuntimeError("stack.source_audio must be true or false")
-		if stack.get('overlays') is not None:
-			raise RuntimeError("overlays are not supported yet")
-		return {
+		overlays = self._parse_overlays(project, stack.get('overlays', []),
+			base_video)
+		self._validate_base_playlist_blanks(project, base_video)
+		stack_data = {
 			'base_video': base_video,
 			'main_audio': main_audio,
 			'tracks': parsed_tracks,
 			'source_audio': source_audio,
 		}
+		if len(overlays) > 0:
+			stack_data['overlays'] = overlays
+		return stack_data
+
+	#============================
+	def _parse_overlays(self, project: ProjectData, overlays_raw, base_video: str) -> list:
+		if overlays_raw is None:
+			return []
+		if not isinstance(overlays_raw, list):
+			raise RuntimeError("stack.overlays must be a list")
+		parsed = []
+		base_duration = project.playlists[base_video]['duration_frames']
+		for overlay in overlays_raw:
+			parsed.append(self._parse_overlay(project, overlay, base_duration))
+		return parsed
+
+	#============================
+	def _parse_overlay(self, project: ProjectData, overlay: dict,
+		base_duration: int) -> dict:
+		if not isinstance(overlay, dict):
+			raise RuntimeError("overlay entries must be mappings")
+		playlist_a = overlay.get('a')
+		playlist_b = overlay.get('b')
+		if playlist_a is None or playlist_b is None:
+			raise RuntimeError("overlay entries require a and b playlists")
+		if playlist_a not in project.playlists or playlist_b not in project.playlists:
+			raise RuntimeError("overlay playlists must exist in compiled playlists")
+		if project.playlists[playlist_a]['kind'] != 'video':
+			raise RuntimeError("overlay playlist a must be video")
+		if project.playlists[playlist_b]['kind'] != 'video':
+			raise RuntimeError("overlay playlist b must be video")
+		kind = overlay.get('kind', 'over')
+		if kind != 'over':
+			raise RuntimeError("overlay kind must be over")
+		geometry = overlay.get('geometry', [0.0, 0.0, 1.0, 1.0])
+		if not isinstance(geometry, list) or len(geometry) != 4:
+			raise RuntimeError("overlay geometry must be [x, y, w, h]")
+		for value in geometry:
+			if not isinstance(value, (int, float)):
+				raise RuntimeError("overlay geometry values must be numbers")
+			if value < 0 or value > 1:
+				raise RuntimeError("overlay geometry values must be between 0 and 1")
+		opacity = overlay.get('opacity', 1.0)
+		if not isinstance(opacity, (int, float)):
+			raise RuntimeError("overlay opacity must be numeric")
+		if opacity < 0 or opacity > 1:
+			raise RuntimeError("overlay opacity must be between 0 and 1")
+		in_time = overlay.get('in', '0')
+		out_time = overlay.get('out')
+		in_frames = utils.frames_from_seconds(utils.parse_timecode(in_time),
+			project.profile['fps'])
+		if out_time is None:
+			out_frames = base_duration
+		else:
+			out_frames = utils.frames_from_seconds(utils.parse_timecode(out_time),
+				project.profile['fps'])
+		if in_frames < 0 or out_frames <= in_frames:
+			raise RuntimeError("overlay in/out range is invalid")
+		if out_frames > base_duration:
+			if out_frames - base_duration <= 1:
+				out_frames = base_duration
+			else:
+				raise RuntimeError("overlay out time exceeds base duration")
+		return {
+			'a': playlist_a,
+			'b': playlist_b,
+			'kind': kind,
+			'in_frames': in_frames,
+			'out_frames': out_frames,
+			'geometry': geometry,
+			'opacity': float(opacity),
+		}
+
+	#============================
+	def _validate_base_playlist_blanks(self, project: ProjectData, base_video: str) -> None:
+		playlist = project.playlists.get(base_video)
+		if playlist is None:
+			return
+		for entry in playlist.get('entries', []):
+			if entry.get('type') == 'blank' and entry.get('fill') == 'transparent':
+				raise RuntimeError("transparent blanks are only supported in overlays")
 
 	#============================
 	def _parse_output(self, project: ProjectData, output: dict) -> dict:
