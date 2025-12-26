@@ -9,7 +9,7 @@ PYFLAKES_OUT="${REPO_ROOT}/pyflakes.txt"
 find "${REPO_ROOT}" \
 	-type d \( -name .git -o -name .venv \) -prune -o \
 	-type f -name "*.py" -print0 \
-	| sort \
+	| sort -z \
 	| xargs -0 pyflakes > "${PYFLAKES_OUT}" 2>&1 || true
 
 RESULT=$(wc -l < "${PYFLAKES_OUT}")
@@ -42,7 +42,7 @@ tail -n "${N}" "${PYFLAKES_OUT}" | shorten_paths
 echo "-------------------------"
 echo ""
 
-echo "Found ${RESULT} pyflakes errors"
+echo "Found ${RESULT} pyflakes errors written to REPO_ROOT/pyflakes.txt"
 
 # Fail if any errors were found
 exit 1

@@ -9,6 +9,8 @@ that fast forwards the silent sections by default.
 The YAML report is always written to `<input>.emwy.yaml`.
 The detector is pure Python; FFmpeg is used only to extract audio. Audio is
 always downmixed to mono.
+When fast-forward overlays are enabled, the YAML includes a transparent overlay
+track that labels accelerated sections in output time.
 
 Example:
 
@@ -17,19 +19,52 @@ python3 tools/silence_annotator.py -i movie.mp4
 python3 emwy.py -y movie.emwy.yaml
 ```
 
+Config file:
+
+- The tool looks for `<input>.silence.config.yaml` by default.
+- If it does not exist, a default config is written automatically.
+- Use `-c, --config` to point to a different config.
+- The config file starts with `silence_annotator: 1` to distinguish it from EMWY YAML.
+
 Common flags:
 
 - `-a, --audio` Optional wav file path to skip extraction
-- `-t, --threshold` Silence threshold in dBFS (default: -40)
-- `-s, --min-silence` Minimum silence duration in seconds (default: 3.0)
-- `-m, --min-content` Minimum content duration in seconds (default: 1.5)
-- `-S, --silence-speed` Playback speed for silence segments (default: 10.0)
-- `-C, --content-speed` Playback speed for content segments (default: 1.0)
-- `-w, --frame` Frame window size in seconds (default: 0.25)
-- `-p, --hop` Hop size in seconds (default: 0.05)
-- `-q, --smooth` Smoothing window in frames (default: 5)
+- `-c, --config` Config file path (default: `<input>.silence.config.yaml`)
+- `-k, --keep-wav` Keep extracted wav file
 - `-d, --debug` Enable verbose debug output and write `<input>.silence.debug.txt` and `.png`
-- `-u, --auto-threshold` Auto-raise threshold until silence is detected
+- `-N, --no-fast-forward-overlay` Disable the fast-forward overlay text
+
+The config file controls thresholds, speed multipliers, overlay settings, and
+auto-threshold tuning. Use it to avoid a long list of CLI flags.
+
+Example config:
+
+```yaml
+silence_annotator: 1
+settings:
+  detection:
+    threshold_db: -40.0
+    min_silence: 3.0
+    min_content: 1.5
+    frame_seconds: 0.25
+    hop_seconds: 0.05
+    smooth_frames: 5
+  speeds:
+    silence: 10.0
+    content: 1.0
+  overlay:
+    enabled: true
+    text_template: "Fast Forward {speed}X >>>"
+    geometry: [0.1, 0.4, 0.8, 0.2]
+    opacity: 0.9
+    font_size: 96
+    text_color: "#ffffff"
+  auto_threshold:
+    enabled: false
+    step_db: 2.0
+    max_db: -5.0
+    max_tries: 20
+```
 
 Dependencies: `ffmpeg`, `ffprobe`, `numpy`. `matplotlib` is required for `--debug` plots.
 

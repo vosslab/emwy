@@ -59,6 +59,46 @@ class EmwyYamlWriterTest(unittest.TestCase):
 		self.assertIn("asset: source", yaml_text)
 		self.assertEqual(yaml_text.count("video: {speed"), 1)
 		self.assertEqual(yaml_text.count("audio: {speed"), 1)
+		self.assertNotIn("overlays:", yaml_text)
+
+	#============================================
+	def test_build_silence_timeline_yaml_with_overlay(self) -> None:
+		"""Ensure overlay output includes transparent fast-forward cards."""
+		profile = {
+			'fps': "30",
+			'width': 1920,
+			'height': 1080,
+			'sample_rate': 48000,
+			'channels': "mono",
+		}
+		segments = [
+			{
+				'kind': 'content',
+				'start_tc': "00:00:00.000",
+				'end_tc': "00:00:02.000",
+			},
+			{
+				'kind': 'silence',
+				'start_tc': "00:00:02.000",
+				'end_tc': "00:00:03.000",
+			},
+		]
+		yaml_text = emwy_yaml_writer.build_silence_timeline_yaml(
+			"clip.mp4",
+			"out.mkv",
+			profile,
+			"source",
+			segments,
+			4.0,
+			1.0,
+			overlay_text_template="Fast Forward {speed}X >>>",
+			overlay_geometry=[0.1, 0.4, 0.8, 0.2],
+			overlay_opacity=0.9,
+		)
+		self.assertIn("overlays:", yaml_text)
+		self.assertIn("background: {kind: transparent}", yaml_text)
+		self.assertIn("Fast Forward 4X >>>", yaml_text)
+		self.assertIn("fill: transparent", yaml_text)
 
 	#============================================
 	def test_yaml_quote(self) -> None:

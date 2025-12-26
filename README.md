@@ -131,6 +131,15 @@ Deeper documentation lives in the **docs/** directory:
 - **[docs/SHOTCUT.md](docs/SHOTCUT.md)**
   Shotcut-compatible export mode and round-tripping notes.
 
+- **[docs/MLT_INTEROP.md](docs/MLT_INTEROP.md)**
+  EMWY to MLT XML mapping details and round-trip guidance.
+
+- **[docs/EXPORT_MLT_XML_SPEC.md](docs/EXPORT_MLT_XML_SPEC.md)**
+  Current MLT XML export behavior.
+
+- **[docs/IMPORT_MLT_XML_SPEC.md](docs/IMPORT_MLT_XML_SPEC.md)**
+  Draft import ideas and scope.
+
 - **[docs/DEBUGGING.md](docs/DEBUGGING.md)**
   Common errors, diagnostics, and media inspection tips.
 

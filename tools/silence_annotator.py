@@ -21,6 +21,7 @@ import wave
 
 # PIP3 modules
 import numpy
+import yaml
 
 # local repo modules
 import emwy_yaml_writer
@@ -52,38 +53,6 @@ def parse_args():
 		help="Optional wav file path to skip extraction."
 	)
 	parser.add_argument(
-		'-t', '--threshold', dest='threshold_db', type=float, default=-40.0,
-		help="Silence threshold in dBFS (negative). Default: -40.0"
-	)
-	parser.add_argument(
-		'-s', '--min-silence', dest='min_silence', type=float, default=3.0,
-		help="Minimum silence duration in seconds. Default: 3.0"
-	)
-	parser.add_argument(
-		'-m', '--min-content', dest='min_content', type=float, default=1.5,
-		help="Minimum content duration in seconds. Default: 1.5"
-	)
-	parser.add_argument(
-		'-S', '--silence-speed', dest='silence_speed', type=float, default=10.0,
-		help="Playback speed for silence segments. Default: 10.0"
-	)
-	parser.add_argument(
-		'-C', '--content-speed', dest='content_speed', type=float, default=1.0,
-		help="Playback speed for content segments. Default: 1.0"
-	)
-	parser.add_argument(
-		'-w', '--frame', dest='frame_seconds', type=float, default=0.25,
-		help="Frame window size in seconds. Default: 0.25"
-	)
-	parser.add_argument(
-		'-p', '--hop', dest='hop_seconds', type=float, default=0.05,
-		help="Hop size in seconds (overlap). Default: 0.05"
-	)
-	parser.add_argument(
-		'-q', '--smooth', dest='smooth_frames', type=int, default=5,
-		help="Smoothing window size in frames. Default: 5"
-	)
-	parser.add_argument(
 		'-k', '--keep-wav', dest='keep_wav', action='store_true',
 		help="Keep extracted wav file."
 	)
@@ -96,20 +65,17 @@ def parse_args():
 		help="Enable verbose debug output and write a debug file."
 	)
 	parser.add_argument(
-		'-D', '--no-debug', dest='debug', action='store_false',
-		help="Disable verbose debug output."
+		'-c', '--config', dest='config_file', default=None,
+		help="Path to a silence annotator config YAML."
 	)
 	parser.add_argument(
-		'-u', '--auto-threshold', dest='auto_threshold', action='store_true',
-		help="Auto-raise threshold until silence is detected."
-	)
-	parser.add_argument(
-		'-U', '--no-auto-threshold', dest='auto_threshold', action='store_false',
-		help="Disable auto threshold adjustment."
+		'-N', '--no-fast-forward-overlay', dest='fast_forward_overlay',
+		help="Disable fast-forward overlay text.",
+		action='store_false'
 	)
 	parser.set_defaults(keep_wav=False)
+	parser.set_defaults(fast_forward_overlay=None)
 	parser.set_defaults(debug=False)
-	parser.set_defaults(auto_threshold=False)
 	args = parser.parse_args()
 	return args
 
@@ -295,6 +261,233 @@ def format_speed(speed: float) -> str:
 	if value == "":
 		value = "1.0"
 	return value
+
+#============================================
+
+def parse_overlay_geometry(value: str) -> list:
+	"""
+	Parse overlay geometry string into list of floats.
+
+	Args:
+		value: Geometry string "x,y,w,h".
+
+	Returns:
+		list: Parsed geometry values.
+	"""
+	if value is None:
+		raise RuntimeError("overlay geometry must be provided")
+	parts = [item.strip() for item in value.split(',') if item.strip() != ""]
+	if len(parts) != 4:
+		raise RuntimeError("overlay geometry must be four comma-separated values")
+	values = [float(item) for item in parts]
+	for number in values:
+		if number < 0 or number > 1:
+			raise RuntimeError("overlay geometry values must be between 0 and 1")
+	return values
+
+#============================================
+
+def default_config() -> dict:
+	"""
+	Build the default config dictionary.
+
+	Returns:
+		dict: Default configuration values.
+	"""
+	return {
+		'silence_annotator': 1,
+		'settings': {
+			'detection': {
+				'threshold_db': -40.0,
+				'min_silence': 3.0,
+				'min_content': 1.5,
+				'frame_seconds': 0.25,
+				'hop_seconds': 0.05,
+				'smooth_frames': 5,
+			},
+			'speeds': {
+				'silence': 10.0,
+				'content': 1.0,
+			},
+			'overlay': {
+				'enabled': True,
+				'text_template': "Fast Forward {speed}X >>>",
+				'geometry': [0.1, 0.4, 0.8, 0.2],
+				'opacity': 0.9,
+				'font_size': 96,
+				'text_color': "#ffffff",
+			},
+			'auto_threshold': {
+				'enabled': False,
+				'step_db': AUTO_THRESHOLD_STEP_DB,
+				'max_db': AUTO_THRESHOLD_MAX_DB,
+				'max_tries': AUTO_THRESHOLD_MAX_TRIES,
+			},
+		},
+	}
+
+#============================================
+
+def default_config_path(input_file: str) -> str:
+	"""
+	Build the default config path based on the input file.
+
+	Args:
+		input_file: Input file path.
+
+	Returns:
+		str: Config file path.
+	"""
+	base, _ = os.path.splitext(input_file)
+	return f"{base}.silence.config.yaml"
+
+#============================================
+
+def build_config_text(config: dict) -> str:
+	"""
+	Build YAML text for the config file.
+
+	Args:
+		config: Config dictionary.
+
+	Returns:
+		str: YAML content.
+	"""
+	settings = config.get('settings', {})
+	detection = settings.get('detection', {})
+	speeds = settings.get('speeds', {})
+	overlay = settings.get('overlay', {})
+	auto_threshold = settings.get('auto_threshold', {})
+	geometry = overlay.get('geometry', [0.1, 0.4, 0.8, 0.2])
+	lines = []
+	lines.append("silence_annotator: 1")
+	lines.append("settings:")
+	lines.append("  detection:")
+	lines.append(f"    threshold_db: {detection.get('threshold_db', -40.0)}")
+	lines.append(f"    min_silence: {detection.get('min_silence', 3.0)}")
+	lines.append(f"    min_content: {detection.get('min_content', 1.5)}")
+	lines.append(f"    frame_seconds: {detection.get('frame_seconds', 0.25)}")
+	lines.append(f"    hop_seconds: {detection.get('hop_seconds', 0.05)}")
+	lines.append(f"    smooth_frames: {detection.get('smooth_frames', 5)}")
+	lines.append("  speeds:")
+	lines.append(f"    silence: {speeds.get('silence', 10.0)}")
+	lines.append(f"    content: {speeds.get('content', 1.0)}")
+	lines.append("  overlay:")
+	lines.append(f"    enabled: {str(bool(overlay.get('enabled', True))).lower()}")
+	lines.append(
+		f"    text_template: \"{overlay.get('text_template', 'Fast Forward {speed}X >>>')}\""
+	)
+	lines.append(
+		f"    geometry: [{geometry[0]}, {geometry[1]}, {geometry[2]}, {geometry[3]}]"
+	)
+	lines.append(f"    opacity: {overlay.get('opacity', 0.9)}")
+	lines.append(f"    font_size: {overlay.get('font_size', 96)}")
+	lines.append(f"    text_color: \"{overlay.get('text_color', '#ffffff')}\"")
+	lines.append("  auto_threshold:")
+	lines.append(
+		f"    enabled: {str(bool(auto_threshold.get('enabled', False))).lower()}"
+	)
+	lines.append(f"    step_db: {auto_threshold.get('step_db', AUTO_THRESHOLD_STEP_DB)}")
+	lines.append(f"    max_db: {auto_threshold.get('max_db', AUTO_THRESHOLD_MAX_DB)}")
+	lines.append(
+		f"    max_tries: {auto_threshold.get('max_tries', AUTO_THRESHOLD_MAX_TRIES)}"
+	)
+	lines.append("")
+	return "\n".join(lines)
+
+#============================================
+
+def write_config_file(config_path: str, config: dict) -> None:
+	"""
+	Write a config file to disk.
+
+	Args:
+		config_path: Output file path.
+		config: Config dictionary.
+	"""
+	text = build_config_text(config)
+	os.makedirs(os.path.dirname(config_path) or '.', exist_ok=True)
+	with open(config_path, 'w', encoding='utf-8') as handle:
+		handle.write(text)
+	return
+
+#============================================
+
+def load_config(config_path: str) -> dict:
+	"""
+	Load a config file from disk.
+
+	Args:
+		config_path: Config file path.
+
+	Returns:
+		dict: Parsed config dictionary.
+	"""
+	with open(config_path, 'r', encoding='utf-8') as handle:
+		data = yaml.safe_load(handle)
+	if not isinstance(data, dict):
+		raise RuntimeError("config file must be a mapping")
+	if data.get('silence_annotator') != 1:
+		raise RuntimeError("config file must set silence_annotator: 1")
+	return data
+
+#============================================
+
+def build_settings(config: dict) -> dict:
+	"""
+	Normalize settings with defaults.
+
+	Args:
+		config: Raw config dictionary.
+
+	Returns:
+		dict: Normalized settings.
+	"""
+	defaults = default_config()
+	settings = defaults.get('settings', {})
+	overrides = {}
+	if isinstance(config, dict):
+		overrides = config.get('settings', {})
+	detection = overrides.get('detection', {})
+	speeds = overrides.get('speeds', {})
+	overlay = overrides.get('overlay', {})
+	auto_threshold = overrides.get('auto_threshold', {})
+	return {
+		'threshold_db': detection.get('threshold_db',
+			settings['detection']['threshold_db']),
+		'min_silence': detection.get('min_silence',
+			settings['detection']['min_silence']),
+		'min_content': detection.get('min_content',
+			settings['detection']['min_content']),
+		'frame_seconds': detection.get('frame_seconds',
+			settings['detection']['frame_seconds']),
+		'hop_seconds': detection.get('hop_seconds',
+			settings['detection']['hop_seconds']),
+		'smooth_frames': detection.get('smooth_frames',
+			settings['detection']['smooth_frames']),
+		'silence_speed': speeds.get('silence', settings['speeds']['silence']),
+		'content_speed': speeds.get('content', settings['speeds']['content']),
+		'overlay_enabled': overlay.get('enabled',
+			settings['overlay']['enabled']),
+		'overlay_text': overlay.get('text_template',
+			settings['overlay']['text_template']),
+		'overlay_geometry': overlay.get('geometry',
+			settings['overlay']['geometry']),
+		'overlay_opacity': overlay.get('opacity',
+			settings['overlay']['opacity']),
+		'overlay_font_size': overlay.get('font_size',
+			settings['overlay']['font_size']),
+		'overlay_text_color': overlay.get('text_color',
+			settings['overlay']['text_color']),
+		'auto_threshold': auto_threshold.get('enabled',
+			settings['auto_threshold']['enabled']),
+		'auto_step_db': auto_threshold.get('step_db',
+			settings['auto_threshold']['step_db']),
+		'auto_max_db': auto_threshold.get('max_db',
+			settings['auto_threshold']['max_db']),
+		'auto_max_tries': auto_threshold.get('max_tries',
+			settings['auto_threshold']['max_tries']),
+	}
 
 #============================================
 
@@ -981,10 +1174,8 @@ def amplitude_to_db(value: float) -> float:
 
 def auto_find_silence(audio_path: str, duration: float, threshold_db: float,
 	min_silence: float, min_content: float, frame_seconds: float,
-	hop_seconds: float, smooth_frames: int,
-	step_db: float = AUTO_THRESHOLD_STEP_DB,
-	max_db: float = AUTO_THRESHOLD_MAX_DB,
-	max_tries: int = AUTO_THRESHOLD_MAX_TRIES) -> dict:
+	hop_seconds: float, smooth_frames: int, step_db: float,
+	max_db: float, max_tries: int) -> dict:
 	"""
 	Auto-raise threshold until silence is detected.
 
@@ -1045,7 +1236,9 @@ def print_debug_summary(args: argparse.Namespace, audio_path: str,
 	temp_wav: str, output_file: str, output_media_file: str,
 	raw_silences: list, silences: list, contents: list,
 	scan_stats: dict = None, auto_attempts: list = None,
-	threshold_used: float = None, debug_plot: str = None) -> None:
+	threshold_used: float = None, debug_plot: str = None,
+	threshold_db: float = None, min_silence: float = None,
+	min_content: float = None) -> None:
 	"""
 	Print verbose debug summary.
 
@@ -1068,11 +1261,15 @@ def print_debug_summary(args: argparse.Namespace, audio_path: str,
 	print(f"Temp wav: {temp_wav if temp_wav is not None else '[none]'}")
 	print(f"Keep wav: {args.keep_wav}")
 	print("Channels: mono (forced)")
-	print(f"Threshold dB: {args.threshold_db:.2f}")
-	if threshold_used is not None and threshold_used != args.threshold_db:
-		print(f"Threshold used: {threshold_used:.2f} (auto)")
-	print(f"Min silence: {args.min_silence:.3f}")
-	print(f"Min content: {args.min_content:.3f}")
+	if threshold_db is not None:
+		print(f"Threshold dB: {threshold_db:.2f}")
+	if threshold_used is not None and threshold_db is not None:
+		if threshold_used != threshold_db:
+			print(f"Threshold used: {threshold_used:.2f} (auto)")
+	if min_silence is not None:
+		print(f"Min silence: {min_silence:.3f}")
+	if min_content is not None:
+		print(f"Min content: {min_content:.3f}")
 	print(f"Raw silence ranges: {len(raw_silences)}")
 	print(f"Normalized silence ranges: {len(silences)}")
 	print(f"Content ranges: {len(contents)}")
@@ -1162,23 +1359,42 @@ def main() -> None:
 	ensure_file_exists(args.input_file)
 	if args.audio_file is not None:
 		ensure_file_exists(args.audio_file)
-	if args.threshold_db > 0:
+	config_path = args.config_file
+	if config_path is None:
+		config_path = default_config_path(args.input_file)
+	if not os.path.exists(config_path):
+		write_config_file(config_path, default_config())
+		print(f"Wrote default config: {config_path}")
+	config = load_config(config_path)
+	settings = build_settings(config)
+	if args.fast_forward_overlay is False:
+		settings['overlay_enabled'] = False
+	if settings['threshold_db'] > 0:
 		raise RuntimeError("threshold must be 0 or negative dBFS")
-	if args.min_silence <= 0:
+	if settings['min_silence'] <= 0:
 		raise RuntimeError("min_silence must be positive")
-	if args.min_content <= 0:
+	if settings['min_content'] <= 0:
 		raise RuntimeError("min_content must be positive")
-	if args.silence_speed <= 0:
+	if settings['silence_speed'] <= 0:
 		raise RuntimeError("silence_speed must be positive")
-	if args.content_speed <= 0:
+	if settings['content_speed'] <= 0:
 		raise RuntimeError("content_speed must be positive")
-	if args.frame_seconds <= 0:
+	overlay_geometry = None
+	if settings['overlay_enabled']:
+		overlay_geometry = parse_overlay_geometry(
+			",".join(str(value) for value in settings['overlay_geometry'])
+		)
+		if settings['overlay_opacity'] < 0 or settings['overlay_opacity'] > 1:
+			raise RuntimeError("fast_forward_opacity must be between 0 and 1")
+		if settings['overlay_font_size'] <= 0:
+			raise RuntimeError("fast_forward_font_size must be positive")
+	if settings['frame_seconds'] <= 0:
 		raise RuntimeError("frame_seconds must be positive")
-	if args.hop_seconds <= 0:
+	if settings['hop_seconds'] <= 0:
 		raise RuntimeError("hop_seconds must be positive")
-	if args.smooth_frames <= 0:
+	if settings['smooth_frames'] <= 0:
 		raise RuntimeError("smooth_frames must be positive")
-	if args.hop_seconds > args.frame_seconds:
+	if settings['hop_seconds'] > settings['frame_seconds']:
 		raise RuntimeError("hop_seconds must be <= frame_seconds")
 	needs_ffmpeg = args.audio_file is None
 	if needs_ffmpeg:
@@ -1195,17 +1411,21 @@ def main() -> None:
 			raise RuntimeError("audio_file must be wav when using --audio")
 	audio_duration = get_wav_duration_seconds(audio_path)
 	raw_silences, scan_stats = scan_wav_for_silence(
-		audio_path, args.threshold_db, args.min_silence, args.frame_seconds,
-		args.hop_seconds, args.smooth_frames, include_series=args.debug
+		audio_path, settings['threshold_db'], settings['min_silence'],
+		settings['frame_seconds'], settings['hop_seconds'],
+		settings['smooth_frames'], include_series=args.debug
 	)
 	silences = normalize_silences(raw_silences, audio_duration,
-		args.min_silence, args.min_content)
-	threshold_used = args.threshold_db
+		settings['min_silence'], settings['min_content'])
+	threshold_used = settings['threshold_db']
 	auto_attempts = []
-	if args.auto_threshold and len(silences) == 0:
+	if settings['auto_threshold'] and len(silences) == 0:
 		auto_result = auto_find_silence(audio_path, audio_duration,
-			args.threshold_db, args.min_silence, args.min_content,
-			args.frame_seconds, args.hop_seconds, args.smooth_frames)
+			settings['threshold_db'], settings['min_silence'],
+			settings['min_content'], settings['frame_seconds'],
+			settings['hop_seconds'], settings['smooth_frames'],
+			settings['auto_step_db'], settings['auto_max_db'],
+			settings['auto_max_tries'])
 		auto_attempts = auto_result['attempts']
 		if auto_result['found']:
 			raw_silences = auto_result['raw_silences']
@@ -1214,19 +1434,20 @@ def main() -> None:
 			threshold_used = auto_result['threshold_db']
 			if args.debug and 'frame_db' not in scan_stats:
 				raw_silences, scan_stats = scan_wav_for_silence(
-					audio_path, threshold_used, args.min_silence,
-					args.frame_seconds, args.hop_seconds, args.smooth_frames,
+					audio_path, threshold_used, settings['min_silence'],
+					settings['frame_seconds'], settings['hop_seconds'],
+					settings['smooth_frames'],
 					include_series=True
 				)
 				silences = normalize_silences(raw_silences, audio_duration,
-					args.min_silence, args.min_content)
+					settings['min_silence'], settings['min_content'])
 	debug_file = None
 	plot_file = None
 	if args.debug:
 		debug_file = default_debug_path(args.input_file)
 		plot_file = default_plot_path(args.input_file)
-		debug_text = build_debug_report(audio_path, args.threshold_db,
-			args.min_silence, scan_stats, auto_attempts, threshold_used)
+		debug_text = build_debug_report(audio_path, settings['threshold_db'],
+			settings['min_silence'], scan_stats, auto_attempts, threshold_used)
 		write_text_report(debug_file, debug_text)
 		write_debug_plot(plot_file, scan_stats.get('frame_db', numpy.array([])),
 			scan_stats.get('smooth_db'), threshold_used,
@@ -1249,16 +1470,24 @@ def main() -> None:
 	yaml_text = emwy_yaml_writer.build_silence_timeline_yaml(
 		args.input_file, output_media_file, profile, "source",
 		segments,
-		args.silence_speed, args.content_speed
+		settings['silence_speed'], settings['content_speed'],
+		overlay_text_template=settings['overlay_text'] if settings['overlay_enabled'] else None,
+		overlay_geometry=overlay_geometry,
+		overlay_opacity=settings['overlay_opacity'],
+		overlay_font_size=settings['overlay_font_size'],
+		overlay_text_color=settings['overlay_text_color']
 	)
 	write_yaml_report(output_file, yaml_text)
 	if args.debug:
 		print_debug_summary(args, audio_path, temp_wav, output_file,
 			output_media_file, raw_silences, silences, contents, scan_stats,
-			auto_attempts, threshold_used, plot_file)
+			auto_attempts, threshold_used, plot_file,
+			threshold_db=settings['threshold_db'],
+			min_silence=settings['min_silence'],
+			min_content=settings['min_content'])
 	print_summary(args.input_file, audio_duration, silences, contents, output_file,
-		args.silence_speed, args.content_speed, debug_file, plot_file,
-		threshold_used, args.threshold_db)
+		settings['silence_speed'], settings['content_speed'], debug_file,
+		plot_file, threshold_used, settings['threshold_db'])
 	if temp_wav is not None and args.keep_wav is False:
 		os.remove(temp_wav)
 	return

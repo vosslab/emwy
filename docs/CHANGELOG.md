@@ -4,6 +4,11 @@
 - Added overlay tracks with transparent blanks and overlay rendering support.
 - Added `still` generator support and transparent card backgrounds for overlays.
 - Documented overlay authoring and updated Shotcut export limitations.
+- Updated silence annotator YAML to include fast-forward overlays.
+- Fixed pyflakes runner to avoid null-separated sort errors.
+- Documented MLT interop mapping and added export test coverage.
+- Added silence annotator config file support and simplified CLI flags.
+- Added MLT import/export specification docs.
 - Reshaped README introduction to lead with the EMWY acronym and MLT compatibility.
 - Clarified the EMWY acronym in the README.
 - Resolved AGENTS documentation links to use `docs/` paths.
