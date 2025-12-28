@@ -7,16 +7,17 @@ settings:
     frame_seconds: 0.25
     hop_seconds: 0.05
     smooth_frames: 5
-  trim_edges: true
+  trim_leading_silence: true
+  trim_trailing_silence: true
   speeds:
-    silence: 10.0
+    silence: 3.0
     content: 1.1
   overlay:
     enabled: true
     text_template: "Fast Forward {speed}X >>>"
     geometry: [0.1, 0.4, 0.8, 0.2]
     opacity: 0.9
-    font_size: 96
+    font_size: 256
     text_color: "#ffffff"
   title_card:
     enabled: true

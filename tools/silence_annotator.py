@@ -618,7 +618,7 @@ def build_settings(config: dict, config_path: str) -> dict:
 	settings = defaults.get('settings', {})
 	overrides = {}
 	if isinstance(config, dict):
-	overrides = config.get('settings', {})
+		overrides = config.get('settings', {})
 	detection = overrides.get('detection', {})
 	speeds = overrides.get('speeds', {})
 	overlay = overrides.get('overlay', {})
