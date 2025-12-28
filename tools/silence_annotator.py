@@ -69,6 +69,52 @@ def parse_args():
 		help="Path to a silence annotator config YAML."
 	)
 	parser.add_argument(
+		'-l', '--trim-leading-silence', dest='trim_leading_silence',
+		help="Trim leading silence from output.",
+		action='store_true'
+	)
+	parser.add_argument(
+		'-L', '--keep-leading-silence', dest='trim_leading_silence',
+		help="Keep leading silence in output.",
+		action='store_false'
+	)
+	parser.add_argument(
+		'-t', '--trim-trailing-silence', dest='trim_trailing_silence',
+		help="Trim trailing silence from output.",
+		action='store_true'
+	)
+	parser.add_argument(
+		'-T', '--keep-trailing-silence', dest='trim_trailing_silence',
+		help="Keep trailing silence in output.",
+		action='store_false'
+	)
+	parser.add_argument(
+		'-e', '--trim-edge-silence', dest='trim_edge_silence',
+		help=argparse.SUPPRESS,
+		action='store_true'
+	)
+	parser.add_argument(
+		'-E', '--keep-edge-silence', dest='trim_edge_silence',
+		help=argparse.SUPPRESS,
+		action='store_false'
+	)
+	parser.add_argument(
+		'-s', '--min-silence', dest='min_silence', type=float, default=None,
+		help="Override minimum silence seconds."
+	)
+	parser.add_argument(
+		'-m', '--min-content', dest='min_content', type=float, default=None,
+		help="Override minimum content seconds."
+	)
+	parser.add_argument(
+		'-S', '--silence-speed', dest='silence_speed', type=float, default=None,
+		help="Override silence speed multiplier."
+	)
+	parser.add_argument(
+		'-C', '--content-speed', dest='content_speed', type=float, default=None,
+		help="Override content speed multiplier."
+	)
+	parser.add_argument(
 		'-N', '--no-fast-forward-overlay', dest='fast_forward_overlay',
 		help="Disable fast-forward overlay text.",
 		action='store_false'
@@ -76,6 +122,9 @@ def parse_args():
 	parser.set_defaults(keep_wav=False)
 	parser.set_defaults(fast_forward_overlay=None)
 	parser.set_defaults(debug=False)
+	parser.set_defaults(trim_edge_silence=None)
+	parser.set_defaults(trim_leading_silence=None)
+	parser.set_defaults(trim_trailing_silence=None)
 	args = parser.parse_args()
 	return args
 
@@ -396,19 +445,28 @@ def default_config() -> dict:
 				'threshold_db': -40.0,
 				'min_silence': 3.0,
 				'min_content': 1.5,
-				'frame_seconds': 0.25,
-				'hop_seconds': 0.05,
-				'smooth_frames': 5,
-			},
-			'speeds': {
-				'silence': 10.0,
-				'content': 1.0,
+			'frame_seconds': 0.25,
+			'hop_seconds': 0.05,
+			'smooth_frames': 5,
+		},
+		'trim_leading_silence': True,
+		'trim_trailing_silence': True,
+		'speeds': {
+			'silence': 10.0,
+			'content': 1.0,
 			},
 			'overlay': {
 				'enabled': True,
 				'text_template': "Fast Forward {speed}X >>>",
 				'geometry': [0.1, 0.4, 0.8, 0.2],
 				'opacity': 0.9,
+				'font_size': 96,
+				'text_color': "#ffffff",
+			},
+			'title_card': {
+				'enabled': True,
+				'duration': 2.0,
+				'text_template': "{name}",
 				'font_size': 96,
 				'text_color': "#ffffff",
 			},
@@ -433,8 +491,7 @@ def default_config_path(input_file: str) -> str:
 	Returns:
 		str: Config file path.
 	"""
-	base, _ = os.path.splitext(input_file)
-	return f"{base}.silence.config.yaml"
+	return f"{input_file}.silence.config.yaml"
 
 #============================================
 
@@ -452,6 +509,14 @@ def build_config_text(config: dict) -> str:
 	detection = settings.get('detection', {})
 	speeds = settings.get('speeds', {})
 	overlay = settings.get('overlay', {})
+	trim_edges = settings.get('trim_edges')
+	trim_leading = settings.get('trim_leading_silence')
+	trim_trailing = settings.get('trim_trailing_silence')
+	if trim_leading is None:
+		trim_leading = trim_edges if trim_edges is not None else True
+	if trim_trailing is None:
+		trim_trailing = trim_edges if trim_edges is not None else True
+	title_card = settings.get('title_card', {})
 	auto_threshold = settings.get('auto_threshold', {})
 	geometry = overlay.get('geometry', [0.1, 0.4, 0.8, 0.2])
 	lines = []
@@ -464,6 +529,8 @@ def build_config_text(config: dict) -> str:
 	lines.append(f"    frame_seconds: {detection.get('frame_seconds', 0.25)}")
 	lines.append(f"    hop_seconds: {detection.get('hop_seconds', 0.05)}")
 	lines.append(f"    smooth_frames: {detection.get('smooth_frames', 5)}")
+	lines.append(f"  trim_leading_silence: {str(bool(trim_leading)).lower()}")
+	lines.append(f"  trim_trailing_silence: {str(bool(trim_trailing)).lower()}")
 	lines.append("  speeds:")
 	lines.append(f"    silence: {speeds.get('silence', 10.0)}")
 	lines.append(f"    content: {speeds.get('content', 1.0)}")
@@ -478,6 +545,14 @@ def build_config_text(config: dict) -> str:
 	lines.append(f"    opacity: {overlay.get('opacity', 0.9)}")
 	lines.append(f"    font_size: {overlay.get('font_size', 96)}")
 	lines.append(f"    text_color: \"{overlay.get('text_color', '#ffffff')}\"")
+	lines.append("  title_card:")
+	lines.append(f"    enabled: {str(bool(title_card.get('enabled', True))).lower()}")
+	lines.append(f"    duration: {title_card.get('duration', 2.0)}")
+	lines.append(
+		f"    text_template: \"{title_card.get('text_template', '{name}')}\""
+	)
+	lines.append(f"    font_size: {title_card.get('font_size', 96)}")
+	lines.append(f"    text_color: \"{title_card.get('text_color', '#ffffff')}\"")
 	lines.append("  auto_threshold:")
 	lines.append(
 		f"    enabled: {str(bool(auto_threshold.get('enabled', False))).lower()}"
@@ -543,10 +618,30 @@ def build_settings(config: dict, config_path: str) -> dict:
 	settings = defaults.get('settings', {})
 	overrides = {}
 	if isinstance(config, dict):
-		overrides = config.get('settings', {})
+	overrides = config.get('settings', {})
 	detection = overrides.get('detection', {})
 	speeds = overrides.get('speeds', {})
 	overlay = overrides.get('overlay', {})
+	trim_edges_override = overrides.get('trim_edges')
+	trim_leading_override = overrides.get('trim_leading_silence')
+	trim_trailing_override = overrides.get('trim_trailing_silence')
+	default_trim_leading = settings.get('trim_leading_silence',
+		settings.get('trim_edges', True))
+	default_trim_trailing = settings.get('trim_trailing_silence',
+		settings.get('trim_edges', True))
+	if trim_leading_override is None and trim_edges_override is not None:
+		trim_leading_override = trim_edges_override
+	if trim_trailing_override is None and trim_edges_override is not None:
+		trim_trailing_override = trim_edges_override
+	trim_leading = coerce_bool(
+		trim_leading_override if trim_leading_override is not None else default_trim_leading,
+		config_path, "settings.trim_leading_silence"
+	)
+	trim_trailing = coerce_bool(
+		trim_trailing_override if trim_trailing_override is not None else default_trim_trailing,
+		config_path, "settings.trim_trailing_silence"
+	)
+	title_card = overrides.get('title_card', {})
 	auto_threshold = overrides.get('auto_threshold', {})
 	threshold_db = coerce_float(detection.get('threshold_db',
 		settings['detection']['threshold_db']), config_path,
@@ -592,6 +687,23 @@ def build_settings(config: dict, config_path: str) -> dict:
 		settings['overlay']['text_color'])
 	if not isinstance(overlay_text_color, str):
 		raise RuntimeError(f"config {config_path}: settings.overlay.text_color must be a string")
+	title_card_enabled = coerce_bool(title_card.get('enabled',
+		settings['title_card']['enabled']), config_path,
+		"settings.title_card.enabled")
+	title_card_duration = coerce_float(title_card.get('duration',
+		settings['title_card']['duration']), config_path,
+		"settings.title_card.duration")
+	title_card_text = title_card.get('text_template',
+		settings['title_card']['text_template'])
+	if not isinstance(title_card_text, str):
+		raise RuntimeError(f"config {config_path}: settings.title_card.text_template must be a string")
+	title_card_font_size = coerce_int(title_card.get('font_size',
+		settings['title_card']['font_size']), config_path,
+		"settings.title_card.font_size")
+	title_card_text_color = title_card.get('text_color',
+		settings['title_card']['text_color'])
+	if not isinstance(title_card_text_color, str):
+		raise RuntimeError(f"config {config_path}: settings.title_card.text_color must be a string")
 	auto_enabled = coerce_bool(auto_threshold.get('enabled',
 		settings['auto_threshold']['enabled']), config_path,
 		"settings.auto_threshold.enabled")
@@ -611,6 +723,8 @@ def build_settings(config: dict, config_path: str) -> dict:
 		'frame_seconds': frame_seconds,
 		'hop_seconds': hop_seconds,
 		'smooth_frames': smooth_frames,
+		'trim_leading_silence': trim_leading,
+		'trim_trailing_silence': trim_trailing,
 		'silence_speed': silence_speed,
 		'content_speed': content_speed,
 		'overlay_enabled': overlay_enabled,
@@ -619,6 +733,11 @@ def build_settings(config: dict, config_path: str) -> dict:
 		'overlay_opacity': overlay_opacity,
 		'overlay_font_size': overlay_font_size,
 		'overlay_text_color': overlay_text_color,
+		'title_card_enabled': title_card_enabled,
+		'title_card_duration': title_card_duration,
+		'title_card_text': title_card_text,
+		'title_card_font_size': title_card_font_size,
+		'title_card_text_color': title_card_text_color,
 		'auto_threshold': auto_enabled,
 		'auto_step_db': auto_step_db,
 		'auto_max_db': auto_max_db,
@@ -1047,6 +1166,30 @@ def normalize_silences(silences: list, duration: float,
 
 #============================================
 
+def trim_leading_trailing_silences(silences: list, duration: float,
+	trim_leading: bool = True, trim_trailing: bool = True) -> list:
+	"""
+	Remove leading/trailing silence segments that touch the bounds.
+
+	Args:
+		silences: List of silence segments.
+		duration: Total audio duration.
+
+	Returns:
+		list: Trimmed silence segments.
+	"""
+	if len(silences) == 0:
+		return silences
+	epsilon = 0.0001
+	trimmed = list(silences)
+	if trim_leading and trimmed and trimmed[0]['start'] <= epsilon:
+		trimmed = trimmed[1:]
+	if trim_trailing and trimmed and trimmed[-1]['end'] >= (duration - epsilon):
+		trimmed = trimmed[:-1]
+	return trimmed
+
+#============================================
+
 def compute_contents(silences: list, duration: float) -> list:
 	"""
 	Compute content segments as the complement of silence.
@@ -1177,8 +1320,7 @@ def default_output_path(input_file: str) -> str:
 	Returns:
 		str: Output file path.
 	"""
-	base, _ = os.path.splitext(input_file)
-	return f"{base}.emwy.yaml"
+	return f"{input_file}.emwy.yaml"
 
 #============================================
 
@@ -1192,8 +1334,7 @@ def default_debug_path(input_file: str) -> str:
 	Returns:
 		str: Debug output file path.
 	"""
-	base, _ = os.path.splitext(input_file)
-	return f"{base}.silence.debug.txt"
+	return f"{input_file}.silence.debug.txt"
 
 #============================================
 
@@ -1207,8 +1348,7 @@ def default_plot_path(input_file: str) -> str:
 	Returns:
 		str: Debug plot path.
 	"""
-	base, _ = os.path.splitext(input_file)
-	return f"{base}.silence.debug.png"
+	return f"{input_file}.silence.debug.png"
 
 #============================================
 
@@ -1503,6 +1643,23 @@ def main() -> None:
 		print(f"Wrote default config: {config_path}")
 	config = load_config(config_path)
 	settings = build_settings(config, config_path)
+	if args.trim_edge_silence is not None:
+		if args.trim_leading_silence is None:
+			settings['trim_leading_silence'] = args.trim_edge_silence
+		if args.trim_trailing_silence is None:
+			settings['trim_trailing_silence'] = args.trim_edge_silence
+	if args.trim_leading_silence is not None:
+		settings['trim_leading_silence'] = args.trim_leading_silence
+	if args.trim_trailing_silence is not None:
+		settings['trim_trailing_silence'] = args.trim_trailing_silence
+	if args.min_silence is not None:
+		settings['min_silence'] = args.min_silence
+	if args.min_content is not None:
+		settings['min_content'] = args.min_content
+	if args.silence_speed is not None:
+		settings['silence_speed'] = args.silence_speed
+	if args.content_speed is not None:
+		settings['content_speed'] = args.content_speed
 	if args.fast_forward_overlay is False:
 		settings['overlay_enabled'] = False
 	if settings['threshold_db'] > 0:
@@ -1515,6 +1672,11 @@ def main() -> None:
 		raise RuntimeError("silence_speed must be positive")
 	if settings['content_speed'] <= 0:
 		raise RuntimeError("content_speed must be positive")
+	if settings['title_card_enabled']:
+		if settings['title_card_duration'] <= 0:
+			raise RuntimeError("title_card duration must be positive")
+		if settings['title_card_font_size'] <= 0:
+			raise RuntimeError("title_card font_size must be positive")
 	overlay_geometry = None
 	if settings['overlay_enabled']:
 		overlay_geometry = settings['overlay_geometry']
@@ -1551,6 +1713,9 @@ def main() -> None:
 	)
 	silences = normalize_silences(raw_silences, audio_duration,
 		settings['min_silence'], settings['min_content'])
+	if settings['trim_leading_silence'] or settings['trim_trailing_silence']:
+		silences = trim_leading_trailing_silences(silences, audio_duration,
+			settings['trim_leading_silence'], settings['trim_trailing_silence'])
 	threshold_used = settings['threshold_db']
 	auto_attempts = []
 	if settings['auto_threshold'] and len(silences) == 0:
@@ -1592,6 +1757,10 @@ def main() -> None:
 	segments = build_segment_list(silences, contents)
 	output_file = default_output_path(args.input_file)
 	output_media_file = default_output_media_path(args.input_file)
+	intro_title = None
+	if settings['title_card_enabled']:
+		base_name = os.path.splitext(os.path.basename(args.input_file))[0]
+		intro_title = settings['title_card_text'].replace("{name}", base_name)
 	video_meta = probe_video_stream(args.input_file)
 	audio_meta = probe_audio_stream(args.input_file)
 	profile = {
@@ -1609,7 +1778,20 @@ def main() -> None:
 		overlay_geometry=overlay_geometry,
 		overlay_opacity=settings['overlay_opacity'],
 		overlay_font_size=settings['overlay_font_size'],
-		overlay_text_color=settings['overlay_text_color']
+		overlay_text_color=settings['overlay_text_color'],
+		intro_title=intro_title,
+		intro_duration=settings['title_card_duration'],
+		intro_font_size=settings['title_card_font_size'],
+		intro_text_color=settings['title_card_text_color'],
+		playback_styles={
+			'content': settings['content_speed'],
+			'fast_forward': settings['silence_speed'],
+		},
+		segment_style_map={
+			'content': 'content',
+			'silence': 'fast_forward',
+		},
+		overlay_apply_style="fast_forward",
 	)
 	write_yaml_report(output_file, yaml_text)
 	if args.debug:

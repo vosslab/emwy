@@ -4,7 +4,9 @@ include AGENTS.md
 include MARKDOWN_STYLE.md
 include EMWY_YAML_v1_SPEC.md
 include EMWY_YAML_v2_SPEC.md
+include emwy_cli.py
 include emwy.py
+include emwy_tui.py
 include emwy.wav
 include pip_requirements.txt
 recursive-include docs *.md

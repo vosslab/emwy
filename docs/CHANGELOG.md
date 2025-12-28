@@ -1,6 +1,24 @@
 # Changelog
 
 ## Unreleased
+- Added `emwy_cli.py` (with `emwy.py` as a wrapper) and moved `emwy_tui.py` to the repo root.
+- Added output merge batching controls for large timelines.
+- Fixed overlay transparent blanks to preserve alpha so overlays do not show black boxes.
+- Added a Textual TUI wrapper for emwy renders.
+- Replaced deprecated scipy.ndimage.filters import in title card rendering.
+- Defaulted cache directory for temporary render files to a per-run temp dir.
+- Fixed title card ffmpeg profile for libx265 to avoid zero-byte output files.
+- Fixed title card image rendering to use the temp directory pattern for ffmpeg input.
+- Added silence annotator trim_leading_silence/trim_trailing_silence options (default true).
+- Fixed title card rendering with newer Pillow versions (getbbox fallback).
+- Standardized silence annotator outputs to use `<input>.*` filenames (including extensions).
+- Allowed playback styles to supply overlay_text_style defaults for overlay templates.
+- Added docs/TODO.md with MLT overlay export pre-render task.
+- Renamed silence annotator fast playback style id to `fast_forward`.
+- Added playback_styles to apply shared speed presets to source segments.
+- Added default silence annotator intro title card output.
+- Enforced matching audio/video speeds on source segments.
+- Added overlay_text generator and overlay_text_styles for dedicated overlay labels.
 - Added overlay template apply rules so fast-forward title cards can be authored once.
 - Added overlay tracks with transparent blanks and overlay rendering support.
 - Added `still` generator support and transparent card backgrounds for overlays.

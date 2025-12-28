@@ -7,9 +7,9 @@ Every project starts with `emwy: 2` to declare the schema version. Future releas
 
 ## Sections
 1. **profile**: Declares fps, resolution, color space hints, and audio defaults (sample rate, channel layout).
-2. **assets**: A typed registry of media items (`video`, `audio`, `image`, `cards`). Each asset object lists a `file` path plus optional metadata.
+2. **assets**: A typed registry of media items (`video`, `audio`, `image`, `cards`, `overlay_text_styles`, `playback_styles`). Each asset object lists a `file` path plus optional metadata.
 3. **timeline**: Ordered list of segments plus optional overlay tracks. Each segment is an A/V/S unit with `source`, `blank`, or `generator` entries and optional per-segment `video`/`audio` processing.
-4. **output**: Specifies the muxed file, container hints, preview settings, and export toggles (`save_mlt`, `dry_run`).
+4. **output**: Specifies the muxed file, container hints, and batch merge settings for large timelines.
 5. **compiled** (advanced): Optional compiled playlists/stack for export/debugging.
 
 Notes:
@@ -53,6 +53,19 @@ timeline:
         in: "00:00.0"
         out: "00:12.0"
         fill_missing: {video: black}
+```
+
+Playback style example (shared speed presets):
+
+```yaml
+assets:
+  playback_styles:
+    normal: {speed: 1.1}
+    fast: {speed: 40, overlay_text_style: fast_forward_style}
+timeline:
+  segments:
+    - source: {asset: lecture, in: "00:00.0", out: "00:10.0", style: normal}
+    - source: {asset: lecture, in: "00:10.0", out: "00:12.0", style: fast}
 ```
 
 Example (chapter card with image background):
@@ -131,7 +144,7 @@ Fields:
 - `opacity`: `0.0` to `1.0`.
 - `segments`: list of `source`, `blank`, or `generator` entries (video-only).
 - `template`: overlay entry template (currently generator-only) used with `apply`.
-- `apply`: selection rule for `template` overlays (currently `kind: speed`).
+- `apply`: selection rule for `template` overlays (`kind: speed` or `playback_style`).
 
 Blank segments on overlay tracks default to `fill: transparent`.
 Transparent card backgrounds are intended for overlays.
@@ -139,27 +152,39 @@ Template overlays expand across timeline segments, inserting the template when
 `apply` matches and transparent blanks elsewhere. `{speed}` in template titles
 or text is replaced with the matched speed.
 Use either `segments` or `template`/`apply`, not both.
+Overlay text templates use `kind: overlay_text` with `text` (or `title`) and an
+optional `style` from `assets.overlay_text_styles`.
+When `apply.kind: playback_style` is used, the matched playback style may supply
+`overlay_text_style` to fill in a missing template style.
 
 Example (fast forward overlay template):
 
 ```yaml
+assets:
+  playback_styles:
+    fast: {speed: 40}
+  overlay_text_styles:
+    fast_forward_style:
+      kind: overlay_text_style
+      font_size: 96
+      text_color: "#ffffff"
+      background: {kind: transparent}
 timeline:
   segments:
     - source: {asset: lecture, in: "00:00.0", out: "00:10.0"}
-    - source: {asset: lecture, in: "00:10.0", out: "00:15.0", video: {speed: 40}}
+    - source: {asset: lecture, in: "00:10.0", out: "00:15.0", style: fast}
   overlays:
     - id: fast_forward
       geometry: [0.1, 0.4, 0.8, 0.2]
       opacity: 0.9
       apply:
-        kind: speed
-        stream: video
-        min_speed: 2.0
+        kind: playback_style
+        style: fast
       template:
         generator:
-          kind: title_card
-          title: "Fast Forward {speed}X >>>"
-          background: {kind: transparent}
+          kind: overlay_text
+          text: "Fast Forward {speed}X >>>"
+          style: fast_forward_style
 ```
 
 ## Timecodes
@@ -169,6 +194,7 @@ timeline:
 ## Validation Rules
 - Assets must be referenced by at least one segment or `emwy` warns.
 - Missing required streams in a segment are errors unless `fill_missing` is set.
+- `video.speed` and `audio.speed` are kept in sync; mismatches raise an error.
 - Output file extension determines the container unless overridden.
 
 For migration tips from v1, see [COOKBOOK.md](COOKBOOK.md). When in doubt, export MLT XML to verify structure before running a full render.

@@ -217,9 +217,16 @@ class Renderer():
 	def _render_blank_video(self, out_file: str, duration: float,
 		fps_value: float, width: int, height: int, codec: str, crf: int,
 		pixel_format: str, fill: str) -> None:
-		color_value = 'black'
 		if fill == 'transparent':
-			color_value = 'black@0.0'
+			card_image = self._make_temp_path("blank-transparent.png")
+			image = PIL.Image.new("RGBA", (width, height), color=(0, 0, 0, 0))
+			image.save(card_image)
+			self._render_still_image(card_image, out_file, duration, codec, crf,
+				pixel_format)
+			if not self.project.keep_temp:
+				self._cleanup_temp([card_image])
+			return
+		color_value = 'black'
 		cmd = "ffmpeg -y -f lavfi "
 		cmd += f" -i color=c={color_value}:s={width}x{height}:r={fps_value:.6f} "
 		cmd += f" -t {duration:.3f} "
@@ -268,6 +275,8 @@ class Renderer():
 		gen_kind = entry['kind']
 		if gen_kind in ('chapter_card', 'title_card'):
 			return self._render_title_card(entry, index, codec, crf, pixel_format)
+		if gen_kind == 'overlay_text':
+			return self._render_overlay_text(entry, index, codec, crf, pixel_format)
 		if gen_kind == 'still':
 			return self._render_still_generator(entry, index, codec, crf,
 				pixel_format)
@@ -355,6 +364,47 @@ class Renderer():
 		tc.createCards()
 		utils.ensure_file_exists(out_file)
 		return out_file
+
+	#============================
+	def _render_overlay_text(self, entry: dict, index: int, codec: str = None,
+		crf: int = None, pixel_format: str = None) -> str:
+		data = entry.get('data', {})
+		text = data.get('text', data.get('title', ''))
+		if text == '':
+			raise RuntimeError("overlay_text requires text or title")
+		style_id = data.get('style')
+		style = None
+		if style_id is not None:
+			style = self.project.assets.get('overlay_text_styles', {}).get(style_id)
+			if style is None:
+				raise RuntimeError(
+					f"overlay text style {style_id} not found in assets.overlay_text_styles"
+				)
+		font_size = self._resolve_card_value(data, style, 'font_size')
+		font_file = self._resolve_card_value(data, style, 'font_file')
+		text_color = self._resolve_card_value(data, style, 'text_color')
+		background = self._resolve_card_background(data, style)
+		if background is None:
+			background = {'kind': 'transparent'}
+		duration = utils.seconds_from_frames(
+			entry['duration_frames'], self.project.profile['fps']
+		)
+		if not isinstance(background, dict):
+			raise RuntimeError("overlay text background must be a mapping")
+		bg_kind = background.get('kind')
+		if bg_kind == 'image':
+			return self._render_image_card(text, background, duration, font_file,
+				font_size, text_color, index, codec, crf, pixel_format)
+		if bg_kind == 'color':
+			return self._render_color_card(text, background, duration, font_file,
+				font_size, text_color, index, codec, crf, pixel_format)
+		if bg_kind == 'gradient':
+			return self._render_gradient_card(text, background, duration, font_file,
+				font_size, text_color, index, codec, crf, pixel_format)
+		if bg_kind == 'transparent':
+			return self._render_transparent_card(text, duration, font_file,
+				font_size, text_color, index, codec, crf, pixel_format)
+		raise RuntimeError(f"unsupported overlay text background kind {bg_kind}")
 
 	#============================
 	def _resolve_card_value(self, data: dict, style: dict, key: str):
@@ -655,6 +705,29 @@ class Renderer():
 		if len(segment_files) == 1:
 			shutil.copy(segment_files[0], output_file)
 			return
+		threshold = self.project.output.get('merge_batch_threshold', 0)
+		batch_size = self.project.output.get('merge_batch_size', 0)
+		if threshold > 0 and batch_size > 0 and len(segment_files) > threshold:
+			batch_files = []
+			batch_index = 1
+			for start_index in range(0, len(segment_files), batch_size):
+				batch_segments = segment_files[start_index:start_index + batch_size]
+				batch_out = self._make_temp_path(f"concat-{batch_index:03d}.mkv")
+				if len(batch_segments) == 1:
+					shutil.copy(batch_segments[0], batch_out)
+				else:
+					self._merge_video_files(batch_segments, batch_out)
+				batch_files.append(batch_out)
+				batch_index += 1
+			self._merge_video_files(batch_files, output_file)
+			if not self.project.keep_temp:
+				self._cleanup_temp(batch_files)
+			return
+		self._merge_video_files(segment_files, output_file)
+		return
+
+	#============================
+	def _merge_video_files(self, segment_files: list, output_file: str) -> None:
 		cmd = "mkvmerge "
 		for segment in segment_files:
 			cmd += f" {segment} + "
@@ -679,7 +752,8 @@ class Renderer():
 			utils.ensure_file_exists(output_file)
 			if len(chapters) > 0:
 				self._apply_chapters(output_file, chapters)
-			print(f"mpv {output_file}")
+			if not utils.is_quiet_mode():
+				print(f"mpv {output_file}")
 			return
 		encoded_file = self._make_temp_path("output-encoded.mkv")
 		cmd = "ffmpeg -y "
@@ -695,7 +769,8 @@ class Renderer():
 		utils.ensure_file_exists(output_file)
 		if len(chapters) > 0:
 			self._apply_chapters(output_file, chapters)
-		print(f"mpv {output_file}")
+		if not utils.is_quiet_mode():
+			print(f"mpv {output_file}")
 		if not self.project.keep_temp and segment_track != output_file:
 			os.remove(segment_track)
 

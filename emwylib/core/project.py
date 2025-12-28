@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import shutil
+from emwylib.core import utils
 from emwylib.core.loader import ProjectLoader
 from emwylib.core.renderer import Renderer
 from emwylib.core.timeline import TimelinePlanner
@@ -24,6 +26,7 @@ class EmwyProject():
 		self.dry_run = self._project.dry_run
 		self.keep_temp = self._project.keep_temp
 		self.cache_dir = self._project.cache_dir
+		self.cache_dir_created = self._project.cache_dir_created
 		self.data = self._project.data
 		self.profile = self._project.profile
 		self.defaults = self._project.defaults
@@ -36,9 +39,12 @@ class EmwyProject():
 	def run(self) -> None:
 		self._timeline.validate_timeline()
 		if self.dry_run:
-			print("dry run: validation complete")
+			if not utils.is_quiet_mode():
+				print("dry run: validation complete")
 			return
 		self._renderer.render()
+		if not self.keep_temp and self._project.cache_dir_created:
+			shutil.rmtree(self._project.cache_dir, ignore_errors=True)
 
 	#============================
 	def validate(self) -> None:

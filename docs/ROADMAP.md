@@ -8,6 +8,7 @@ This roadmap prioritizes reliability and interchange over UI features.
 - Implement playlist transitions (crossfades, dips).
 - Support entry `enabled` flags to skip sections without affecting timeline timing.
 - Export MKV chapters from entry `title` fields (honoring `chapter: false`).
+- Pre-render overlay generators (especially `overlay_text`) so MLT export can emit overlay playlists + transitions.
 - Expand card backgrounds beyond current `image`/`color`/`gradient` (`video`, `source_blur`).
 - Add regression tests that re-render sample lectures nightly.
 

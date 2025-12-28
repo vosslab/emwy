@@ -6,33 +6,18 @@
 
 import os
 import random
-import re
 import shutil
 import sys
 import tempfile
 import numpy
-import subprocess
 from tqdm import tqdm
 from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
-from scipy.ndimage import filters
+from scipy.ndimage import gaussian_filter
 from emwylib.transforms import RGBTransform
+from emwylib.core import utils
 
-#===============================
-def runCmd(cmd, msg=False):
-	showcmd = cmd.strip()
-	showcmd = re.sub("  *", " ", showcmd)
-	print(("CMD: '%s'"%(showcmd)))
-	if msg is True:
-		proc = subprocess.Popen(showcmd, shell=True)
-	else:
-		proc = subprocess.Popen(showcmd, shell=True,
-			stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-	proc.communicate()
-	return
-
-#===============================
 #===============================
 class TitleCard(object):
 	def __init__(self):
@@ -52,16 +37,26 @@ class TitleCard(object):
 		self.outfile = "titlecard.mkv"
 		self.randimg = None
 		self.temp_dir = None
+		self.quiet = False
 		
 	#===============================
 	def setType(self):
 		self.fnt = self._load_font()
-		textsize = self.fnt.getsize(self.text)
+		textsize = self._measure_text(self.text)
 		self.w = int(round(self.width/2.0 - textsize[0]/2.0))
 		self.h = int(round(self.height/2.0 - textsize[1]/2.0))
 		self.topband = int(round(self.height/2.0 - textsize[1]))
 		self.bottomband = int(round(self.height/2.0 + textsize[1]))
 		return
+
+	#===============================
+	def _measure_text(self, text):
+		if hasattr(self.fnt, "getbbox"):
+			bbox = self.fnt.getbbox(text)
+			width = bbox[2] - bbox[0]
+			height = bbox[3] - bbox[1]
+			return (width, height)
+		return self.fnt.getsize(text)
 
 	#===============================
 	def alterColor(self, rgb1, shift):
@@ -78,19 +73,25 @@ class TitleCard(object):
 		return int(round(i))
 
 	#===============================
-	def makeMovieFromImages(self, imglist):
+	def makeMovieFromImages(self, imglist, image_dir=None):
+		if image_dir is None:
+			if len(imglist) > 0:
+				image_dir = os.path.dirname(imglist[0])
+		if image_dir is None or image_dir == "":
+			image_dir = "."
+		image_pattern = os.path.join(image_dir, "%s%s.png"%(self.imgcode, "%05d"))
 		cmd = "ffmpeg -y "
 		cmd += " -r %d "%(self.framerate)
-		cmd += " -i %s%s.png "%(self.imgcode, "%05d")
+		cmd += " -i \"%s\" "%(image_pattern)
 		cmd += " -codec:v libx265 -filter:v 'fps=%d,format=yuv420p' "%(self.framerate)
-		cmd += " -crf %d -preset ultrafast -tune fastdecode -profile:v high -pix_fmt yuv420p "%(self.crf)
-		cmd += " %s "%(self.outfile)
-		runCmd(cmd)
+		cmd += " -crf %d -preset ultrafast -tune fastdecode -profile:v main -pix_fmt yuv420p "%(self.crf)
+		cmd += " \"%s\" "%(self.outfile)
+		utils.runCmd(cmd)
 
 	#===============================
 	def cloudBase(self, bgcolor):
 		base_pattern = numpy.random.uniform(0, 255, (self.height, self.width))
-		base_pattern = filters.gaussian_filter(base_pattern, sigma=7)
+		base_pattern = gaussian_filter(base_pattern, sigma=7)
 		if self.randimg is not None:
 			base_pattern = (1*self.randimg + base_pattern)/2.
 		self.randimg = base_pattern
@@ -143,7 +144,8 @@ class TitleCard(object):
 		w = self.w
 		imglist = []
 		turbim = self.make_turbulence()
-		for i in tqdm(list(range(self.numimages))):
+		quiet_mode = self.quiet or utils.is_quiet_mode()
+		for i in tqdm(list(range(self.numimages)), disable=quiet_mode):
 			bgcolor = self.alterColor(bgcolor, self.defaultshift)
 			textcolor = self.alterColor(textcolor, self.defaultshift)
 			h = self.alterInt(h, self.defaultshift)
@@ -163,10 +165,11 @@ class TitleCard(object):
 			im.save(imgname, "PNG")
 			imglist.append(imgname)
 		sys.stderr.write("\n")
-		self.makeMovieFromImages(imglist)
+		self.makeMovieFromImages(imglist, temp_dir)
 		if owns_temp:
 			shutil.rmtree(temp_dir, ignore_errors=True)
-		print("done")
+		if not quiet_mode:
+			print("done")
 		return
 
 	#===============================

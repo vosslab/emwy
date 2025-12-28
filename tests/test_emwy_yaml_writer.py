@@ -48,6 +48,14 @@ class EmwyYamlWriterTest(unittest.TestCase):
 			segments,
 			4.0,
 			1.0,
+			playback_styles={
+				'content': 1.0,
+				'fast_forward': 4.0,
+			},
+			segment_style_map={
+				'content': 'content',
+				'silence': 'fast_forward',
+			},
 		)
 		self.assertIn("timeline:", yaml_text)
 		self.assertIn("segments:", yaml_text)
@@ -55,10 +63,13 @@ class EmwyYamlWriterTest(unittest.TestCase):
 		self.assertNotIn("stack:", yaml_text)
 		self.assertIn("assets:", yaml_text)
 		self.assertIn("video:", yaml_text)
+		self.assertIn("playback_styles:", yaml_text)
 		self.assertNotIn("assets:\n  audio:", yaml_text)
 		self.assertIn("asset: source", yaml_text)
-		self.assertEqual(yaml_text.count("video: {speed"), 1)
-		self.assertEqual(yaml_text.count("audio: {speed"), 1)
+		self.assertIn("style: content", yaml_text)
+		self.assertIn("style: fast_forward", yaml_text)
+		self.assertNotIn("video: {speed", yaml_text)
+		self.assertNotIn("audio: {speed", yaml_text)
 		self.assertNotIn("overlays:", yaml_text)
 
 	#============================================
@@ -94,13 +105,26 @@ class EmwyYamlWriterTest(unittest.TestCase):
 			overlay_text_template="Fast Forward {speed}X >>>",
 			overlay_geometry=[0.1, 0.4, 0.8, 0.2],
 			overlay_opacity=0.9,
+			playback_styles={
+				'content': 1.0,
+				'fast_forward': 4.0,
+			},
+			segment_style_map={
+				'content': 'content',
+				'silence': 'fast_forward',
+			},
+			overlay_apply_style="fast_forward",
 		)
 		self.assertIn("overlays:", yaml_text)
 		self.assertIn("apply:", yaml_text)
 		self.assertIn("template:", yaml_text)
+		self.assertIn("overlay_text_styles:", yaml_text)
+		self.assertIn("kind: overlay_text", yaml_text)
+		self.assertIn("playback_styles:", yaml_text)
 		self.assertIn("background: {kind: transparent}", yaml_text)
 		self.assertIn("Fast Forward {speed}X >>>", yaml_text)
-		self.assertIn("min_speed: 4", yaml_text)
+		self.assertIn("kind: playback_style", yaml_text)
+		self.assertIn("style: fast_forward", yaml_text)
 
 	#============================================
 	def test_yaml_quote(self) -> None:

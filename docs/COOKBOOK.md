@@ -9,8 +9,8 @@ This cookbook captures reusable patterns for common editing tasks.
 
 ## Speed Up Pauses
 - Split the clip into multiple segments.
-- Add `video: {speed: 3.0}` and `audio: {speed: 3.0}` on silent sections.
-- Keep `video: {speed: 1.0}` and `audio: {speed: 1.0}` on normal sections.
+- Define `assets.playback_styles` for repeated speeds (for example `normal` and `fast`).
+- Apply `style` on each `source` entry, or set matching `video.speed`/`audio.speed`.
 
 ## Add Title Cards
 - Use a `generator` segment with a fixed `duration`.
@@ -61,26 +61,34 @@ timeline:
 ```
 
 ## Fast Forward Watermark
-Use a transparent title card on an overlay track.
+Use an overlay text generator on an overlay track.
 
 ```yaml
+assets:
+  playback_styles:
+    fast: {speed: 40}
+  overlay_text_styles:
+    fast_forward_style:
+      kind: overlay_text_style
+      font_size: 96
+      text_color: "#ffffff"
+      background: {kind: transparent}
 timeline:
   segments:
     - source: {asset: lecture, in: "00:00.0", out: "00:10.0"}
-    - source: {asset: lecture, in: "00:10.0", out: "00:20.0", video: {speed: 40}}
+    - source: {asset: lecture, in: "00:10.0", out: "00:20.0", style: fast}
   overlays:
     - id: fast_forward
       geometry: [0.1, 0.4, 0.8, 0.2]
       opacity: 0.9
       apply:
-        kind: speed
-        stream: video
-        min_speed: 2.0
+        kind: playback_style
+        style: fast
       template:
         generator:
-          kind: title_card
-          title: "Fast Forward {speed}X >>>"
-          background: {kind: transparent}
+          kind: overlay_text
+          text: "Fast Forward {speed}X >>>"
+          style: fast_forward_style
 ```
 
 ## Batch Rendering

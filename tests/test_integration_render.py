@@ -244,8 +244,8 @@ class SilenceAnnotatorIntegrationTest(unittest.TestCase):
 			project.run()
 			self.assertTrue(os.path.exists(project.output["file"]))
 			duration = _probe_duration(project.output["file"])
-			self.assertGreater(duration, 1.0)
-			self.assertLess(duration, 1.6)
+			self.assertGreater(duration, 3.8)
+			self.assertLess(duration, 4.4)
 
 #============================================
 

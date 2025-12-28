@@ -9,13 +9,68 @@ from fractions import Fraction
 
 #============================================
 
+_command_reporter = None
+_quiet_mode = False
+
+#============================================
+
+def set_command_reporter(reporter) -> None:
+	"""
+	Register a callback for command events.
+	"""
+	global _command_reporter
+	_command_reporter = reporter
+	return
+
+#============================================
+
+def clear_command_reporter() -> None:
+	"""
+	Remove the command event callback.
+	"""
+	global _command_reporter
+	_command_reporter = None
+	return
+
+#============================================
+
+def set_quiet_mode(enabled: bool) -> None:
+	"""
+	Toggle quiet mode to suppress command prints.
+	"""
+	global _quiet_mode
+	_quiet_mode = bool(enabled)
+	return
+
+#============================================
+
+def is_quiet_mode() -> bool:
+	return _quiet_mode
+
+#============================================
+
 def runCmd(cmd: str) -> None:
 	showcmd = cmd.strip()
 	showcmd = re.sub("  *", " ", showcmd)
-	print(f"CMD: '{showcmd}'")
+	start_time = time.time()
+	if _command_reporter is not None:
+		_command_reporter({
+			'event': 'start',
+			'command': showcmd,
+		})
+	elif not _quiet_mode:
+		print(f"CMD: '{showcmd}'")
 	proc = subprocess.Popen(showcmd, shell=True, stderr=subprocess.PIPE,
 		stdout=subprocess.PIPE)
 	proc.communicate()
+	duration = time.time() - start_time
+	if _command_reporter is not None:
+		_command_reporter({
+			'event': 'end',
+			'command': showcmd,
+			'returncode': proc.returncode,
+			'seconds': duration,
+		})
 	return
 
 #============================================

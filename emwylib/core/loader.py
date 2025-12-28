@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import tempfile
 import yaml
 from decimal import Decimal
 from fractions import Fraction
@@ -15,6 +16,7 @@ class ProjectData():
 		self.dry_run = False
 		self.keep_temp = False
 		self.cache_dir = None
+		self.cache_dir_created = False
 		self.temp_counter = 0
 		self.data = {}
 		self.timeline = {}
@@ -44,7 +46,16 @@ class ProjectLoader():
 		project.output_override = self.output_override
 		project.dry_run = self.dry_run
 		project.keep_temp = self.keep_temp
-		project.cache_dir = self.cache_dir or os.getcwd()
+		cache_dir = self.cache_dir
+		cache_dir_created = False
+		if cache_dir is None:
+			cache_dir = tempfile.mkdtemp(prefix="emwy-run-")
+			cache_dir_created = True
+		else:
+			if not os.path.exists(cache_dir):
+				os.makedirs(cache_dir)
+		project.cache_dir = cache_dir
+		project.cache_dir_created = cache_dir_created
 		project.data = self._load_yaml()
 		self._validate_required_keys(project.data)
 		project.profile = self._parse_profile(project.data.get('profile'))
@@ -133,6 +144,8 @@ class ProjectLoader():
 			'audio': assets.get('audio', {}),
 			'image': assets.get('image', {}),
 			'cards': assets.get('cards', {}),
+			'overlay_text_styles': assets.get('overlay_text_styles', {}),
+			'playback_styles': assets.get('playback_styles', {}),
 		}
 		for group_name, group in asset_groups.items():
 			if not isinstance(group, dict):
@@ -266,23 +279,37 @@ class ProjectLoader():
 		if template_data.get('duration') is not None:
 			raise RuntimeError("overlay template generator must not set duration")
 		apply_kind = apply_settings.get('kind', 'speed')
-		if apply_kind != 'speed':
-			raise RuntimeError("overlay apply kind must be speed")
-		stream_kind = apply_settings.get('stream', 'video')
-		if stream_kind not in ('video', 'audio'):
-			raise RuntimeError("overlay apply stream must be video or audio")
-		min_speed_raw = apply_settings.get('min_speed')
-		max_speed_raw = apply_settings.get('max_speed')
-		if min_speed_raw is None and max_speed_raw is None:
-			raise RuntimeError("overlay apply speed requires min_speed or max_speed")
+		stream_kind = None
 		min_speed = None
 		max_speed = None
-		if min_speed_raw is not None:
-			min_speed = utils.parse_speed(min_speed_raw, project.defaults['speed'])
-		if max_speed_raw is not None:
-			max_speed = utils.parse_speed(max_speed_raw, project.defaults['speed'])
-		if min_speed is not None and max_speed is not None and min_speed > max_speed:
-			raise RuntimeError("overlay apply min_speed must be <= max_speed")
+		apply_style = None
+		playback_overlay_style = None
+		if apply_kind == 'speed':
+			stream_kind = apply_settings.get('stream', 'video')
+			if stream_kind not in ('video', 'audio'):
+				raise RuntimeError("overlay apply stream must be video or audio")
+			min_speed_raw = apply_settings.get('min_speed')
+			max_speed_raw = apply_settings.get('max_speed')
+			if min_speed_raw is None and max_speed_raw is None:
+				raise RuntimeError("overlay apply speed requires min_speed or max_speed")
+			if min_speed_raw is not None:
+				min_speed = utils.parse_speed(min_speed_raw, project.defaults['speed'])
+			if max_speed_raw is not None:
+				max_speed = utils.parse_speed(max_speed_raw, project.defaults['speed'])
+			if min_speed is not None and max_speed is not None and min_speed > max_speed:
+				raise RuntimeError("overlay apply min_speed must be <= max_speed")
+		elif apply_kind == 'playback_style':
+			apply_style = apply_settings.get('style')
+			if apply_style is None:
+				raise RuntimeError("overlay apply playback_style requires style")
+			playback_style = project.assets.get('playback_styles', {}).get(apply_style)
+			if playback_style is None:
+				raise RuntimeError(f"playback style {apply_style} not found in assets.playback_styles")
+			if not isinstance(playback_style, dict):
+				raise RuntimeError("playback style must be a mapping")
+			playback_overlay_style = playback_style.get('overlay_text_style')
+		else:
+			raise RuntimeError("overlay apply kind must be speed or playback_style")
 		if not isinstance(base_segments, list) or len(base_segments) == 0:
 			raise RuntimeError("overlay template requires base timeline segments")
 		overlay_entries = []
@@ -302,11 +329,24 @@ class ProjectLoader():
 			apply_template = False
 			speed_value = None
 			if entry_type == 'source':
-				speed_value = self._segment_speed_value(project, entry_data, stream_kind)
-				apply_template = self._speed_in_range(speed_value, min_speed, max_speed)
+				if apply_kind == 'speed':
+					speed_value = self._segment_speed_value(project, entry_data, stream_kind)
+					apply_template = self._speed_in_range(speed_value, min_speed, max_speed)
+				else:
+					entry_style = entry_data.get('style')
+					apply_template = entry_style == apply_style
 			if apply_template:
+				if apply_kind == 'playback_style':
+					speed_value = self._segment_speed_value(project, entry_data, 'video')
 				generator_entry = dict(template_data)
 				generator_entry['duration'] = duration
+				if apply_kind == 'playback_style' and template_data.get('kind') == 'overlay_text':
+					if generator_entry.get('style') is None:
+						if playback_overlay_style is None:
+							raise RuntimeError(
+								"overlay_text template requires style or playback style overlay_text_style"
+							)
+						generator_entry['style'] = playback_overlay_style
 				speed_text = self._format_speed_text(speed_value)
 				generator_entry = self._apply_speed_template(generator_entry, speed_text)
 				self._compile_overlay_segment(project, {'generator': generator_entry},
@@ -405,7 +445,7 @@ class ProjectLoader():
 		gen_kind = entry_data.get('kind')
 		if gen_kind is None:
 			raise RuntimeError("overlay generator entry must include kind")
-		video_kinds = ('chapter_card', 'title_card', 'black', 'still')
+		video_kinds = ('chapter_card', 'title_card', 'overlay_text', 'black', 'still')
 		if gen_kind not in video_kinds:
 			raise RuntimeError(f"unsupported overlay generator kind {gen_kind}")
 		if gen_kind in ('chapter_card', 'title_card'):
@@ -417,6 +457,17 @@ class ProjectLoader():
 				style = project.assets.get('cards', {}).get(style_id)
 				if style is None:
 					raise RuntimeError(f"card style {style_id} not found in assets.cards")
+		if gen_kind == 'overlay_text':
+			title_text = entry_data.get('text', entry_data.get('title', ''))
+			if title_text == '':
+				raise RuntimeError("overlay_text requires text or title")
+			style_id = entry_data.get('style')
+			if style_id is not None:
+				style = project.assets.get('overlay_text_styles', {}).get(style_id)
+				if style is None:
+					raise RuntimeError(
+						f"overlay text style {style_id} not found in assets.overlay_text_styles"
+					)
 		if gen_kind == 'still':
 			asset_id = entry_data.get('asset')
 			if asset_id is None:
@@ -508,6 +559,8 @@ class ProjectLoader():
 			raise RuntimeError("source entry missing video stream requires fill_missing.video")
 		if not has_audio and (fill_missing is None or 'audio' not in fill_missing):
 			raise RuntimeError("source entry missing audio stream requires fill_missing.audio")
+		self._apply_source_style(project, entry_data)
+		self._sync_source_speeds(project, entry_data)
 		if has_video:
 			video_entries.append({'source': entry_data})
 		else:
@@ -527,6 +580,84 @@ class ProjectLoader():
 			}})
 
 	#============================
+	def _apply_source_style(self, project: ProjectData, entry_data: dict) -> None:
+		style_id = entry_data.get('style')
+		if style_id is None:
+			return
+		styles = project.assets.get('playback_styles', {})
+		style = styles.get(style_id)
+		if style is None:
+			raise RuntimeError(f"playback style {style_id} not found in assets.playback_styles")
+		if not isinstance(style, dict):
+			raise RuntimeError("playback style must be a mapping")
+		speed_value = style.get('speed')
+		if speed_value is None:
+			raise RuntimeError("playback style requires speed")
+		style_speed = utils.parse_speed(speed_value, project.defaults['speed'])
+		video_settings = entry_data.get('video')
+		audio_settings = entry_data.get('audio')
+		video_speed_value = None
+		audio_speed_value = None
+		if isinstance(video_settings, dict):
+			video_speed_value = video_settings.get('speed')
+		if isinstance(audio_settings, dict):
+			audio_speed_value = audio_settings.get('speed')
+		if video_speed_value is not None:
+			video_speed = utils.parse_speed(video_speed_value, project.defaults['speed'])
+			if video_speed != style_speed:
+				raise RuntimeError("video.speed must match playback style speed")
+		if audio_speed_value is not None:
+			audio_speed = utils.parse_speed(audio_speed_value, project.defaults['speed'])
+			if audio_speed != style_speed:
+				raise RuntimeError("audio.speed must match playback style speed")
+		if video_settings is None:
+			video_settings = {}
+			entry_data['video'] = video_settings
+		if audio_settings is None:
+			audio_settings = {}
+			entry_data['audio'] = audio_settings
+		if video_speed_value is None:
+			video_settings['speed'] = speed_value
+		if audio_speed_value is None:
+			audio_settings['speed'] = speed_value
+		return
+
+	#============================
+	def _sync_source_speeds(self, project: ProjectData, entry_data: dict) -> None:
+		video_settings = entry_data.get('video')
+		audio_settings = entry_data.get('audio')
+		video_speed_set = False
+		audio_speed_set = False
+		video_speed_value = None
+		audio_speed_value = None
+		if isinstance(video_settings, dict) and video_settings.get('speed') is not None:
+			video_speed_set = True
+			video_speed_value = video_settings.get('speed')
+		if isinstance(audio_settings, dict) and audio_settings.get('speed') is not None:
+			audio_speed_set = True
+			audio_speed_value = audio_settings.get('speed')
+		if not video_speed_set and not audio_speed_set:
+			return
+		if video_speed_set and audio_speed_set:
+			video_speed = utils.parse_speed(video_speed_value, project.defaults['speed'])
+			audio_speed = utils.parse_speed(audio_speed_value, project.defaults['speed'])
+			if video_speed != audio_speed:
+				raise RuntimeError("video.speed and audio.speed must match for source entries")
+			return
+		speed_value = video_speed_value if video_speed_set else audio_speed_value
+		if video_settings is None:
+			video_settings = {}
+			entry_data['video'] = video_settings
+		if audio_settings is None:
+			audio_settings = {}
+			entry_data['audio'] = audio_settings
+		if not video_speed_set:
+			video_settings['speed'] = speed_value
+		if not audio_speed_set:
+			audio_settings['speed'] = speed_value
+		return
+
+	#============================
 	def _compile_generator_segment(self, project: ProjectData, entry_data: dict,
 		video_entries: list, audio_entries: list) -> None:
 		if not isinstance(entry_data, dict):
@@ -534,6 +665,8 @@ class ProjectLoader():
 		gen_kind = entry_data.get('kind')
 		if gen_kind is None:
 			raise RuntimeError("generator entry must include kind")
+		if gen_kind == 'overlay_text':
+			raise RuntimeError("overlay_text generator is only supported in overlays")
 		video_kinds = ('chapter_card', 'title_card', 'black', 'still')
 		audio_kinds = ('silence',)
 		has_video = gen_kind in video_kinds
@@ -997,10 +1130,18 @@ class ProjectLoader():
 			output_file = project.output_override
 		if output_file is None:
 			raise RuntimeError("output.file is required")
+		merge_batch_threshold = int(output.get('merge_batch_threshold', 24))
+		merge_batch_size = int(output.get('merge_batch_size', 8))
+		if merge_batch_threshold < 0:
+			raise RuntimeError("output.merge_batch_threshold must be >= 0")
+		if merge_batch_size < 1:
+			raise RuntimeError("output.merge_batch_size must be >= 1")
 		return {
 			'file': output_file,
 			'video_codec': output.get('video_codec', 'libx265'),
 			'audio_codec': output.get('audio_codec', 'pcm_s16le'),
 			'crf': int(output.get('crf', 26)),
 			'container': output.get('container', None),
+			'merge_batch_threshold': merge_batch_threshold,
+			'merge_batch_size': merge_batch_size,
 		}

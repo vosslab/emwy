@@ -1,0 +1,31 @@
+silence_annotator: 1
+settings:
+  detection:
+    threshold_db: -40.0
+    min_silence: 3.0
+    min_content: 1.5
+    frame_seconds: 0.25
+    hop_seconds: 0.05
+    smooth_frames: 5
+  trim_edges: true
+  speeds:
+    silence: 10.0
+    content: 1.1
+  overlay:
+    enabled: true
+    text_template: "Fast Forward {speed}X >>>"
+    geometry: [0.1, 0.4, 0.8, 0.2]
+    opacity: 0.9
+    font_size: 96
+    text_color: "#ffffff"
+  title_card:
+    enabled: true
+    duration: 2.0
+    text_template: "{name}"
+    font_size: 96
+    text_color: "#ffffff"
+  auto_threshold:
+    enabled: false
+    step_db: 2.0
+    max_db: -5.0
+    max_tries: 20

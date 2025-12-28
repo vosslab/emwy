@@ -123,6 +123,12 @@ defaults:
 
 Assets are named inputs and named generators. Assets compile to MLT producers.
 
+Optional style registries may also appear under `assets`:
+
+- `assets.playback_styles`: speed presets applied to `source` entries.
+- `assets.cards`: appearance presets for `chapter_card`/`title_card`.
+- `assets.overlay_text_styles`: appearance presets for `overlay_text`.
+
 Per-entry producer instances
 
 Assets define reusable producer definitions. During compilation, emwy may create distinct per-entry producer instances (producer chains) as needed to apply entry-scoped filters, speed changes, stream remaps, or other per-entry properties without mutating the base asset.
@@ -167,7 +173,7 @@ A segment entry is a mapping with exactly one of these keys:
 
 - `source`: excerpt from an asset
 - `blank`: time advances with no media (black video + silence audio)
-- `generator`: generated media (chapter cards, title cards, black, silence, still)
+- `generator`: generated media (chapter cards, title cards, overlay text, black, silence, still)
 - `nested`: a nested timeline treated as one entry (advanced)
 
 #### Source entry
@@ -198,7 +204,8 @@ Fields:
 - `note`: optional string. Internal annotation for humans and tooling. Notes never create chapters and are not exported unless a future debug/export feature is added.
 - `asset`: required asset id
 - `in`, `out`: required time strings
-- `video`, `audio`: optional processing intent
+- `style`: optional playback style id from `assets.playback_styles`
+- `video`, `audio`: optional processing intent. If speeds are provided, they must match.
 - `subtitles`: optional selector, `keep` (default) or `drop`
 - `fill_missing`: optional fill behavior for missing streams. If `true`, it implies
   `{video: black, audio: silence}`. If a mapping, allowed keys are `video` and
@@ -208,6 +215,14 @@ Fields:
 - `markers`: optional marker list relative to the start of this entry
 
 Missing streams on a source asset are errors unless `fill_missing` is provided.
+Speed sync: if `video.speed` or `audio.speed` is set, emwy applies the same
+value to both streams. If both are set and differ, it is an error.
+Playback styles (`assets.playback_styles`) provide a shared speed preset. When
+`style` is set on a source entry, its `speed` is applied to both streams unless
+overridden with matching per-entry speeds.
+Playback styles may also include `overlay_text_style`. When an overlay template
+uses `apply.kind: playback_style` and the template omits `style`, emwy uses the
+matched playback style's `overlay_text_style`.
 
 Examples:
 
@@ -273,6 +288,7 @@ Common generator kinds:
 
 - `chapter_card`
 - `title_card`
+- `overlay_text` (overlay tracks only)
 - `black`
 - `silence`
 - `still`
@@ -324,6 +340,13 @@ Supported `background` mappings:
 
 Note: `transparent` backgrounds are intended for overlay tracks.
 
+Overlay text styles (`assets.overlay_text_styles`) define the default appearance
+for `overlay_text` generators. They accept the same fields as card styles, but
+default to a transparent background when none is provided.
+
+`overlay_text` generators require `text` (or `title`) and may include `style`
+referencing `assets.overlay_text_styles`.
+
 Planned extensions for `background.kind` include `video` and `source_blur` (not yet implemented).
 
 Notes:
@@ -345,12 +368,21 @@ Overlay track fields:
 - `segments`: list of `source`, `blank`, or `generator` entries (video-only).
 - `template`: generator entry used when `apply` matches (omit duration).
 - `apply`: overlay template selector (currently `kind: speed` with `stream`,
-  `min_speed`, and optional `max_speed`).
+  `min_speed`, and optional `max_speed`, or `kind: playback_style` with `style`).
 Use either `segments` or `template`/`apply`, not both.
 
 Example:
 
 ```yaml
+assets:
+  playback_styles:
+    fast: {speed: 40, overlay_text_style: fast_forward_style}
+  overlay_text_styles:
+    fast_forward_style:
+      kind: overlay_text_style
+      font_size: 96
+      text_color: "#ffffff"
+      background: {kind: transparent}
 timeline:
   segments:
     - source: {asset: lecture, in: "00:00.0", out: "00:20.0"}
@@ -359,14 +391,13 @@ timeline:
       geometry: [0.1, 0.4, 0.8, 0.2]
       opacity: 0.9
       apply:
-        kind: speed
-        stream: video
-        min_speed: 2.0
+        kind: playback_style
+        style: fast
       template:
         generator:
-          kind: title_card
-          title: "Fast Forward {speed}X >>>"
-          background: {kind: transparent}
+          kind: overlay_text
+          text: "Fast Forward {speed}X >>>"
+          style: fast_forward_style
 ```
 
 Template overlays expand across the base timeline, inserting the template for
@@ -629,7 +660,16 @@ output:
   video_codec: libx264
   audio_codec: aac
   crf: 18
+  merge_batch_threshold: 24
+  merge_batch_size: 8
 ```
+
+Optional batching controls:
+
+- `merge_batch_threshold`: if segment or overlay track entries exceed this count,
+  emwy merges in batches to avoid huge mkvmerge commands. Default `24`.
+- `merge_batch_size`: number of files to merge per batch when batching is active.
+  Default `8`.
 
 ## Canonical compiled form
 
