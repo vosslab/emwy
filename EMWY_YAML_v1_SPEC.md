@@ -3,7 +3,7 @@
 Status: Legacy, for emwy v1.x  
 Purpose: Document the original YAML format used by emwy so the v2 implementation can be understood against the older semantics.
 
-This spec describes the format implemented by `emwy.py` in this repository (not an idealized format). v1 is intentionally simple and has several sharp edges.
+This spec describes the format implemented by `emwy_cli.py` in this repository (not an idealized format). v1 is intentionally simple and has several sharp edges.
 
 ## High-level model
 
@@ -250,4 +250,3 @@ After all movies are processed:
     "00:10.0": {type: fastforward}
     "00:20.0": {type: stop}
 ```
-

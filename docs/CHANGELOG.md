@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased
-- Added `emwy_cli.py` (with `emwy.py` as a wrapper) and moved `emwy_tui.py` to the repo root.
+- Added `emwy_cli.py` and moved `emwy_tui.py` to the repo root.
 - Added output merge batching controls for large timelines.
 - Fixed overlay transparent blanks to preserve alpha so overlays do not show black boxes.
 - Added a Textual TUI wrapper for emwy renders.

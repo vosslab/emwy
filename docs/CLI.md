@@ -1,6 +1,6 @@
 # Command-Line Interface
 
-The `emwy_cli.py` executable loads a YAML project, validates it, and renders video via MLT and FFmpeg. `emwy.py` remains as a compatibility wrapper.
+The `emwy_cli.py` executable loads a YAML project, validates it, and renders video via MLT and FFmpeg.
 
 ## Usage
 ```bash

@@ -8,8 +8,16 @@ Textual TUI wrapper for emwy renders.
 import argparse
 import os
 import shlex
+import sys
 import threading
 import time
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+repo_root = script_dir
+if os.path.basename(script_dir) == "tools":
+	repo_root = os.path.dirname(script_dir)
+if repo_root not in sys.path:
+	sys.path.insert(0, repo_root)
 
 # PIP3 modules
 import textual.app
