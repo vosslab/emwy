@@ -343,6 +343,10 @@ Overlay track fields:
 - `geometry`: `[x, y, w, h]` normalized values between 0 and 1.
 - `opacity`: `0.0` to `1.0`.
 - `segments`: list of `source`, `blank`, or `generator` entries (video-only).
+- `template`: generator entry used when `apply` matches (omit duration).
+- `apply`: overlay template selector (currently `kind: speed` with `stream`,
+  `min_speed`, and optional `max_speed`).
+Use either `segments` or `template`/`apply`, not both.
 
 Example:
 
@@ -354,13 +358,20 @@ timeline:
     - id: fast_forward
       geometry: [0.1, 0.4, 0.8, 0.2]
       opacity: 0.9
-      segments:
-        - generator:
-            kind: title_card
-            title: "Fast Forward 40X >>>"
-            duration: "00:10.0"
-            background: {kind: transparent}
+      apply:
+        kind: speed
+        stream: video
+        min_speed: 2.0
+      template:
+        generator:
+          kind: title_card
+          title: "Fast Forward {speed}X >>>"
+          background: {kind: transparent}
 ```
+
+Template overlays expand across the base timeline, inserting the template for
+matching segments and transparent blanks elsewhere. `{speed}` is replaced with
+the matched speed for each segment.
 
 ## Compiled model (advanced)
 

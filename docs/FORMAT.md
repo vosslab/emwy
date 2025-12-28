@@ -130,11 +130,17 @@ Fields:
 - `geometry`: `[x, y, w, h]` normalized values between 0 and 1.
 - `opacity`: `0.0` to `1.0`.
 - `segments`: list of `source`, `blank`, or `generator` entries (video-only).
+- `template`: overlay entry template (currently generator-only) used with `apply`.
+- `apply`: selection rule for `template` overlays (currently `kind: speed`).
 
 Blank segments on overlay tracks default to `fill: transparent`.
 Transparent card backgrounds are intended for overlays.
+Template overlays expand across timeline segments, inserting the template when
+`apply` matches and transparent blanks elsewhere. `{speed}` in template titles
+or text is replaced with the matched speed.
+Use either `segments` or `template`/`apply`, not both.
 
-Example (fast forward overlay text):
+Example (fast forward overlay template):
 
 ```yaml
 timeline:
@@ -145,12 +151,15 @@ timeline:
     - id: fast_forward
       geometry: [0.1, 0.4, 0.8, 0.2]
       opacity: 0.9
-      segments:
-        - generator:
-            kind: title_card
-            title: "Fast Forward 40X >>>"
-            duration: "00:05.0"
-            background: {kind: transparent}
+      apply:
+        kind: speed
+        stream: video
+        min_speed: 2.0
+      template:
+        generator:
+          kind: title_card
+          title: "Fast Forward {speed}X >>>"
+          background: {kind: transparent}
 ```
 
 ## Timecodes

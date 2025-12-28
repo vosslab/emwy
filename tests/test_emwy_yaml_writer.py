@@ -63,7 +63,7 @@ class EmwyYamlWriterTest(unittest.TestCase):
 
 	#============================================
 	def test_build_silence_timeline_yaml_with_overlay(self) -> None:
-		"""Ensure overlay output includes transparent fast-forward cards."""
+		"""Ensure overlay output includes a fast-forward template."""
 		profile = {
 			'fps': "30",
 			'width': 1920,
@@ -96,9 +96,11 @@ class EmwyYamlWriterTest(unittest.TestCase):
 			overlay_opacity=0.9,
 		)
 		self.assertIn("overlays:", yaml_text)
+		self.assertIn("apply:", yaml_text)
+		self.assertIn("template:", yaml_text)
 		self.assertIn("background: {kind: transparent}", yaml_text)
-		self.assertIn("Fast Forward 4X >>>", yaml_text)
-		self.assertIn("fill: transparent", yaml_text)
+		self.assertIn("Fast Forward {speed}X >>>", yaml_text)
+		self.assertIn("min_speed: 4", yaml_text)
 
 	#============================================
 	def test_yaml_quote(self) -> None:

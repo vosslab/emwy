@@ -239,7 +239,6 @@ def build_silence_timeline_yaml(input_file: str, output_media_file: str,
 			lines.append(f"        video: {{speed: {format_speed(speed)}}}")
 			lines.append(f"        audio: {{speed: {format_speed(speed)}}}")
 	if overlay_text_template is not None:
-		fps = parse_fps(profile['fps'])
 		geometry = overlay_geometry or [0.1, 0.4, 0.8, 0.2]
 		if len(geometry) != 4:
 			raise RuntimeError("overlay geometry must include 4 values")
@@ -250,24 +249,15 @@ def build_silence_timeline_yaml(input_file: str, output_media_file: str,
 		geometry_line += "]"
 		lines.append(geometry_line)
 		lines.append(f"      opacity: {overlay_opacity}")
-		lines.append("      segments:")
-		for segment in segments:
-			speed = silence_speed if segment['kind'] == 'silence' else content_speed
-			duration_tc = compute_output_duration_tc(
-				segment['start_tc'], segment['end_tc'], fps, speed
-			)
-			if segment['kind'] == 'silence':
-				speed_text = format_speed(speed)
-				text = overlay_text_template.replace("{speed}", speed_text)
-				lines.append("        - generator:")
-				lines.append("            kind: title_card")
-				lines.append(f"            title: {yaml_quote(text)}")
-				lines.append(f"            duration: {yaml_quote(duration_tc)}")
-				lines.append(f"            style: {overlay_style_id}")
-			else:
-				blank_line = "        - blank: {duration: "
-				blank_line += yaml_quote(duration_tc) + ", fill: transparent}"
-				lines.append(blank_line)
+		lines.append("      apply:")
+		lines.append("        kind: speed")
+		lines.append("        stream: video")
+		lines.append(f"        min_speed: {format_speed(silence_speed)}")
+		lines.append("      template:")
+		lines.append("        generator:")
+		lines.append("          kind: title_card")
+		lines.append(f"          title: {yaml_quote(overlay_text_template)}")
+		lines.append(f"          style: {overlay_style_id}")
 	lines.append("")
 	lines.append("output:")
 	lines.append(f"  file: {yaml_quote(output_media_file)}")

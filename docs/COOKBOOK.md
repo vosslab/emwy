@@ -72,12 +72,15 @@ timeline:
     - id: fast_forward
       geometry: [0.1, 0.4, 0.8, 0.2]
       opacity: 0.9
-      segments:
-        - generator:
-            kind: title_card
-            title: "Fast Forward 40X >>>"
-            duration: "00:10.0"
-            background: {kind: transparent}
+      apply:
+        kind: speed
+        stream: video
+        min_speed: 2.0
+      template:
+        generator:
+          kind: title_card
+          title: "Fast Forward {speed}X >>>"
+          background: {kind: transparent}
 ```
 
 ## Batch Rendering

@@ -10,7 +10,7 @@ The YAML report is always written to `<input>.emwy.yaml`.
 The detector is pure Python; FFmpeg is used only to extract audio. Audio is
 always downmixed to mono.
 When fast-forward overlays are enabled, the YAML includes a transparent overlay
-track that labels accelerated sections in output time.
+track with a master template applied to fast-forward sections in output time.
 
 Example:
 

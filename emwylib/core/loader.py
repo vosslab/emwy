@@ -166,7 +166,7 @@ class ProjectLoader():
 			{'playlist': 'audio_main', 'role': 'main'},
 		]
 		overlays = self._compile_overlay_tracks(project, timeline, playlists,
-			tracks, base_frames)
+			tracks, base_frames, segments)
 		stack = {'tracks': tracks}
 		if len(overlays) > 0:
 			stack['overlays'] = overlays
@@ -174,7 +174,7 @@ class ProjectLoader():
 
 	#============================
 	def _compile_overlay_tracks(self, project: ProjectData, timeline: dict,
-		playlists: dict, tracks: list, base_frames: int) -> list:
+		playlists: dict, tracks: list, base_frames: int, base_segments: list) -> list:
 		overlays = []
 		overlay_tracks = timeline.get('overlays', [])
 		if overlay_tracks is None:
@@ -183,24 +183,34 @@ class ProjectLoader():
 			raise RuntimeError("timeline.overlays must be a list")
 		for index, overlay in enumerate(overlay_tracks, start=1):
 			overlay_info = self._compile_overlay_track(project, overlay, index,
-				playlists, tracks, base_frames)
+				playlists, tracks, base_frames, base_segments)
 			if overlay_info is not None:
 				overlays.append(overlay_info)
 		return overlays
 
 	#============================
 	def _compile_overlay_track(self, project: ProjectData, overlay: dict, index: int,
-		playlists: dict, tracks: list, base_frames: int) -> dict:
+		playlists: dict, tracks: list, base_frames: int, base_segments: list) -> dict:
 		if not isinstance(overlay, dict):
 			raise RuntimeError("timeline.overlays entries must be mappings")
 		if overlay.get('enabled') is False:
 			return None
 		segments = overlay.get('segments')
-		if not isinstance(segments, list) or len(segments) == 0:
-			raise RuntimeError("overlay track requires non-empty segments list")
 		overlay_entries = []
-		for segment in segments:
-			self._compile_overlay_segment(project, segment, overlay_entries)
+		template = overlay.get('template')
+		apply_settings = overlay.get('apply')
+		if segments is not None:
+			if template is not None or apply_settings is not None:
+				raise RuntimeError("overlay track cannot mix segments with template/apply")
+			if not isinstance(segments, list) or len(segments) == 0:
+				raise RuntimeError("overlay track requires non-empty segments list")
+			for segment in segments:
+				self._compile_overlay_segment(project, segment, overlay_entries)
+		else:
+			if template is None and apply_settings is None:
+				raise RuntimeError("overlay track requires segments or template/apply")
+			overlay_entries = self._compile_overlay_template(project, base_segments,
+				template, apply_settings)
 		overlay_frames = self._calculate_playlist_frames(project, overlay_entries,
 			'video')
 		if overlay_frames < base_frames:
@@ -237,6 +247,115 @@ class ProjectLoader():
 		if opacity is not None:
 			overlays['opacity'] = opacity
 		return overlays
+
+	#============================
+	def _compile_overlay_template(self, project: ProjectData, base_segments: list,
+		template: dict, apply_settings: dict) -> list:
+		if template is None or apply_settings is None:
+			raise RuntimeError("overlay template requires template and apply settings")
+		if not isinstance(template, dict) or len(template.keys()) != 1:
+			raise RuntimeError("overlay template must be a mapping with one entry")
+		if not isinstance(apply_settings, dict):
+			raise RuntimeError("overlay apply settings must be a mapping")
+		template_type = list(template.keys())[0]
+		template_data = template.get(template_type)
+		if template_type != 'generator':
+			raise RuntimeError("overlay template only supports generator entries")
+		if not isinstance(template_data, dict):
+			raise RuntimeError("overlay template generator must be a mapping")
+		if template_data.get('duration') is not None:
+			raise RuntimeError("overlay template generator must not set duration")
+		apply_kind = apply_settings.get('kind', 'speed')
+		if apply_kind != 'speed':
+			raise RuntimeError("overlay apply kind must be speed")
+		stream_kind = apply_settings.get('stream', 'video')
+		if stream_kind not in ('video', 'audio'):
+			raise RuntimeError("overlay apply stream must be video or audio")
+		min_speed_raw = apply_settings.get('min_speed')
+		max_speed_raw = apply_settings.get('max_speed')
+		if min_speed_raw is None and max_speed_raw is None:
+			raise RuntimeError("overlay apply speed requires min_speed or max_speed")
+		min_speed = None
+		max_speed = None
+		if min_speed_raw is not None:
+			min_speed = utils.parse_speed(min_speed_raw, project.defaults['speed'])
+		if max_speed_raw is not None:
+			max_speed = utils.parse_speed(max_speed_raw, project.defaults['speed'])
+		if min_speed is not None and max_speed is not None and min_speed > max_speed:
+			raise RuntimeError("overlay apply min_speed must be <= max_speed")
+		if not isinstance(base_segments, list) or len(base_segments) == 0:
+			raise RuntimeError("overlay template requires base timeline segments")
+		overlay_entries = []
+		for segment in base_segments:
+			if not isinstance(segment, dict) or len(segment.keys()) != 1:
+				raise RuntimeError("timeline.segments entries must have one key")
+			entry_type = list(segment.keys())[0]
+			entry_data = segment.get(entry_type)
+			if isinstance(entry_data, dict) and entry_data.get('enabled') is False:
+				continue
+			if entry_type not in ('source', 'blank', 'generator'):
+				raise RuntimeError("overlay template only supports source/blank/generator")
+			duration_frames = self._calculate_entry_frames(project, entry_type,
+				entry_data, 'video')
+			duration = self._format_duration_from_frames(duration_frames,
+				project.profile['fps'])
+			apply_template = False
+			speed_value = None
+			if entry_type == 'source':
+				speed_value = self._segment_speed_value(project, entry_data, stream_kind)
+				apply_template = self._speed_in_range(speed_value, min_speed, max_speed)
+			if apply_template:
+				generator_entry = dict(template_data)
+				generator_entry['duration'] = duration
+				speed_text = self._format_speed_text(speed_value)
+				generator_entry = self._apply_speed_template(generator_entry, speed_text)
+				self._compile_overlay_segment(project, {'generator': generator_entry},
+					overlay_entries)
+			else:
+				self._compile_overlay_segment(project, {'blank': {
+					'duration': duration,
+					'fill': 'transparent',
+				}}, overlay_entries)
+		return overlay_entries
+
+	#============================
+	def _segment_speed_value(self, project: ProjectData, entry_data: dict,
+		stream_kind: str) -> Decimal:
+		speed_value = None
+		if stream_kind == 'video':
+			if entry_data.get('video') is not None:
+				speed_value = entry_data['video'].get('speed')
+		if stream_kind == 'audio':
+			if entry_data.get('audio') is not None:
+				speed_value = entry_data['audio'].get('speed')
+		return utils.parse_speed(speed_value, project.defaults['speed'])
+
+	#============================
+	def _speed_in_range(self, speed_value: Decimal, min_speed,
+		max_speed) -> bool:
+		if min_speed is not None and speed_value < min_speed:
+			return False
+		if max_speed is not None and speed_value > max_speed:
+			return False
+		return True
+
+	#============================
+	def _format_speed_text(self, speed_value: Decimal) -> str:
+		speed_text = f"{speed_value:.6f}"
+		if '.' in speed_text:
+			speed_text = speed_text.rstrip('0').rstrip('.')
+		return speed_text
+
+	#============================
+	def _apply_speed_template(self, template_data: dict, speed_text: str) -> dict:
+		updated = dict(template_data)
+		title_text = updated.get('title')
+		if isinstance(title_text, str):
+			updated['title'] = title_text.replace("{speed}", speed_text)
+		body_text = updated.get('text')
+		if isinstance(body_text, str):
+			updated['text'] = body_text.replace("{speed}", speed_text)
+		return updated
 
 	#============================
 	def _compile_overlay_segment(self, project: ProjectData, segment: dict,

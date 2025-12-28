@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Added overlay template apply rules so fast-forward title cards can be authored once.
 - Added overlay tracks with transparent blanks and overlay rendering support.
 - Added `still` generator support and transparent card backgrounds for overlays.
 - Documented overlay authoring and updated Shotcut export limitations.
