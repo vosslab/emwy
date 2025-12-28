@@ -20,6 +20,8 @@ class Renderer():
 
 	#============================
 	def render(self) -> None:
+		if not utils.is_quiet_mode():
+			utils.set_command_total(self._estimate_command_total())
 		segment_track = self._render_segment_playlist(
 			self.project.stack['base_video'],
 			self.project.stack['main_audio']
@@ -31,6 +33,94 @@ class Renderer():
 		self._finalize_output(segment_track, self.project.output['file'], chapters)
 		if not self.project.keep_temp:
 			self._cleanup_temp([segment_track])
+		if not utils.is_quiet_mode():
+			utils.set_command_total(None)
+
+	#============================
+	def _estimate_command_total(self) -> int:
+		total = 0
+		total += self._estimate_segment_playlist_commands(
+			self.project.stack['base_video'],
+			self.project.stack['main_audio']
+		)
+		overlays = self.project.stack.get('overlays', [])
+		for overlay in overlays:
+			playlist_id = overlay.get('b')
+			if playlist_id is None:
+				continue
+			total += self._estimate_overlay_playlist_commands(playlist_id)
+			total += 1
+		total += self._estimate_finalize_commands()
+		return total
+
+	#============================
+	def _estimate_segment_playlist_commands(self, video_playlist_id: str,
+		audio_playlist_id: str) -> int:
+		video_playlist = self.project.playlists.get(video_playlist_id, {})
+		audio_playlist = self.project.playlists.get(audio_playlist_id, {})
+		video_entries = video_playlist.get('entries', [])
+		audio_entries = audio_playlist.get('entries', [])
+		count = 0
+		for video_entry, audio_entry in zip(video_entries, audio_entries):
+			count += self._estimate_video_entry_commands(video_entry)
+			count += self._estimate_audio_entry_commands(audio_entry)
+			count += 1
+		count += self._estimate_concat_commands(len(video_entries))
+		return count
+
+	#============================
+	def _estimate_overlay_playlist_commands(self, playlist_id: str) -> int:
+		playlist = self.project.playlists.get(playlist_id, {})
+		entries = playlist.get('entries', [])
+		count = 0
+		for entry in entries:
+			count += self._estimate_video_entry_commands(entry)
+		count += self._estimate_concat_commands(len(entries))
+		return count
+
+	#============================
+	def _estimate_video_entry_commands(self, entry: dict) -> int:
+		entry_type = entry.get('type')
+		if entry_type in ('source', 'blank', 'generator'):
+			return 1
+		return 0
+
+	#============================
+	def _estimate_audio_entry_commands(self, entry: dict) -> int:
+		entry_type = entry.get('type')
+		if entry_type == 'source':
+			count = 1
+			if entry.get('normalize') is not None:
+				count += 1
+			speed = float(entry.get('speed', 1.0))
+			if abs(speed - 1.0) > 0.0001:
+				count += 1
+			return count
+		if entry_type in ('blank', 'generator'):
+			return 1
+		return 0
+
+	#============================
+	def _estimate_concat_commands(self, segment_count: int) -> int:
+		if segment_count <= 1:
+			return 0
+		threshold = self.project.output.get('merge_batch_threshold', 0)
+		batch_size = self.project.output.get('merge_batch_size', 0)
+		if threshold > 0 and batch_size > 0 and segment_count > threshold:
+			batch_commands = 0
+			for start_index in range(0, segment_count, batch_size):
+				size = min(batch_size, segment_count - start_index)
+				if size > 1:
+					batch_commands += 1
+			return batch_commands + 1
+		return 1
+
+	#============================
+	def _estimate_finalize_commands(self) -> int:
+		audio_codec = self.project.output.get('audio_codec', 'pcm_s16le')
+		if audio_codec in ('pcm_s16le', 'wav', 'pcm', 'copy'):
+			return 0
+		return 1
 
 	#============================
 	def _render_segment_playlist(self, video_playlist_id: str,
@@ -42,6 +132,14 @@ class Renderer():
 		if len(video_entries) != len(audio_entries):
 			raise RuntimeError("video and audio segment counts do not match")
 		segment_files = []
+		batch_files = []
+		batch_segments = []
+		batch_index = 1
+		threshold = self.project.output.get('merge_batch_threshold', 0)
+		batch_size = self.project.output.get('merge_batch_size', 0)
+		use_batch = (
+			threshold > 0 and batch_size > 0 and len(video_entries) > threshold
+		)
 		for index, (video_entry, audio_entry) in enumerate(
 			zip(video_entries, audio_entries), start=1
 		):
@@ -53,11 +151,42 @@ class Renderer():
 			self._mux_segment(video_file, audio_file, segment_file)
 			if not self.project.keep_temp:
 				self._cleanup_temp([video_file, audio_file])
-			segment_files.append(segment_file)
+			if use_batch:
+				batch_segments.append(segment_file)
+				if len(batch_segments) >= batch_size:
+					batch_out = self._make_temp_path(f"concat-{batch_index:03d}.mkv")
+					if len(batch_segments) == 1:
+						shutil.copy(batch_segments[0], batch_out)
+					else:
+						self._merge_video_files(batch_segments, batch_out)
+					if not self.project.keep_temp:
+						self._cleanup_temp(batch_segments)
+					batch_files.append(batch_out)
+					batch_segments = []
+					batch_index += 1
+			else:
+				segment_files.append(segment_file)
 		output_file = self._make_temp_path(f"segment-track-{video_playlist_id}.mkv")
-		self._concatenate_video(segment_files, output_file)
-		if not self.project.keep_temp:
-			self._cleanup_temp(segment_files)
+		if use_batch:
+			if len(batch_segments) > 0:
+				batch_out = self._make_temp_path(f"concat-{batch_index:03d}.mkv")
+				if len(batch_segments) == 1:
+					shutil.copy(batch_segments[0], batch_out)
+				else:
+					self._merge_video_files(batch_segments, batch_out)
+				if not self.project.keep_temp:
+					self._cleanup_temp(batch_segments)
+				batch_files.append(batch_out)
+			if len(batch_files) == 1:
+				shutil.copy(batch_files[0], output_file)
+			else:
+				self._merge_video_files(batch_files, output_file)
+			if not self.project.keep_temp:
+				self._cleanup_temp(batch_files)
+		else:
+			self._concatenate_video(segment_files, output_file)
+			if not self.project.keep_temp:
+				self._cleanup_temp(segment_files)
 		return output_file
 
 	#============================
@@ -83,16 +212,55 @@ class Renderer():
 		if playlist.get('kind') != 'video':
 			raise RuntimeError("overlay playlists must be video")
 		segment_files = []
+		batch_files = []
+		batch_segments = []
+		batch_index = 1
+		threshold = self.project.output.get('merge_batch_threshold', 0)
+		batch_size = self.project.output.get('merge_batch_size', 0)
+		use_batch = (
+			threshold > 0 and batch_size > 0 and len(playlist.get('entries', [])) > threshold
+		)
 		for index, entry in enumerate(playlist.get('entries', []), start=1):
 			video_file = self._render_video_entry(entry, index, codec='ffv1',
 				pixel_format='rgba', allow_transparent=True)
-			segment_files.append(video_file)
-		if len(segment_files) == 0:
+			if use_batch:
+				batch_segments.append(video_file)
+				if len(batch_segments) >= batch_size:
+					batch_out = self._make_temp_path(f"concat-{batch_index:03d}.mkv")
+					if len(batch_segments) == 1:
+						shutil.copy(batch_segments[0], batch_out)
+					else:
+						self._merge_video_files(batch_segments, batch_out)
+					if not self.project.keep_temp:
+						self._cleanup_temp(batch_segments)
+					batch_files.append(batch_out)
+					batch_segments = []
+					batch_index += 1
+			else:
+				segment_files.append(video_file)
+		if len(segment_files) == 0 and len(batch_files) == 0 and len(batch_segments) == 0:
 			raise RuntimeError("overlay playlist has no entries")
 		output_file = self._make_temp_path(f"overlay-track-{overlay_index:02d}.mkv")
-		self._concatenate_video(segment_files, output_file)
-		if not self.project.keep_temp:
-			self._cleanup_temp(segment_files)
+		if use_batch:
+			if len(batch_segments) > 0:
+				batch_out = self._make_temp_path(f"concat-{batch_index:03d}.mkv")
+				if len(batch_segments) == 1:
+					shutil.copy(batch_segments[0], batch_out)
+				else:
+					self._merge_video_files(batch_segments, batch_out)
+				if not self.project.keep_temp:
+					self._cleanup_temp(batch_segments)
+				batch_files.append(batch_out)
+			if len(batch_files) == 1:
+				shutil.copy(batch_files[0], output_file)
+			else:
+				self._merge_video_files(batch_files, output_file)
+			if not self.project.keep_temp:
+				self._cleanup_temp(batch_files)
+		else:
+			self._concatenate_video(segment_files, output_file)
+			if not self.project.keep_temp:
+				self._cleanup_temp(segment_files)
 		return output_file
 
 	#============================
@@ -704,24 +872,6 @@ class Renderer():
 			raise RuntimeError("no video segments to concatenate")
 		if len(segment_files) == 1:
 			shutil.copy(segment_files[0], output_file)
-			return
-		threshold = self.project.output.get('merge_batch_threshold', 0)
-		batch_size = self.project.output.get('merge_batch_size', 0)
-		if threshold > 0 and batch_size > 0 and len(segment_files) > threshold:
-			batch_files = []
-			batch_index = 1
-			for start_index in range(0, len(segment_files), batch_size):
-				batch_segments = segment_files[start_index:start_index + batch_size]
-				batch_out = self._make_temp_path(f"concat-{batch_index:03d}.mkv")
-				if len(batch_segments) == 1:
-					shutil.copy(batch_segments[0], batch_out)
-				else:
-					self._merge_video_files(batch_segments, batch_out)
-				batch_files.append(batch_out)
-				batch_index += 1
-			self._merge_video_files(batch_files, output_file)
-			if not self.project.keep_temp:
-				self._cleanup_temp(batch_files)
 			return
 		self._merge_video_files(segment_files, output_file)
 		return

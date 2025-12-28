@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Merge batching now occurs during segment/overlay generation instead of only at the end.
+- Disabled tqdm in quiet mode to avoid multiprocessing lock errors in the TUI.
+- Added a debug log mode for emwy_tui.py and colorized command output when rich is available.
+- Added a subprocess fallback for fds_to_keep errors during command execution.
 - Added `emwy_cli.py` and moved `emwy_tui.py` to the repo root.
 - Added output merge batching controls for large timelines.
 - Fixed overlay transparent blanks to preserve alpha so overlays do not show black boxes.

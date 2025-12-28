@@ -7,8 +7,15 @@ import subprocess
 #===============================
 def getMediaInfo(mediafile):
 	cmd = "mediainfo --Output=JSON %s"%(mediafile)
-	proc = subprocess.Popen(cmd, shell=True,
-		stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+	try:
+		proc = subprocess.Popen(cmd, shell=True,
+			stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+	except ValueError as exc:
+		if "fds_to_keep" in str(exc):
+			proc = subprocess.Popen(cmd, shell=True,
+				stderr=subprocess.PIPE, stdout=subprocess.PIPE, close_fds=False)
+		else:
+			raise
 	stdout, stderr = proc.communicate()
 	rawdata = json.loads(stdout)
 	data = rawdata.get('media')

@@ -36,3 +36,5 @@ python3 emwy_tui.py -y project.emwy.yaml
 ```
 
 Install `textual` from `pip_requirements.txt` if it is not already available.
+
+When `rich` is installed, command output is colorized automatically.

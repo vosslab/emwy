@@ -1,22 +1,13 @@
 #!/usr/bin/env python3
 
-import re
 import os
 import sys
-import subprocess
+from emwylib.core import utils
 
 #============================================
 
 def runCmd(cmd: str, msg: bool = False) -> None:
-	showcmd = cmd.strip()
-	showcmd = re.sub("  *", " ", showcmd)
-	print(f"CMD: '{showcmd}'")
-	if msg is True:
-		proc = subprocess.Popen(showcmd, shell=True)
-	else:
-		proc = subprocess.Popen(showcmd, shell=True,
-			stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-	proc.communicate()
+	utils.runCmd(cmd)
 	return
 
 #============================================

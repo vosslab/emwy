@@ -145,7 +145,11 @@ class TitleCard(object):
 		imglist = []
 		turbim = self.make_turbulence()
 		quiet_mode = self.quiet or utils.is_quiet_mode()
-		for i in tqdm(list(range(self.numimages)), disable=quiet_mode):
+		if quiet_mode:
+			iter_range = range(self.numimages)
+		else:
+			iter_range = tqdm(range(self.numimages))
+		for i in iter_range:
 			bgcolor = self.alterColor(bgcolor, self.defaultshift)
 			textcolor = self.alterColor(textcolor, self.defaultshift)
 			h = self.alterInt(h, self.defaultshift)

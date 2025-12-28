@@ -11,6 +11,10 @@ from fractions import Fraction
 
 _command_reporter = None
 _quiet_mode = False
+_command_total = None
+_command_index = 0
+_rich_console = None
+_rich_highlighter = None
 
 #============================================
 
@@ -49,19 +53,107 @@ def is_quiet_mode() -> bool:
 
 #============================================
 
+def set_command_total(total) -> None:
+	"""
+	Set the expected total number of commands.
+	"""
+	global _command_total
+	global _command_index
+	if total is None:
+		_command_total = None
+		_command_index = 0
+		return
+	_command_total = int(total)
+	_command_index = 0
+	return
+
+#============================================
+
+def _next_command_index() -> int:
+	global _command_index
+	_command_index += 1
+	return _command_index
+
+#============================================
+
+def _command_prefix(index: int, total) -> str:
+	if total is None or total <= 0:
+		return ""
+	return f"CMD {index} of {total}"
+
+#============================================
+
+def _ensure_rich_printer() -> None:
+	global _rich_console
+	global _rich_highlighter
+	if _rich_console is not None and _rich_highlighter is not None:
+		return
+	try:
+		from rich.console import Console
+		from rich.highlighter import RegexHighlighter
+		from rich.theme import Theme
+	except ImportError:
+		return
+	class CommandHighlighter(RegexHighlighter):
+		highlights = [
+			r"(?P<cmd_codec>\bpcm_s16le\b|\blibx265\b|\blibx264\b|\baac\b|\bffv1\b)",
+			r"(?P<cmd_flag>--?[A-Za-z0-9][A-Za-z0-9_-]*)",
+			r"(?P<cmd_float>\b\d+\.\d+\b)",
+			r"(?P<cmd_int>\b\d+\b)(?!\.\d)",
+			r"(?P<cmd_string>'[^']*'|\"[^\"]*\")",
+			r"(?P<cmd_path>(?:/|~|\\./|\\.\\./)[^\\s'\"`]+)",
+		]
+	theme = Theme({
+		"cmd_codec": "magenta",
+		"cmd_flag": "bright_magenta",
+		"cmd_float": "bright_blue",
+		"cmd_int": "bright_blue",
+		"cmd_string": "yellow",
+		"cmd_path": "yellow",
+	})
+	_rich_console = Console(theme=theme)
+	_rich_highlighter = CommandHighlighter()
+	return
+
+#============================================
+
 def runCmd(cmd: str) -> None:
 	showcmd = cmd.strip()
 	showcmd = re.sub("  *", " ", showcmd)
 	start_time = time.time()
+	index = _next_command_index()
+	prefix = _command_prefix(index, _command_total)
+	has_prefix = prefix != ""
 	if _command_reporter is not None:
 		_command_reporter({
 			'event': 'start',
 			'command': showcmd,
+			'index': index,
+			'total': _command_total,
 		})
 	elif not _quiet_mode:
-		print(f"CMD: '{showcmd}'")
-	proc = subprocess.Popen(showcmd, shell=True, stderr=subprocess.PIPE,
-		stdout=subprocess.PIPE)
+		_ensure_rich_printer()
+		if _rich_console is not None and _rich_highlighter is not None:
+			if has_prefix:
+				_rich_console.print("")
+				_rich_console.print(prefix, style="bold cyan")
+			_rich_console.print(_rich_highlighter(showcmd))
+		else:
+			if has_prefix:
+				print("")
+				print(prefix)
+				print(showcmd)
+			else:
+				print(f"CMD: '{showcmd}'")
+	try:
+		proc = subprocess.Popen(showcmd, shell=True, stderr=subprocess.PIPE,
+			stdout=subprocess.PIPE)
+	except ValueError as exc:
+		if "fds_to_keep" in str(exc):
+			proc = subprocess.Popen(showcmd, shell=True, stderr=subprocess.PIPE,
+				stdout=subprocess.PIPE, close_fds=False)
+		else:
+			raise
 	proc.communicate()
 	duration = time.time() - start_time
 	if _command_reporter is not None:
@@ -70,6 +162,8 @@ def runCmd(cmd: str) -> None:
 			'command': showcmd,
 			'returncode': proc.returncode,
 			'seconds': duration,
+			'index': index,
+			'total': _command_total,
 		})
 	return
 
