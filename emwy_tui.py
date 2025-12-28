@@ -24,6 +24,7 @@ if repo_root not in sys.path:
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import RichLog, Static
+from rich.text import Text
 
 # local repo modules
 from emwylib.core.project import EmwyProject
@@ -229,7 +230,11 @@ class EmwyTuiApp(App):
 			self.command_count = event.get('index', self.command_count + 1)
 			self.command_total = event.get('total', self.command_total)
 			self.current_summary = summary
-			self.log_widget.write(summary)
+			prefix = utils.command_prefix(self.command_count, self.command_total)
+			if prefix:
+				self.log_widget.write("")
+				self.log_widget.write(Text(prefix, style="bold cyan"))
+			self.log_widget.write(utils.highlight_command(command))
 			self._write_log(f"start: {command}")
 			self._update_metrics()
 		if event_type == 'end' and event.get('returncode', 0) != 0:

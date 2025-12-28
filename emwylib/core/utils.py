@@ -83,6 +83,14 @@ def _command_prefix(index: int, total) -> str:
 
 #============================================
 
+def command_prefix(index: int, total) -> str:
+	"""
+	Return a command prefix string for display.
+	"""
+	return _command_prefix(index, total)
+
+#============================================
+
 def _ensure_rich_printer() -> None:
 	global _rich_console
 	global _rich_highlighter
@@ -114,6 +122,17 @@ def _ensure_rich_printer() -> None:
 	_rich_console = Console(theme=theme)
 	_rich_highlighter = CommandHighlighter()
 	return
+
+#============================================
+
+def highlight_command(cmd: str):
+	"""
+	Return a rich Text renderable for a command when available.
+	"""
+	_ensure_rich_printer()
+	if _rich_highlighter is None:
+		return cmd
+	return _rich_highlighter(cmd)
 
 #============================================
 

@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Added CLI-style command highlighting for emwy_tui command logs.
+- Updated AGENTS guidance with notes for future Codex runs.
 - Merge batching now occurs during segment/overlay generation instead of only at the end.
 - Disabled tqdm in quiet mode to avoid multiprocessing lock errors in the TUI.
 - Added a debug log mode for emwy_tui.py and colorized command output when rich is available.

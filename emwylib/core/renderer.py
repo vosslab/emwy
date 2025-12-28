@@ -280,8 +280,9 @@ class Renderer():
 			self.project.profile['fps'])
 		if w <= 0 or h <= 0:
 			raise RuntimeError("overlay geometry results in zero-sized region")
+		alpha_expr = f"{opacity}*a"
 		filter_chain = (
-			f"[1:v]scale={w}:{h},format=rgba,colorchannelmixer=aa={opacity}[ovr];"
+			f"[1:v]scale={w}:{h},format=rgba,colorchannelmixer=aa={alpha_expr}[ovr];"
 			f"[0:v][ovr]overlay={x}:{y}:enable='between(t,{start_time:.6f},{end_time:.6f})'"
 			"[vout]"
 		)
