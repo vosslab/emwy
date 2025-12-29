@@ -154,6 +154,9 @@ or text is replaced with the matched speed.
 Use either `segments` or `template`/`apply`, not both.
 Overlay text templates use `kind: overlay_text` with `text` (or `title`) and an
 optional `style` from `assets.overlay_text_styles`.
+Overlay text generators may include `animate` to cycle values. Use `{animate}` in
+the text template (otherwise the value is appended). `animate.kind` supports
+`cycle` with required `values` plus either `fps` or `cadence` (seconds per step).
 When `apply.kind: playback_style` is used, the matched playback style may supply
 `overlay_text_style` to fill in a missing template style.
 
@@ -183,8 +186,12 @@ timeline:
       template:
         generator:
           kind: overlay_text
-          text: "Fast Forward {speed}X >>>"
+          text: "Fast Forward {speed}X {animate}"
           style: fast_forward_style
+          animate:
+            kind: cycle
+            values: [">", ">>", ">>>"]
+            cadence: 0.5
 ```
 
 ## Timecodes

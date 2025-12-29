@@ -457,11 +457,16 @@ def default_config() -> dict:
 			},
 			'overlay': {
 				'enabled': True,
-				'text_template': "Fast Forward {speed}X >>>",
+				'text_template': "Fast Forward {speed}X {animate}",
 				'geometry': [0.1, 0.4, 0.8, 0.2],
 				'opacity': 0.9,
 				'font_size': 96,
 				'text_color': "#ffffff",
+				'animate': {
+					'kind': 'cycle',
+					'values': ['>', '>>', '>>>'],
+					'cadence': 0.5,
+				},
 			},
 			'title_card': {
 				'enabled': True,
@@ -537,7 +542,7 @@ def build_config_text(config: dict) -> str:
 	lines.append("  overlay:")
 	lines.append(f"    enabled: {str(bool(overlay.get('enabled', True))).lower()}")
 	lines.append(
-		f"    text_template: \"{overlay.get('text_template', 'Fast Forward {speed}X >>>')}\""
+		f"    text_template: \"{overlay.get('text_template', 'Fast Forward {speed}X {animate}')}\""
 	)
 	lines.append(
 		f"    geometry: [{geometry[0]}, {geometry[1]}, {geometry[2]}, {geometry[3]}]"
@@ -545,6 +550,27 @@ def build_config_text(config: dict) -> str:
 	lines.append(f"    opacity: {overlay.get('opacity', 0.9)}")
 	lines.append(f"    font_size: {overlay.get('font_size', 96)}")
 	lines.append(f"    text_color: \"{overlay.get('text_color', '#ffffff')}\"")
+	animate = overlay.get('animate', {
+		'kind': 'cycle',
+		'values': ['>', '>>', '>>>'],
+		'cadence': 0.5,
+	})
+	lines.append("    animate:")
+	lines.append(f"      kind: {animate.get('kind', 'cycle')}")
+	animate_values = animate.get('values', ['>', '>>', '>>>'])
+	lines.append(
+		f"      values: [{emwy_yaml_writer.format_yaml_list(animate_values)}]"
+	)
+	animate_fps = animate.get('fps')
+	if animate_fps is not None:
+		lines.append(
+			f"      fps: {emwy_yaml_writer.format_speed(float(animate_fps))}"
+		)
+	animate_cadence = animate.get('cadence')
+	if animate_cadence is not None:
+		lines.append(
+			f"      cadence: {emwy_yaml_writer.format_speed(float(animate_cadence))}"
+		)
 	lines.append("  title_card:")
 	lines.append(f"    enabled: {str(bool(title_card.get('enabled', True))).lower()}")
 	lines.append(f"    duration: {title_card.get('duration', 2.0)}")
@@ -687,6 +713,29 @@ def build_settings(config: dict, config_path: str) -> dict:
 		settings['overlay']['text_color'])
 	if not isinstance(overlay_text_color, str):
 		raise RuntimeError(f"config {config_path}: settings.overlay.text_color must be a string")
+	overlay_animate = None
+	if 'animate' in overlay:
+		overlay_animate = overlay.get('animate')
+	else:
+		overlay_animate = settings['overlay'].get('animate')
+	if overlay_animate is not None:
+		if not isinstance(overlay_animate, dict):
+			raise RuntimeError(f"config {config_path}: settings.overlay.animate must be a mapping")
+		animate_values = overlay_animate.get('values')
+		if not isinstance(animate_values, list) or len(animate_values) == 0:
+			raise RuntimeError(
+				f"config {config_path}: settings.overlay.animate.values must be a non-empty list"
+			)
+		animate_fps = overlay_animate.get('fps')
+		if animate_fps is not None and float(animate_fps) <= 0:
+			raise RuntimeError(
+				f"config {config_path}: settings.overlay.animate.fps must be positive"
+			)
+		animate_cadence = overlay_animate.get('cadence')
+		if animate_cadence is not None and float(animate_cadence) <= 0:
+			raise RuntimeError(
+				f"config {config_path}: settings.overlay.animate.cadence must be positive"
+			)
 	title_card_enabled = coerce_bool(title_card.get('enabled',
 		settings['title_card']['enabled']), config_path,
 		"settings.title_card.enabled")
@@ -733,6 +782,7 @@ def build_settings(config: dict, config_path: str) -> dict:
 		'overlay_opacity': overlay_opacity,
 		'overlay_font_size': overlay_font_size,
 		'overlay_text_color': overlay_text_color,
+		'overlay_animate': overlay_animate,
 		'title_card_enabled': title_card_enabled,
 		'title_card_duration': title_card_duration,
 		'title_card_text': title_card_text,
@@ -1775,6 +1825,7 @@ def main() -> None:
 		segments,
 		settings['silence_speed'], settings['content_speed'],
 		overlay_text_template=settings['overlay_text'] if settings['overlay_enabled'] else None,
+		overlay_animate=settings['overlay_animate'] if settings['overlay_enabled'] else None,
 		overlay_geometry=overlay_geometry,
 		overlay_opacity=settings['overlay_opacity'],
 		overlay_font_size=settings['overlay_font_size'],

@@ -45,6 +45,23 @@ def format_speed(speed: float) -> str:
 
 #============================================
 
+def format_yaml_list(values: list) -> str:
+	"""
+	Format a list for YAML inline list output.
+
+	Args:
+		values: List of values to format.
+
+	Returns:
+		str: YAML inline list string.
+	"""
+	parts = []
+	for value in values:
+		parts.append(yaml_quote(str(value)))
+	return ", ".join(parts)
+
+#============================================
+
 def parse_timecode(raw_time: str) -> decimal.Decimal:
 	"""
 	Parse a timecode string into seconds.
@@ -205,7 +222,8 @@ def format_seconds_duration(seconds: float, fps: Fraction) -> str:
 def build_silence_timeline_yaml(input_file: str, output_media_file: str,
 	profile: dict, asset_id: str, segments: list,
 	silence_speed: float, content_speed: float, overlay_text_template: str = None,
-	overlay_geometry: list = None, overlay_opacity: float = 0.9,
+	overlay_animate: dict = None, overlay_geometry: list = None,
+	overlay_opacity: float = 0.9,
 	overlay_id: str = "fast_forward", overlay_style_id: str = "fast_forward_style",
 	overlay_font_size: int = 96, overlay_text_color: str = "#ffffff",
 	intro_title: str = None, intro_duration: float = 2.0,
@@ -230,6 +248,7 @@ def build_silence_timeline_yaml(input_file: str, output_media_file: str,
 		playback_styles: Mapping of playback style ids to speeds.
 		segment_style_map: Mapping of segment kinds to playback style ids.
 		overlay_apply_style: Playback style id for overlay apply, if needed.
+		overlay_animate: Optional overlay animation mapping.
 
 	Returns:
 		str: YAML content.
@@ -324,6 +343,22 @@ def build_silence_timeline_yaml(input_file: str, output_media_file: str,
 		lines.append("          kind: overlay_text")
 		lines.append(f"          text: {yaml_quote(overlay_text_template)}")
 		lines.append(f"          style: {overlay_style_id}")
+		if overlay_animate is not None:
+			if not isinstance(overlay_animate, dict):
+				raise RuntimeError("overlay_animate must be a mapping")
+			values = overlay_animate.get('values')
+			if not isinstance(values, list) or len(values) == 0:
+				raise RuntimeError("overlay_animate values must be a non-empty list")
+			lines.append("          animate:")
+			kind = overlay_animate.get('kind', 'cycle')
+			lines.append(f"            kind: {kind}")
+			lines.append(f"            values: [{format_yaml_list(values)}]")
+			fps_value = overlay_animate.get('fps')
+			if fps_value is not None:
+				lines.append(f"            fps: {format_speed(float(fps_value))}")
+			cadence_value = overlay_animate.get('cadence')
+			if cadence_value is not None:
+				lines.append(f"            cadence: {format_speed(float(cadence_value))}")
 	lines.append("")
 	lines.append("output:")
 	lines.append(f"  file: {yaml_quote(output_media_file)}")

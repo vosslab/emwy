@@ -127,6 +127,58 @@ class EmwyYamlWriterTest(unittest.TestCase):
 		self.assertIn("style: fast_forward", yaml_text)
 
 	#============================================
+	def test_build_silence_timeline_yaml_with_overlay_animation(self) -> None:
+		"""Ensure overlay animation settings render into YAML."""
+		profile = {
+			'fps': "30",
+			'width': 1920,
+			'height': 1080,
+			'sample_rate': 48000,
+			'channels': "mono",
+		}
+		segments = [
+			{
+				'kind': 'content',
+				'start_tc': "00:00:00.000",
+				'end_tc': "00:00:02.000",
+			},
+			{
+				'kind': 'silence',
+				'start_tc': "00:00:02.000",
+				'end_tc': "00:00:03.000",
+			},
+		]
+		yaml_text = emwy_yaml_writer.build_silence_timeline_yaml(
+			"clip.mp4",
+			"out.mkv",
+			profile,
+			"source",
+			segments,
+			4.0,
+			1.0,
+			overlay_text_template="Fast Forward {speed}X {animate}",
+			overlay_animate={
+				'kind': 'cycle',
+				'values': ['>', '>>', '>>>'],
+				'cadence': 0.5,
+			},
+			overlay_geometry=[0.1, 0.4, 0.8, 0.2],
+			overlay_opacity=0.9,
+			playback_styles={
+				'content': 1.0,
+				'fast_forward': 4.0,
+			},
+			segment_style_map={
+				'content': 'content',
+				'silence': 'fast_forward',
+			},
+			overlay_apply_style="fast_forward",
+		)
+		self.assertIn("animate:", yaml_text)
+		self.assertIn("values: [\">\", \">>\", \">>>\"]", yaml_text)
+		self.assertIn("cadence: 0.5", yaml_text)
+
+	#============================================
 	def test_yaml_quote(self) -> None:
 		"""Ensure YAML quoting escapes quotes and backslashes."""
 		value = "path\\with\"quote"

@@ -84,7 +84,14 @@ class Renderer():
 	#============================
 	def _estimate_video_entry_commands(self, entry: dict) -> int:
 		entry_type = entry.get('type')
-		if entry_type in ('source', 'blank', 'generator'):
+		if entry_type in ('source', 'blank'):
+			return 1
+		if entry_type == 'generator':
+			gen_kind = entry.get('kind')
+			if gen_kind == 'overlay_text':
+				data = entry.get('data', {})
+				if isinstance(data, dict) and data.get('animate') is not None:
+					return 2
 			return 1
 		return 0
 
@@ -591,6 +598,11 @@ class Renderer():
 		if not isinstance(background, dict):
 			raise RuntimeError("overlay text background must be a mapping")
 		bg_kind = background.get('kind')
+		animate = data.get('animate')
+		if animate is not None:
+			return self._render_overlay_text_animated(text, background, duration,
+				font_file, font_size, text_color, index, codec, crf, pixel_format,
+				animate, render_width=render_width, render_height=render_height)
 		if bg_kind == 'image':
 			return self._render_image_card(text, background, duration, font_file,
 				font_size, text_color, index, codec, crf, pixel_format,
@@ -608,6 +620,102 @@ class Renderer():
 				font_size, text_color, index, codec, crf, pixel_format,
 				render_width=render_width, render_height=render_height)
 		raise RuntimeError(f"unsupported overlay text background kind {bg_kind}")
+
+	#============================
+	def _render_overlay_text_animated(self, text: str, background: dict,
+		duration: float, font_file: str, font_size, text_color, index: int,
+		codec: str, crf: int, pixel_format: str, animate: dict,
+		render_width: int = None, render_height: int = None) -> str:
+		if not isinstance(animate, dict):
+			raise RuntimeError("overlay text animate must be a mapping")
+		kind = animate.get('kind', 'cycle')
+		if kind != 'cycle':
+			raise RuntimeError("overlay text animate kind must be cycle")
+		values = animate.get('values')
+		if not isinstance(values, list) or len(values) == 0:
+			raise RuntimeError("overlay text animate values must be a non-empty list")
+		cadence = animate.get('cadence')
+		fps_value = animate.get('fps')
+		if cadence is not None:
+			cadence_value = float(cadence)
+			if cadence_value <= 0:
+				raise RuntimeError("overlay text animate cadence must be positive")
+			fps_value = 1.0 / cadence_value
+		if fps_value is None:
+			fps_value = 2.0
+		fps_value = float(fps_value)
+		if fps_value <= 0:
+			raise RuntimeError("overlay text animate fps must be positive")
+		frame_texts = []
+		for value in values:
+			value_text = str(value)
+			if "{animate}" in text:
+				frame_texts.append(text.replace("{animate}", value_text))
+			else:
+				space = "" if text.endswith(" ") or text == "" else " "
+				frame_texts.append(f"{text}{space}{value_text}".strip())
+		frame_prefix = self._make_temp_path(f"overlay-anim-{index:03d}")
+		frame_files = []
+		bg_kind = background.get('kind')
+		for frame_index, frame_text in enumerate(frame_texts, start=1):
+			frame_file = f"{frame_prefix}-{frame_index:03d}.png"
+			if bg_kind == 'image':
+				asset_id = background.get('asset')
+				if asset_id is None:
+					raise RuntimeError("background image requires asset id")
+				image_asset = self.project.assets.get('image', {}).get(asset_id)
+				if image_asset is None:
+					raise RuntimeError(f"image asset {asset_id} not found in assets.image")
+				image_file = image_asset.get('file')
+				if image_file is None:
+					raise RuntimeError(f"image asset {asset_id} missing file")
+				utils.ensure_file_exists(image_file)
+				self._render_card_image(frame_text, image_file, frame_file,
+					font_file, font_size, text_color,
+					render_width=render_width, render_height=render_height)
+			elif bg_kind == 'color':
+				color_value = background.get('color', '#000000')
+				self._render_color_card_image(frame_text, color_value, frame_file,
+					font_file, font_size, text_color, render_width=render_width,
+					render_height=render_height)
+			elif bg_kind == 'gradient':
+				from_color = background.get('from', '#000000')
+				to_color = background.get('to', '#ffffff')
+				direction = background.get('direction', 'vertical')
+				self._render_gradient_card_image(frame_text, from_color, to_color,
+					direction, frame_file, font_file, font_size, text_color,
+					render_width=render_width, render_height=render_height)
+			elif bg_kind == 'transparent':
+				self._render_transparent_card_image(frame_text, frame_file,
+					font_file, font_size, text_color, render_width=render_width,
+					render_height=render_height)
+			else:
+				raise RuntimeError(f"unsupported overlay text background kind {bg_kind}")
+			frame_files.append(frame_file)
+		loop_duration = float(len(frame_texts)) / fps_value
+		loop_file = self._make_temp_path(f"overlay-anim-loop-{index:03d}.mkv")
+		cmd = "ffmpeg -y "
+		cmd += f" -r {fps_value:.6f} "
+		cmd += f" -i '{frame_prefix}-%03d.png' "
+		cmd += f" -t {loop_duration:.3f} "
+		cmd += self._video_codec_args(codec, crf)
+		cmd += f" -pix_fmt {pixel_format} "
+		cmd += f" '{loop_file}' "
+		utils.runCmd(cmd)
+		utils.ensure_file_exists(loop_file)
+		out_file = self._make_temp_path(f"overlay-text-{index:03d}.mkv")
+		cmd = "ffmpeg -y -stream_loop -1 "
+		cmd += f" -i '{loop_file}' "
+		cmd += f" -t {float(duration):.3f} "
+		cmd += f" -r {fps_value:.6f} "
+		cmd += self._video_codec_args(codec, crf)
+		cmd += f" -pix_fmt {pixel_format} "
+		cmd += f" '{out_file}' "
+		utils.runCmd(cmd)
+		utils.ensure_file_exists(out_file)
+		if not self.project.keep_temp:
+			self._cleanup_temp(frame_files + [loop_file])
+		return out_file
 
 	#============================
 	def _resolve_card_value(self, data: dict, style: dict, key: str):

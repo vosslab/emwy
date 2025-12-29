@@ -34,6 +34,21 @@ from emwylib.core import utils
 
 #============================================
 
+NORD_COLORS = {
+	'background': "#2E3440",
+	'foreground': "#D8DEE9",
+	'dim': "#4C566A",
+	'header': "#88C0D0",
+	'command': "#ECEFF4",
+	'flags': "#81A1C1",
+	'numbers': "#B48EAD",
+	'paths': "#A3BE8C",
+	'strings': "#EBCB8B",
+	'error': "#BF616A",
+}
+
+#============================================
+
 def parse_args():
 	"""
 	Parse command-line arguments.
@@ -88,6 +103,7 @@ class EmwyTuiApp(App):
 
 	#metrics_title {
 		height: 1;
+		color: #88C0D0;
 	}
 
 	#metrics {
@@ -96,6 +112,7 @@ class EmwyTuiApp(App):
 
 	#project_title {
 		height: 1;
+		color: #88C0D0;
 	}
 
 	#project_info {
@@ -104,6 +121,7 @@ class EmwyTuiApp(App):
 
 	#footer_note {
 		height: 1;
+		color: #4C566A;
 	}
 
 	#log {
@@ -128,6 +146,7 @@ class EmwyTuiApp(App):
 		self.cached_total_estimate = None
 		self.current_summary = ""
 		self.start_time = None
+		self.finish_time = None
 		self.error_text = None
 		self.output_file = None
 		self.metrics_widget = None
@@ -205,13 +224,17 @@ class EmwyTuiApp(App):
 		if trace_text:
 			self._write_log(trace_text)
 		if self.log_widget is not None:
-			self.log_widget.write(f"error: {text}")
+			self.log_widget.write(
+				Text(f"error: {text}", style=f"bold {NORD_COLORS['error']}")
+			)
 
 	#============================
 	def _finish(self) -> None:
 		if self.log_widget is None or self.metrics_widget is None:
 			return
 		self.finished = True
+		if self.start_time is not None and self.finish_time is None:
+			self.finish_time = time.time() - self.start_time
 		if self.error_text is None:
 			if self.output_file is None:
 				self.log_widget.write("complete")
@@ -243,7 +266,7 @@ class EmwyTuiApp(App):
 			prefix = utils.command_prefix(self.command_count, self.command_total)
 			if prefix:
 				self.log_widget.write("")
-				self.log_widget.write(Text(prefix, style="bold cyan"))
+				self.log_widget.write(Text(prefix, style=f"bold {NORD_COLORS['header']}"))
 			self.log_widget.write(self._highlight_command(command))
 			self._write_log(f"start: {command}")
 			self._update_metrics()
@@ -253,7 +276,9 @@ class EmwyTuiApp(App):
 				self.command_durations.append(seconds)
 			self._update_eta_cache()
 			code = event.get('returncode')
-			self.log_widget.write(f"error ({code}): {summary}")
+			self.log_widget.write(
+				Text(f"error ({code}): {summary}", style=f"bold {NORD_COLORS['error']}")
+			)
 			self._write_log(f"error ({code}): {command}")
 			self._update_metrics()
 		if event_type == 'end' and event.get('returncode', 0) == 0:
@@ -309,50 +334,94 @@ class EmwyTuiApp(App):
 	def _update_metrics(self) -> None:
 		if self.metrics_widget is None:
 			return
-		elapsed = time.time() - self.start_time if self.start_time else 0.0
-		elapsed_text = self._format_duration(elapsed)
+		if self.start_time is None:
+			elapsed = 0.0
+		elif self.finished:
+			elapsed = self.finish_time or (time.time() - self.start_time)
+		else:
+			elapsed = time.time() - self.start_time
 		if self.finished:
 			status = "done"
 		elif self.error_text is not None:
 			status = "failed"
 		else:
 			status = "running"
-		command_line = f"{self.command_count}"
-		if self.command_total:
-			command_line = f"{self.command_count}/{self.command_total}"
 		eta_text = "N/A"
 		if self.cached_eta_seconds is not None:
 			eta_text = self._format_duration_estimate(self.cached_eta_seconds)
-			if self.cached_total_estimate is not None:
-				elapsed_text = (
-					f"{self._format_duration(elapsed)} / "
-					f"{self._format_duration_estimate(self.cached_total_estimate)} (est)"
-				)
 		elif self.command_total is not None:
 			eta_text = "gathering samples"
-		command_line = f"{command_line} | ETA: {eta_text}"
-		metrics = (
-			f"Status: {status}\n"
-			f"Elapsed: {elapsed_text}\n"
-			f"Commands: {command_line}\n"
-			f"Current: {self.current_summary}"
-		)
+		metrics = Text()
+		status_style = NORD_COLORS['foreground']
+		if status == "failed":
+			status_style = NORD_COLORS['error']
+		elif status == "done":
+			status_style = NORD_COLORS['paths']
+		metrics.append("Status: ", style=NORD_COLORS['dim'])
+		metrics.append(status, style=status_style)
+		metrics.append("\n")
+		metrics.append("Elapsed: ", style=NORD_COLORS['dim'])
+		metrics.append(self._format_duration(elapsed), style=NORD_COLORS['numbers'])
+		if self.cached_total_estimate is not None:
+			metrics.append(" / ", style=NORD_COLORS['dim'])
+			metrics.append(
+				self._format_duration_estimate(self.cached_total_estimate),
+				style=NORD_COLORS['numbers'],
+			)
+			metrics.append(" (est)", style=NORD_COLORS['dim'])
+		metrics.append("\n")
+		metrics.append("Commands: ", style=NORD_COLORS['dim'])
+		metrics.append(f"{self.command_count}", style=NORD_COLORS['numbers'])
+		if self.command_total:
+			metrics.append(f"/{self.command_total}", style=NORD_COLORS['numbers'])
+		metrics.append(" | ETA: ", style=NORD_COLORS['dim'])
+		eta_style = NORD_COLORS['numbers']
+		if eta_text in ("N/A", "gathering samples"):
+			eta_style = NORD_COLORS['dim']
+		metrics.append(eta_text, style=eta_style)
+		metrics.append("\n")
+		metrics.append("Current: ", style=NORD_COLORS['dim'])
+		metrics.append(self.current_summary, style=NORD_COLORS['foreground'])
 		self.metrics_widget.update(metrics)
 
 	#============================
 	def _update_project_info(self) -> None:
 		if self.project_widget is None:
 			return
-		lines = [
-			f"YAML: {self.yaml_file}",
-			f"Output: {self.output_override or self.output_file or 'N/A'}",
-			f"Cache: {self.cache_dir or 'default'}",
-			f"Keep temp: {'yes' if self.keep_temp else 'no'}",
-			f"Dry run: {'yes' if self.dry_run else 'no'}",
-		]
+		project = Text()
+		project.append("YAML: ", style=NORD_COLORS['dim'])
+		project.append(self.yaml_file, style=NORD_COLORS['paths'])
+		project.append("\n")
+		output_value = self.output_override or self.output_file or "N/A"
+		project.append("Output: ", style=NORD_COLORS['dim'])
+		output_style = NORD_COLORS['paths']
+		if output_value == "N/A":
+			output_style = NORD_COLORS['dim']
+		project.append(output_value, style=output_style)
+		project.append("\n")
+		cache_value = self.cache_dir or "default"
+		project.append("Cache: ", style=NORD_COLORS['dim'])
+		cache_style = NORD_COLORS['paths']
+		if cache_value == "default":
+			cache_style = NORD_COLORS['dim']
+		project.append(cache_value, style=cache_style)
+		project.append("\n")
+		project.append("Keep temp: ", style=NORD_COLORS['dim'])
+		project.append(
+			"yes" if self.keep_temp else "no",
+			style=NORD_COLORS['paths'] if self.keep_temp else NORD_COLORS['foreground'],
+		)
+		project.append("\n")
+		project.append("Dry run: ", style=NORD_COLORS['dim'])
+		project.append(
+			"yes" if self.dry_run else "no",
+			style=NORD_COLORS['paths'] if self.dry_run else NORD_COLORS['foreground'],
+		)
 		if self.debug_mode and self.log_path is not None:
-			lines.append(f"Debug log: {self.log_path}")
-		self.project_widget.update("\n".join(lines))
+			project.append("\n")
+			project.append("Debug log: ", style=NORD_COLORS['dim'])
+			project.append(self.log_path, style=NORD_COLORS['paths'])
+		self.project_widget.update(project)
 
 	#============================
 	def _set_calculating_total(self) -> None:
@@ -375,19 +444,19 @@ class EmwyTuiApp(App):
 	def _build_command_styles(self) -> list:
 		return [
 			(re.compile(r"\bpcm_s16le\b|\blibx265\b|\blibx264\b|\baac\b|\bffv1\b"),
-				"dim magenta"),
-			(re.compile(r"--?[A-Za-z0-9][A-Za-z0-9_-]*"), "dim magenta"),
-			(re.compile(r"\b\d+\.\d+\b"), "dim blue"),
-			(re.compile(r"\b\d+\b(?!\.\d)"), "dim blue"),
-			(re.compile(r"'[^']*'|\"[^\"]*\""), "dim yellow"),
-			(re.compile(r"(?:/|~|\./|\.\./)[^\s'\"`]+"), "dim yellow"),
+				NORD_COLORS['foreground']),
+			(re.compile(r"--?[A-Za-z0-9][A-Za-z0-9_-]*"), NORD_COLORS['flags']),
+			(re.compile(r"\b\d+\.\d+\b"), NORD_COLORS['numbers']),
+			(re.compile(r"\b\d+\b(?!\.\d)"), NORD_COLORS['numbers']),
+			(re.compile(r"'[^']*'|\"[^\"]*\""), NORD_COLORS['strings']),
+			(re.compile(r"(?:/|~|\./|\.\./)[^\s'\"`]+"), NORD_COLORS['paths']),
 		]
 
 	#============================
 	def _highlight_command(self, command: str):
 		if command is None or command == "":
 			return ""
-		text = Text(command)
+		text = Text(command, style=f"bold {NORD_COLORS['command']}")
 		for pattern, style in self.command_styles:
 			for match in pattern.finditer(command):
 				text.stylize(style, match.start(), match.end())

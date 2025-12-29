@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- Frozen TUI elapsed time once completion is printed.
+- Fixed command total estimation for animated overlay text generators.
+- Colorized dashboard and project panels to match the Nord-style palette.
+- Shifted TUI command highlighting to a Nord-style, low-saturation palette.
+- Added overlay_text animation cycle support with `{animate}` placeholders and YAML output.
+- Updated silence_annotator defaults to emit animated fast-forward overlays.
+- Documented overlay text animation fields and added YAML writer test coverage.
+- Updated demo_codex overlay templates to use animated fast-forward text.
 - Added CLI-style command highlighting for emwy_tui command logs.
 - Fixed overlay compositing opacity filter for recent ffmpeg colorchannelmixer parsing.
 - Reset emwy_tui debug log on each run instead of appending.
