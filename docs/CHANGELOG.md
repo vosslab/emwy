@@ -2,6 +2,31 @@
 
 ## Unreleased
 - Added CLI-style command highlighting for emwy_tui command logs.
+- Fixed overlay compositing opacity filter for recent ffmpeg colorchannelmixer parsing.
+- Reset emwy_tui debug log on each run instead of appending.
+- Added pytest coverage for overlay ffmpeg behaviors.
+- Removed deprecated Pillow mode arguments in titlecard image creation.
+- Added pytest coverage for ffmpeg/sox/mkvmerge tooling behaviors.
+- Relaxed tooling test duration bounds and added minimal assets to generator tests.
+- Added pytest coverage for custom font_file rendering.
+- Added ETA and improved elapsed time formatting in emwy_tui metrics.
+- Fixed command total estimate to include chapter muxing and surfaced command total calculation in the TUI.
+- Added a COMPLETE! ASCII banner in the TUI finish state.
+- Added TUI command coloring and clearer ETA updates while sampling command durations.
+- Moved ETA display onto the Commands line in the TUI dashboard.
+- Added unit tests for TUI ETA and duration formatting.
+- Updated demo_codex overlay text style to use a boxed background and adjusted overlay opacity.
+- Softened TUI command log colors for a subtler look.
+- Added estimated total time to the elapsed display in the TUI dashboard.
+- Removed decimals from estimated ETA/total times in the TUI dashboard.
+- Rounded estimated ETA/total times up to the next whole second.
+- Delay ETA display until at least 8 commands have completed.
+- Update ETA estimates only after command completion and adjust remaining-time formula.
+- Adjusted ETA formula to weight the last steps (remaining + 3).
+- Render overlay generator cards at overlay geometry size and error on missing font files.
+- Added a unit test to confirm custom font paths are used during card rendering.
+- Added system font discovery helper for cross-platform font tests.
+- Improved vertical centering of overlay text and card text using font bounding boxes.
 - Updated AGENTS guidance with notes for future Codex runs.
 - Merge batching now occurs during segment/overlay generation instead of only at the end.
 - Disabled tqdm in quiet mode to avoid multiprocessing lock errors in the TUI.

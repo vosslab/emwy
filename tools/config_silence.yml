@@ -2,8 +2,8 @@ silence_annotator: 1
 settings:
   detection:
     threshold_db: -40.0
-    min_silence: 3.0
-    min_content: 1.5
+    min_silence: 8.0
+    min_content: 5.5
     frame_seconds: 0.25
     hop_seconds: 0.05
     smooth_frames: 5
@@ -17,6 +17,7 @@ settings:
     text_template: "Fast Forward {speed}X >>>"
     geometry: [0.1, 0.4, 0.8, 0.2]
     opacity: 0.9
+    font_file: /Users/vosslab/Library/Fonts/PT_Sans-Narrow-Web-Bold.ttf
     font_size: 256
     text_color: "#ffffff"
   title_card:

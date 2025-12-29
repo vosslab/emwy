@@ -7,7 +7,9 @@ Textual TUI wrapper for emwy renders.
 # Standard Library
 import argparse
 import os
+import re
 import shlex
+import statistics
 import sys
 import threading
 import time
@@ -121,6 +123,9 @@ class EmwyTuiApp(App):
 		self.cache_dir = cache_dir
 		self.command_count = 0
 		self.command_total = None
+		self.command_durations = []
+		self.cached_eta_seconds = None
+		self.cached_total_estimate = None
 		self.current_summary = ""
 		self.start_time = None
 		self.error_text = None
@@ -129,11 +134,13 @@ class EmwyTuiApp(App):
 		self.project_widget = None
 		self.log_widget = None
 		self.finished = False
+		self.command_styles = self._build_command_styles()
 		self.debug_mode = debug_log
 		self.log_path = None
 		self.log_lock = threading.Lock()
 		if self.debug_mode:
 			self.log_path = os.path.join(os.getcwd(), "emwy_tui.log")
+			self._reset_log()
 			self._write_log(f"debug log: {self.log_path}")
 
 	#============================
@@ -177,9 +184,11 @@ class EmwyTuiApp(App):
 				dry_run=self.dry_run,
 				keep_temp=self.keep_temp,
 				cache_dir=self.cache_dir)
+			self.call_from_thread(self._set_calculating_total)
 			self.output_file = project.output.get('file')
 			self.command_total = project._renderer._estimate_command_total()
 			utils.set_command_total(self.command_total)
+			self.call_from_thread(self._set_command_total_ready, self.command_total)
 			self.call_from_thread(self._update_project_info)
 			project.run()
 		except Exception as exc:
@@ -208,6 +217,7 @@ class EmwyTuiApp(App):
 				self.log_widget.write("complete")
 				self._write_log("complete")
 			else:
+				self._write_complete_banner()
 				self.log_widget.write(f"complete: {self.output_file}")
 				self._write_log(f"complete: {self.output_file}")
 		else:
@@ -234,16 +244,25 @@ class EmwyTuiApp(App):
 			if prefix:
 				self.log_widget.write("")
 				self.log_widget.write(Text(prefix, style="bold cyan"))
-			self.log_widget.write(utils.highlight_command(command))
+			self.log_widget.write(self._highlight_command(command))
 			self._write_log(f"start: {command}")
 			self._update_metrics()
 		if event_type == 'end' and event.get('returncode', 0) != 0:
+			seconds = event.get('seconds')
+			if isinstance(seconds, (int, float)):
+				self.command_durations.append(seconds)
+			self._update_eta_cache()
 			code = event.get('returncode')
 			self.log_widget.write(f"error ({code}): {summary}")
 			self._write_log(f"error ({code}): {command}")
+			self._update_metrics()
 		if event_type == 'end' and event.get('returncode', 0) == 0:
 			seconds = event.get('seconds', 0.0)
+			if isinstance(seconds, (int, float)):
+				self.command_durations.append(seconds)
+			self._update_eta_cache()
 			self._write_log(f"end ({seconds:.3f}s): {command}")
+			self._update_metrics()
 
 	#============================
 	def _write_log(self, message: str) -> None:
@@ -254,6 +273,14 @@ class EmwyTuiApp(App):
 		with self.log_lock:
 			with open(self.log_path, "a", encoding="utf-8") as handle:
 				handle.write(line)
+
+	#============================
+	def _reset_log(self) -> None:
+		if not self.debug_mode or self.log_path is None:
+			return
+		with self.log_lock:
+			with open(self.log_path, "w", encoding="utf-8"):
+				return
 
 	#============================
 	def _summarize_command(self, command: str) -> str:
@@ -283,7 +310,7 @@ class EmwyTuiApp(App):
 		if self.metrics_widget is None:
 			return
 		elapsed = time.time() - self.start_time if self.start_time else 0.0
-		elapsed_text = f"{elapsed:.1f}s"
+		elapsed_text = self._format_duration(elapsed)
 		if self.finished:
 			status = "done"
 		elif self.error_text is not None:
@@ -293,6 +320,17 @@ class EmwyTuiApp(App):
 		command_line = f"{self.command_count}"
 		if self.command_total:
 			command_line = f"{self.command_count}/{self.command_total}"
+		eta_text = "N/A"
+		if self.cached_eta_seconds is not None:
+			eta_text = self._format_duration_estimate(self.cached_eta_seconds)
+			if self.cached_total_estimate is not None:
+				elapsed_text = (
+					f"{self._format_duration(elapsed)} / "
+					f"{self._format_duration_estimate(self.cached_total_estimate)} (est)"
+				)
+		elif self.command_total is not None:
+			eta_text = "gathering samples"
+		command_line = f"{command_line} | ETA: {eta_text}"
 		metrics = (
 			f"Status: {status}\n"
 			f"Elapsed: {elapsed_text}\n"
@@ -315,6 +353,126 @@ class EmwyTuiApp(App):
 		if self.debug_mode and self.log_path is not None:
 			lines.append(f"Debug log: {self.log_path}")
 		self.project_widget.update("\n".join(lines))
+
+	#============================
+	def _set_calculating_total(self) -> None:
+		self.current_summary = "calculating command total"
+		self.cached_eta_seconds = None
+		self.cached_total_estimate = None
+		if self.log_widget is not None:
+			self.log_widget.write("Calculating command total...")
+		self._write_log("calculating command total")
+		self._update_metrics()
+
+	#============================
+	def _set_command_total_ready(self, total: int) -> None:
+		if self.log_widget is not None:
+			self.log_widget.write(f"Command total: {total}")
+		self._write_log(f"command total: {total}")
+		self._update_metrics()
+
+	#============================
+	def _build_command_styles(self) -> list:
+		return [
+			(re.compile(r"\bpcm_s16le\b|\blibx265\b|\blibx264\b|\baac\b|\bffv1\b"),
+				"dim magenta"),
+			(re.compile(r"--?[A-Za-z0-9][A-Za-z0-9_-]*"), "dim magenta"),
+			(re.compile(r"\b\d+\.\d+\b"), "dim blue"),
+			(re.compile(r"\b\d+\b(?!\.\d)"), "dim blue"),
+			(re.compile(r"'[^']*'|\"[^\"]*\""), "dim yellow"),
+			(re.compile(r"(?:/|~|\./|\.\./)[^\s'\"`]+"), "dim yellow"),
+		]
+
+	#============================
+	def _highlight_command(self, command: str):
+		if command is None or command == "":
+			return ""
+		text = Text(command)
+		for pattern, style in self.command_styles:
+			for match in pattern.finditer(command):
+				text.stylize(style, match.start(), match.end())
+		return text
+
+	#============================
+	def _write_complete_banner(self) -> None:
+		if self.log_widget is None:
+			return
+		lines = [
+			"  ____ ___  __  __ ____  _     _____ _____ _____ _ ",
+			" / ___/ _ \\|  \\/  |  _ \\| |   | ____|_   _| ____| |",
+			"| |  | | | | |\\/| | |_) | |   |  _|   | | |  _| | |",
+			"| |__| |_| | |  | |  __/| |___| |___  | | | |___|_|",
+			" \\____\\___/|_|  |_|_|   |_____|_____| |_| |_____(_)",
+		]
+		self.log_widget.write("")
+		for line in lines:
+			self.log_widget.write(line)
+		self._write_log("complete banner")
+
+	#============================
+	def _estimate_remaining_seconds(self):
+		if self.command_total is None or self.command_total <= 0:
+			return None
+		if len(self.command_durations) == 0:
+			return None
+		remaining = self.command_total - self.command_count
+		if remaining <= 0:
+			return 0.0
+		median = statistics.median(self.command_durations)
+		stdev = statistics.pstdev(self.command_durations)
+		expected_cmd = median + stdev
+		if expected_cmd < 0:
+			expected_cmd = 0.0
+		return expected_cmd * (remaining + 3)
+
+	#============================
+	def _update_eta_cache(self) -> None:
+		if self.command_total is None or self.command_total <= 0:
+			self.cached_eta_seconds = None
+			self.cached_total_estimate = None
+			return
+		if len(self.command_durations) < 8:
+			self.cached_eta_seconds = None
+			self.cached_total_estimate = None
+			return
+		eta_seconds = self._estimate_remaining_seconds()
+		if eta_seconds is None:
+			self.cached_eta_seconds = None
+			self.cached_total_estimate = None
+			return
+		elapsed = time.time() - self.start_time if self.start_time else 0.0
+		self.cached_eta_seconds = eta_seconds
+		self.cached_total_estimate = elapsed + eta_seconds
+
+	#============================
+	def _format_duration(self, seconds: float) -> str:
+		if seconds < 60:
+			return f"{seconds:.1f}s"
+		minutes = int(seconds // 60)
+		remaining = seconds - (minutes * 60)
+		seconds_text = f"{remaining:04.1f}"
+		if seconds_text.startswith(" "):
+			seconds_text = f"0{seconds_text[1:]}"
+		if minutes < 60:
+			return f"{minutes}m {seconds_text}s"
+		hours = int(minutes // 60)
+		minutes = minutes - (hours * 60)
+		return f"{hours}h {minutes:02d}m {seconds_text}s"
+
+	#============================
+	def _format_duration_estimate(self, seconds: float) -> str:
+		rounded = int(seconds)
+		if seconds > rounded:
+			rounded += 1
+		if rounded < 60:
+			return f"{rounded:d}s"
+		minutes = rounded // 60
+		remaining = rounded - (minutes * 60)
+		if minutes < 60:
+			return f"{minutes}m {remaining:02d}s"
+		hours = minutes // 60
+		minutes = minutes - (hours * 60)
+		return f"{hours}h {minutes:02d}m {remaining:02d}s"
 
 #============================================
 

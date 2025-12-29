@@ -95,7 +95,7 @@ class TitleCard(object):
 		if self.randimg is not None:
 			base_pattern = (1*self.randimg + base_pattern)/2.
 		self.randimg = base_pattern
-		im = Image.fromarray(numpy.uint8(base_pattern), mode='L')
+		im = Image.fromarray(numpy.uint8(base_pattern))
 		im = im.convert("RGB")
 		im = RGBTransform().mix_with(bgcolor, factor=.30).applied_to(im)
 		return im
@@ -122,7 +122,7 @@ class TitleCard(object):
 		turbulence_pattern /= turbulence_pattern.max()
 		turbulence_pattern *= 255
 		#turbulence_pattern /= sum([1 / 2**i for i in power_range])
-		im = Image.fromarray(numpy.uint8(turbulence_pattern), mode='L')
+		im = Image.fromarray(numpy.uint8(turbulence_pattern))
 		im = im.convert("RGB")
 		im = RGBTransform().mix_with(self.bgcolor, factor=.30).applied_to(im)
 		return im
@@ -178,8 +178,10 @@ class TitleCard(object):
 
 	#===============================
 	def _load_font(self):
-		if self.fontfile is not None and os.path.exists(self.fontfile):
-			return ImageFont.truetype(self.fontfile, self.size)
+		if self.fontfile is not None:
+			if os.path.exists(self.fontfile):
+				return ImageFont.truetype(self.fontfile, self.size)
+			raise RuntimeError(f"font file not found: {self.fontfile}")
 		try:
 			return ImageFont.truetype("DejaVuSans.ttf", self.size)
 		except OSError:
@@ -189,7 +191,7 @@ class TitleCard(object):
 	def _resize_array(self, array: numpy.ndarray, width: int, height: int) -> numpy.ndarray:
 		"""Resize a 2D array to (width, height) using PIL."""
 		array_uint8 = numpy.clip(array, 0, 255).astype(numpy.uint8)
-		image = Image.fromarray(array_uint8, mode='L')
+		image = Image.fromarray(array_uint8)
 		image = image.resize((width, height), resample=Image.BICUBIC)
 		return numpy.array(image, dtype=numpy.float64)
 

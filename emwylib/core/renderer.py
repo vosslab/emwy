@@ -50,6 +50,9 @@ class Renderer():
 				continue
 			total += self._estimate_overlay_playlist_commands(playlist_id)
 			total += 1
+		chapters = self._collect_chapters()
+		if len(chapters) > 0 and self._output_supports_chapters(self.project.output['file']):
+			total += 1
 		total += self._estimate_finalize_commands()
 		return total
 
@@ -196,7 +199,7 @@ class Renderer():
 			overlay_playlist_id = overlay.get('b')
 			if overlay_playlist_id is None:
 				raise RuntimeError("overlay missing b playlist")
-			overlay_file = self._render_overlay_playlist(overlay_playlist_id, index)
+			overlay_file = self._render_overlay_playlist(overlay_playlist_id, index, overlay)
 			out_file = self._make_temp_path(f"overlay-{index:02d}.mkv")
 			self._composite_overlay(current_file, overlay_file, out_file, overlay)
 			if not self.project.keep_temp:
@@ -205,7 +208,8 @@ class Renderer():
 		return current_file
 
 	#============================
-	def _render_overlay_playlist(self, playlist_id: str, overlay_index: int) -> str:
+	def _render_overlay_playlist(self, playlist_id: str, overlay_index: int,
+		overlay: dict = None) -> str:
 		playlist = self.project.playlists.get(playlist_id)
 		if playlist is None:
 			raise RuntimeError(f"overlay playlist not found: {playlist_id}")
@@ -220,9 +224,22 @@ class Renderer():
 		use_batch = (
 			threshold > 0 and batch_size > 0 and len(playlist.get('entries', [])) > threshold
 		)
-		for index, entry in enumerate(playlist.get('entries', []), start=1):
+		entries = playlist.get('entries', [])
+		render_width = None
+		render_height = None
+		geometry = overlay.get('geometry') if isinstance(overlay, dict) else None
+		if isinstance(geometry, list) and len(geometry) >= 4:
+			has_source = any(item.get('type') == 'source' for item in entries)
+			if not has_source:
+				render_width = int(round(self.project.profile['width'] * geometry[2]))
+				render_height = int(round(self.project.profile['height'] * geometry[3]))
+				if render_width <= 0 or render_height <= 0:
+					render_width = None
+					render_height = None
+		for index, entry in enumerate(entries, start=1):
 			video_file = self._render_video_entry(entry, index, codec='ffv1',
-				pixel_format='rgba', allow_transparent=True)
+				pixel_format='rgba', allow_transparent=True,
+				render_width=render_width, render_height=render_height)
 			if use_batch:
 				batch_segments.append(video_file)
 				if len(batch_segments) >= batch_size:
@@ -280,9 +297,9 @@ class Renderer():
 			self.project.profile['fps'])
 		if w <= 0 or h <= 0:
 			raise RuntimeError("overlay geometry results in zero-sized region")
-		alpha_expr = f"{opacity}*a"
+		alpha_value = f"{opacity}"
 		filter_chain = (
-			f"[1:v]scale={w}:{h},format=rgba,colorchannelmixer=aa={alpha_expr}[ovr];"
+			f"[1:v]scale={w}:{h},format=rgba,colorchannelmixer=aa={alpha_value}[ovr];"
 			f"[0:v][ovr]overlay={x}:{y}:enable='between(t,{start_time:.6f},{end_time:.6f})'"
 			"[vout]"
 		)
@@ -300,11 +317,12 @@ class Renderer():
 
 	#============================
 	def _render_video_entry(self, entry: dict, index: int, codec: str = None,
-		pixel_format: str = None, allow_transparent: bool = False) -> str:
+		pixel_format: str = None, allow_transparent: bool = False,
+		render_width: int = None, render_height: int = None) -> str:
 		fps_value = self.project.profile['fps_float']
 		pixel_format = pixel_format or self.project.profile['pixel_format']
-		width = self.project.profile['width']
-		height = self.project.profile['height']
+		width = render_width or self.project.profile['width']
+		height = render_height or self.project.profile['height']
 		codec = codec or self.project.output['video_codec']
 		crf = self.project.output['crf']
 		if entry['type'] == 'source':
@@ -332,7 +350,8 @@ class Renderer():
 				codec, crf, pixel_format, fill)
 			return out_file
 		if entry['type'] == 'generator':
-			return self._render_video_generator(entry, index, codec, crf, pixel_format)
+			return self._render_video_generator(entry, index, codec, crf, pixel_format,
+				render_width=render_width, render_height=render_height)
 		raise RuntimeError("unsupported video entry type")
 
 	#============================
@@ -437,18 +456,22 @@ class Renderer():
 
 	#============================
 	def _render_video_generator(self, entry: dict, index: int,
-		codec: str = None, crf: int = None, pixel_format: str = None) -> str:
+		codec: str = None, crf: int = None, pixel_format: str = None,
+		render_width: int = None, render_height: int = None) -> str:
 		codec = codec or self.project.output['video_codec']
 		crf = self.project.output['crf'] if crf is None else crf
 		pixel_format = pixel_format or self.project.profile['pixel_format']
 		gen_kind = entry['kind']
 		if gen_kind in ('chapter_card', 'title_card'):
-			return self._render_title_card(entry, index, codec, crf, pixel_format)
+			return self._render_title_card(entry, index, codec, crf, pixel_format,
+				render_width=render_width, render_height=render_height)
 		if gen_kind == 'overlay_text':
-			return self._render_overlay_text(entry, index, codec, crf, pixel_format)
+			return self._render_overlay_text(entry, index, codec, crf, pixel_format,
+				render_width=render_width, render_height=render_height)
 		if gen_kind == 'still':
 			return self._render_still_generator(entry, index, codec, crf,
-				pixel_format)
+				pixel_format, render_width=render_width,
+				render_height=render_height)
 		if gen_kind == 'black':
 			duration = utils.seconds_from_frames(
 				entry['duration_frames'], self.project.profile['fps']
@@ -456,7 +479,8 @@ class Renderer():
 			out_file = self._make_temp_path(f"video-black-{index:03d}.mkv")
 			self._render_blank_video(out_file, duration,
 				self.project.profile['fps_float'],
-				self.project.profile['width'], self.project.profile['height'],
+				render_width or self.project.profile['width'],
+				render_height or self.project.profile['height'],
 				codec, crf, pixel_format, 'black')
 			return out_file
 		raise RuntimeError("unsupported video generator kind")
@@ -477,7 +501,8 @@ class Renderer():
 
 	#============================
 	def _render_title_card(self, entry: dict, index: int, codec: str = None,
-		crf: int = None, pixel_format: str = None) -> str:
+		crf: int = None, pixel_format: str = None, render_width: int = None,
+		render_height: int = None) -> str:
 		data = entry.get('data', {})
 		text = data.get('title', data.get('text', ''))
 		if text == '':
@@ -501,24 +526,28 @@ class Renderer():
 			bg_kind = background.get('kind')
 			if bg_kind == 'image':
 				return self._render_image_card(text, background, duration, font_file,
-					font_size, text_color, index, codec, crf, pixel_format)
+					font_size, text_color, index, codec, crf, pixel_format,
+					render_width=render_width, render_height=render_height)
 			if bg_kind == 'color':
 				return self._render_color_card(text, background, duration, font_file,
-					font_size, text_color, index, codec, crf, pixel_format)
+					font_size, text_color, index, codec, crf, pixel_format,
+					render_width=render_width, render_height=render_height)
 			if bg_kind == 'gradient':
 				return self._render_gradient_card(text, background, duration, font_file,
-					font_size, text_color, index, codec, crf, pixel_format)
+					font_size, text_color, index, codec, crf, pixel_format,
+					render_width=render_width, render_height=render_height)
 			if bg_kind == 'transparent':
 				return self._render_transparent_card(text, duration, font_file,
-					font_size, text_color, index, codec, crf, pixel_format)
+					font_size, text_color, index, codec, crf, pixel_format,
+					render_width=render_width, render_height=render_height)
 			raise RuntimeError(f"unsupported card background kind {bg_kind}")
 		if codec == 'ffv1':
 			raise RuntimeError("title_card requires a background for overlays")
 		out_file = self._make_temp_path(f"titlecard-{index:03d}.mkv")
 		tc = titlecard.TitleCard()
 		tc.text = text
-		tc.width = self.project.profile['width']
-		tc.height = self.project.profile['height']
+		tc.width = render_width or self.project.profile['width']
+		tc.height = render_height or self.project.profile['height']
 		tc.framerate = self.project.profile['fps_float']
 		tc.length = float(duration)
 		tc.crf = self.project.output['crf']
@@ -536,7 +565,8 @@ class Renderer():
 
 	#============================
 	def _render_overlay_text(self, entry: dict, index: int, codec: str = None,
-		crf: int = None, pixel_format: str = None) -> str:
+		crf: int = None, pixel_format: str = None, render_width: int = None,
+		render_height: int = None) -> str:
 		data = entry.get('data', {})
 		text = data.get('text', data.get('title', ''))
 		if text == '':
@@ -563,16 +593,20 @@ class Renderer():
 		bg_kind = background.get('kind')
 		if bg_kind == 'image':
 			return self._render_image_card(text, background, duration, font_file,
-				font_size, text_color, index, codec, crf, pixel_format)
+				font_size, text_color, index, codec, crf, pixel_format,
+				render_width=render_width, render_height=render_height)
 		if bg_kind == 'color':
 			return self._render_color_card(text, background, duration, font_file,
-				font_size, text_color, index, codec, crf, pixel_format)
+				font_size, text_color, index, codec, crf, pixel_format,
+				render_width=render_width, render_height=render_height)
 		if bg_kind == 'gradient':
 			return self._render_gradient_card(text, background, duration, font_file,
-				font_size, text_color, index, codec, crf, pixel_format)
+				font_size, text_color, index, codec, crf, pixel_format,
+				render_width=render_width, render_height=render_height)
 		if bg_kind == 'transparent':
 			return self._render_transparent_card(text, duration, font_file,
-				font_size, text_color, index, codec, crf, pixel_format)
+				font_size, text_color, index, codec, crf, pixel_format,
+				render_width=render_width, render_height=render_height)
 		raise RuntimeError(f"unsupported overlay text background kind {bg_kind}")
 
 	#============================
@@ -601,7 +635,8 @@ class Renderer():
 	#============================
 	def _render_image_card(self, text: str, background: dict, duration: float,
 		font_file: str, font_size, text_color, index: int, codec: str = None,
-		crf: int = None, pixel_format: str = None) -> str:
+		crf: int = None, pixel_format: str = None, render_width: int = None,
+		render_height: int = None) -> str:
 		asset_id = background.get('asset')
 		if asset_id is None:
 			raise RuntimeError("background image requires asset id")
@@ -614,7 +649,8 @@ class Renderer():
 		utils.ensure_file_exists(image_file)
 		card_image = self._make_temp_path(f"card-{index:03d}.png")
 		self._render_card_image(text, image_file, card_image, font_file,
-			font_size, text_color)
+			font_size, text_color, render_width=render_width,
+			render_height=render_height)
 		out_file = self._make_temp_path(f"titlecard-{index:03d}.mkv")
 		self._render_still_image(card_image, out_file, duration, codec, crf,
 			pixel_format)
@@ -625,11 +661,13 @@ class Renderer():
 	#============================
 	def _render_color_card(self, text: str, background: dict, duration: float,
 		font_file: str, font_size, text_color, index: int, codec: str = None,
-		crf: int = None, pixel_format: str = None) -> str:
+		crf: int = None, pixel_format: str = None, render_width: int = None,
+		render_height: int = None) -> str:
 		color_value = background.get('color', '#000000')
 		card_image = self._make_temp_path(f"card-{index:03d}.png")
 		self._render_color_card_image(text, color_value, card_image, font_file,
-			font_size, text_color)
+			font_size, text_color, render_width=render_width,
+			render_height=render_height)
 		out_file = self._make_temp_path(f"titlecard-{index:03d}.mkv")
 		self._render_still_image(card_image, out_file, duration, codec, crf,
 			pixel_format)
@@ -640,13 +678,15 @@ class Renderer():
 	#============================
 	def _render_gradient_card(self, text: str, background: dict, duration: float,
 		font_file: str, font_size, text_color, index: int, codec: str = None,
-		crf: int = None, pixel_format: str = None) -> str:
+		crf: int = None, pixel_format: str = None, render_width: int = None,
+		render_height: int = None) -> str:
 		from_color = background.get('from', '#000000')
 		to_color = background.get('to', '#ffffff')
 		direction = background.get('direction', 'vertical')
 		card_image = self._make_temp_path(f"card-{index:03d}.png")
 		self._render_gradient_card_image(text, from_color, to_color, direction,
-			card_image, font_file, font_size, text_color)
+			card_image, font_file, font_size, text_color,
+			render_width=render_width, render_height=render_height)
 		out_file = self._make_temp_path(f"titlecard-{index:03d}.mkv")
 		self._render_still_image(card_image, out_file, duration, codec, crf,
 			pixel_format)
@@ -657,10 +697,12 @@ class Renderer():
 	#============================
 	def _render_transparent_card(self, text: str, duration: float,
 		font_file: str, font_size, text_color, index: int, codec: str = None,
-		crf: int = None, pixel_format: str = None) -> str:
+		crf: int = None, pixel_format: str = None, render_width: int = None,
+		render_height: int = None) -> str:
 		card_image = self._make_temp_path(f"card-{index:03d}.png")
 		self._render_transparent_card_image(text, card_image, font_file,
-			font_size, text_color)
+			font_size, text_color, render_width=render_width,
+			render_height=render_height)
 		out_file = self._make_temp_path(f"titlecard-{index:03d}.mkv")
 		self._render_still_image(card_image, out_file, duration, codec, crf,
 			pixel_format)
@@ -670,9 +712,10 @@ class Renderer():
 
 	#============================
 	def _render_transparent_card_image(self, text: str, output_file: str,
-		font_file: str, font_size, text_color) -> None:
-		width = self.project.profile['width']
-		height = self.project.profile['height']
+		font_file: str, font_size, text_color, render_width: int = None,
+		render_height: int = None) -> None:
+		width = render_width or self.project.profile['width']
+		height = render_height or self.project.profile['height']
 		image = PIL.Image.new("RGBA", (width, height), color=(0, 0, 0, 0))
 		draw = PIL.ImageDraw.Draw(image)
 		font = self._load_font(font_file, font_size)
@@ -688,9 +731,10 @@ class Renderer():
 
 	#============================
 	def _render_card_image(self, text: str, background_file: str,
-		output_file: str, font_file: str, font_size, text_color) -> None:
-		width = self.project.profile['width']
-		height = self.project.profile['height']
+		output_file: str, font_file: str, font_size, text_color,
+		render_width: int = None, render_height: int = None) -> None:
+		width = render_width or self.project.profile['width']
+		height = render_height or self.project.profile['height']
 		image = PIL.Image.open(background_file).convert("RGB")
 		image = self._fit_image(image, width, height)
 		self._draw_card_text(image, text, font_file, font_size, text_color)
@@ -699,7 +743,8 @@ class Renderer():
 
 	#============================
 	def _render_still_generator(self, entry: dict, index: int, codec: str = None,
-		crf: int = None, pixel_format: str = None) -> str:
+		crf: int = None, pixel_format: str = None, render_width: int = None,
+		render_height: int = None) -> str:
 		data = entry.get('data', {})
 		asset_id = data.get('asset')
 		if asset_id is None:
@@ -715,7 +760,8 @@ class Renderer():
 			entry['duration_frames'], self.project.profile['fps']
 		)
 		card_image = self._make_temp_path(f"still-{index:03d}.png")
-		self._render_still_image_asset(image_file, card_image, pixel_format)
+		self._render_still_image_asset(image_file, card_image, pixel_format,
+			render_width=render_width, render_height=render_height)
 		out_file = self._make_temp_path(f"still-{index:03d}.mkv")
 		self._render_still_image(card_image, out_file, duration, codec, crf,
 			pixel_format)
@@ -725,9 +771,9 @@ class Renderer():
 
 	#============================
 	def _render_still_image_asset(self, image_file: str, output_file: str,
-		pixel_format: str) -> None:
-		width = self.project.profile['width']
-		height = self.project.profile['height']
+		pixel_format: str, render_width: int = None, render_height: int = None) -> None:
+		width = render_width or self.project.profile['width']
+		height = render_height or self.project.profile['height']
 		image = PIL.Image.open(image_file)
 		if pixel_format in ('rgba', 'argb', 'yuva420p', 'yuva444p'):
 			image = image.convert("RGBA")
@@ -739,9 +785,10 @@ class Renderer():
 
 	#============================
 	def _render_color_card_image(self, text: str, color_value,
-		output_file: str, font_file: str, font_size, text_color) -> None:
-		width = self.project.profile['width']
-		height = self.project.profile['height']
+		output_file: str, font_file: str, font_size, text_color,
+		render_width: int = None, render_height: int = None) -> None:
+		width = render_width or self.project.profile['width']
+		height = render_height or self.project.profile['height']
 		color = self._parse_color(color_value)
 		image = PIL.Image.new("RGB", (width, height), color=color)
 		self._draw_card_text(image, text, font_file, font_size, text_color)
@@ -751,9 +798,9 @@ class Renderer():
 	#============================
 	def _render_gradient_card_image(self, text: str, from_color, to_color,
 		direction: str, output_file: str, font_file: str, font_size,
-		text_color) -> None:
-		width = self.project.profile['width']
-		height = self.project.profile['height']
+		text_color, render_width: int = None, render_height: int = None) -> None:
+		width = render_width or self.project.profile['width']
+		height = render_height or self.project.profile['height']
 		image = self._render_gradient_background(from_color, to_color, direction,
 			width, height)
 		self._draw_card_text(image, text, font_file, font_size, text_color)
@@ -767,9 +814,16 @@ class Renderer():
 		draw = PIL.ImageDraw.Draw(image)
 		font = self._load_font(font_file, font_size)
 		color = self._parse_color(text_color or "#ffffff")
-		text_size = self._measure_text(draw, text, font)
-		x = (width - text_size[0]) / 2.0
-		y = (height - text_size[1]) / 2.0
+		if hasattr(draw, "multiline_textbbox"):
+			bbox = draw.multiline_textbbox((0, 0), text, font=font, align="center")
+			text_w = bbox[2] - bbox[0]
+			text_h = bbox[3] - bbox[1]
+			x = (width - text_w) / 2.0 - bbox[0]
+			y = (height - text_h) / 2.0 - bbox[1]
+		else:
+			text_size = self._measure_text(draw, text, font)
+			x = (width - text_size[0]) / 2.0
+			y = (height - text_size[1]) / 2.0
 		draw.multiline_text((x, y), text, font=font, fill=color, align="center")
 
 	#============================
@@ -789,8 +843,10 @@ class Renderer():
 	#============================
 	def _load_font(self, font_file: str, font_size):
 		size = int(font_size) if font_size is not None else 96
-		if font_file is not None and os.path.exists(font_file):
-			return PIL.ImageFont.truetype(font_file, size)
+		if font_file is not None:
+			if os.path.exists(font_file):
+				return PIL.ImageFont.truetype(font_file, size)
+			raise RuntimeError(f"font file not found: {font_file}")
 		try:
 			return PIL.ImageFont.truetype("DejaVuSans.ttf", size)
 		except OSError:
