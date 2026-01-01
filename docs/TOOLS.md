@@ -69,11 +69,15 @@ settings:
     content: 1.0
   overlay:
     enabled: true
-    text_template: "Fast Forward {speed}X >>>"
+    text_template: "Fast Forward {speed}X {animate}"
     geometry: [0.1, 0.4, 0.8, 0.2]
     opacity: 0.9
     font_size: 96
     text_color: "#ffffff"
+    animate:
+      kind: cycle
+      values: [">   ", ">>  ", ">>> ", ">>>>"]
+      cadence: 0.5
   title_card:
     enabled: true
     duration: 2.0

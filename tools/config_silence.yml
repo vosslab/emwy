@@ -14,12 +14,16 @@ settings:
     content: 1.1
   overlay:
     enabled: true
-    text_template: "Fast Forward {speed}X >>>"
+    text_template: "Fast Forward {speed}X {animate}"
     geometry: [0.1, 0.4, 0.8, 0.2]
     opacity: 0.9
     font_file: /Users/vosslab/Library/Fonts/PT_Sans-Narrow-Web-Bold.ttf
     font_size: 256
     text_color: "#ffffff"
+    animate:
+      kind: cycle
+      values: [">   ", ">>  ", ">>> ", ">>>>"]
+      cadence: 0.5
   title_card:
     enabled: true
     duration: 2.0

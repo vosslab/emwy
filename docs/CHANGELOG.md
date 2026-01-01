@@ -7,6 +7,7 @@
 - Shifted TUI command highlighting to a Nord-style, low-saturation palette.
 - Added overlay_text animation cycle support with `{animate}` placeholders and YAML output.
 - Updated silence_annotator defaults to emit animated fast-forward overlays.
+- Updated `tools/config_silence.yml` and `docs/TOOLS.md` sample config to enable animated overlays.
 - Documented overlay text animation fields and added YAML writer test coverage.
 - Updated demo_codex overlay templates to use animated fast-forward text.
 - Added CLI-style command highlighting for emwy_tui command logs.
