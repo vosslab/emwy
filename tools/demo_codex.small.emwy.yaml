@@ -1,0 +1,79 @@
+emwy: 2
+
+profile:
+  fps: "25/1"
+  resolution: [1920, 1080]
+  audio: {sample_rate: 48000, channels: mono}
+
+assets:
+  video:
+    source: {file: "demo_codex.mp4"}
+  playback_styles:
+    content: {speed: 1.1}
+    fast_forward: {speed: 40}
+  cards:
+    intro_card_style:
+      kind: title_card_style
+      font_size: 96
+      font_file: "/Users/vosslab/Library/Fonts/PT_Sans-Narrow-Web-Bold.ttf"
+      text_color: "#ffffff"
+  overlay_text_styles:
+    fast_forward_style:
+      kind: overlay_text_style
+      font_size: 128
+      font_file: "/Users/vosslab/Library/Fonts/PT_Sans-Narrow-Web-Bold.ttf"
+      text_color: "#ffffff"
+      background: {kind: color, color: "#000000"}
+
+timeline:
+  segments:
+    - generator:
+        kind: title_card
+        title: "demo_codex"
+        duration: "2"
+        style: intro_card_style
+        fill_missing: {audio: silence}
+    - source:
+        asset: source
+        in: "00:00:00.000"
+        out: "00:08:36.900"
+        style: fast_forward
+    - source:
+        asset: source
+        in: "00:08:36.900"
+        out: "00:09:01.800"
+        style: fast_forward
+    - source:
+        asset: source
+        in: "00:09:01.800"
+        out: "00:09:12.600"
+        style: content
+    - source:
+        asset: source
+        in: "00:09:12.600"
+        out: "00:09:23.700"
+        style: fast_forward
+    - source:
+        asset: source
+        in: "00:09:23.700"
+        out: "00:10:15.950"
+        style: content
+  overlays:
+    - id: fast_forward
+      geometry: [0.1, 0.4, 0.8, 0.2]
+      opacity: 0.85
+      apply:
+        kind: playback_style
+        style: fast_forward
+      template:
+        generator:
+          kind: overlay_text
+          text: "Fast Forward {speed}X {animate}"
+          style: fast_forward_style
+          animate:
+            kind: cycle
+            values: [">   ", ">>  ", ">>> ", ">>>>"]
+            cadence: 0.5
+
+output:
+  file: "demo_codex.silencefast.mkv"
