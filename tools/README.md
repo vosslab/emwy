@@ -4,6 +4,7 @@ Utility scripts live here and are not part of the core render pipeline.
 
 Quick index:
 - `silence_annotator.py` detect silence and emit an EMWY v2 timeline YAML
+- `stabilize_building.py` global stabilize and emit a derived stabilized video + sidecar report
 - `emwy_yaml_writer.py` helper for generating EMWY YAML programmatically
 - `video_scruncher.py` design stub (not implemented)
 

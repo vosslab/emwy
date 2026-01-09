@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Added `tools/stabilize_building.py` standalone "bird on a building" stabilization tool (vid.stab via ffmpeg) with crop-only failure-first behavior and a sidecar report.
+- Documented the stabilization tool in `docs/TOOLS.md`, `docs/FILE_STRUCTURE.md`, and `tools/README.md` and aligned the stabilization plan with the implementation approach.
+- Added pytest coverage for `tools/stabilize_building.py` using a tiny synthetic shaky clip.
 - Added concrete algorithm guidance for the stabilization tool (motion parsing, frame alignment, smoothing, crop computation) and a transform-only test suite idea.
 - Specified a concrete crop-rectangle derivation (intersection of per-frame valid regions) and added minimal motion-path reliability heuristics.
 - Clarified crop feasibility derivation from the motion path and defined minimum failure/unreliable-analysis rules for the stabilization tool.

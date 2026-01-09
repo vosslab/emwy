@@ -89,6 +89,7 @@ Helper scripts for common workflows:
 tools/
   README.md                    Tools documentation
   silence_annotator.py         Silence detection and EMWY YAML generation
+  stabilize_building.py        "Bird on a building" stabilization tool (derived stabilized media)
   emwy_yaml_writer.py          YAML output helper module
   video_scruncher.py           Video compression utility
   config_silence.yml           Silence annotator config example

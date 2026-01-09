@@ -375,11 +375,13 @@ These are the key "how" decisions that keep the tool deterministic and implement
 guesswork.
 
 - Motion data adapter:
-  - Parse engine motion output into per-frame transforms `T[i] = (tx, ty, s)` (translation in pixels
-    + uniform scale).
-  - Each parsed transform corresponds to one decoded frame in order.
-  - Reject malformed/NaN transforms and any unsupported components (rotation/shear).
-  - Require `s > 0`.
+  - Treat the backend transforms file (`.trf`) as an internal engine artifact (opaque handoff
+    between pass 1 and pass 2).
+  - Derive a per-frame global motion path from that `.trf` using a backend adapter that emits one
+    transform per frame in order (for example: vidstabtransform `debug=1` producing
+    `global_motions.trf`).
+  - Parse per-frame transforms into `T[i] = (dx, dy, zoom_percent)` (translation in pixels + zoom in
+    percent). Reject malformed/NaN values and any unsupported components (rotation/shear).
 - Frame boundary alignment:
   - Convert time range to integer frames once, and use that same frame range for both analysis and
     application.
@@ -388,8 +390,8 @@ guesswork.
 - Effective motion path:
   - Crop feasibility must be computed from the same effective motion path that will be applied
     during stabilization.
-  - If the backend applies smoothing, compute crop feasibility using the smoothed transforms (not
-    raw/noisy transforms) so feasibility matches the final output.
+  - If the backend applies smoothing, compute crop feasibility using the same backend-smoothed
+    motion path (not raw/noisy transforms) so feasibility matches the final output.
 - Crop feasibility:
   - Use the `crop_rect` intersection method described under "Crop feasibility principle".
   - Apply constraints as one boolean (fail if any constraint fails).
@@ -402,9 +404,8 @@ guesswork.
 1. Parse CLI args and tool config.
 2. Resolve selected range(s) to exact frame boundaries.
 3. Run motion analysis pass for each unique analysis key.
-4. Parse motion output into transforms; validate and reject unsupported components.
-5. Apply backend-equivalent smoothing to transforms (if configured).
-6. Compute `crop_rect` and evaluate constraints; fail if crop infeasible.
+4. Derive and parse per-frame global transforms from analysis data (backend adapter) and validate.
+5. Compute `crop_rect` and evaluate constraints; fail if crop infeasible.
 7. Run application pass: transform + crop + scale + encode.
 8. Write a sidecar report capturing inputs, toolchain fingerprint, crop, zoom, and pass/fail.
 

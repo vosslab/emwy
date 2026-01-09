@@ -95,6 +95,72 @@ Dependencies: `ffmpeg`, `ffprobe`, `numpy`. `matplotlib` is required for `--debu
 
 `title_card.text_template` supports `{name}` (input filename without extension).
 
+## stabilize_building.py
+
+Stabilizes "bird on a building" footage as a standalone media-prep step (not an EMWY YAML feature).
+This is global stabilization that aims to make the building static with a crop-only, single static
+crop rectangle for the entire output range; it fails explicitly when crop constraints cannot be met.
+
+Example:
+
+```bash
+python3 tools/stabilize_building.py -i IMG_3495.mov -o IMG_3495.stabilized.mkv --start 0 --duration 30
+```
+
+Config file:
+
+- The tool looks for `<input>.stabilize_building.config.yaml` by default.
+- If it does not exist, a default config is written automatically.
+- Use `-c, --config` to point to a different config.
+- The config file starts with `stabilize_building: 1` to distinguish it from EMWY YAML.
+
+Outputs:
+
+- Stabilized video file at `--output`.
+- Sidecar report written to `<output>.stabilize_building.report.yaml` (or `.json`).
+
+Common flags:
+
+- `--start` Optional start time (seconds or HH:MM:SS[.ms])
+- `--duration` Optional duration in seconds
+- `--end` Optional end time (seconds or HH:MM:SS[.ms])
+- `--copy-subs` Copy subtitle streams if present (no timing or placement edits)
+- `--no-copy-audio` Video-only output
+- `--keep-temp` Keep intermediate motion files under the cache dir
+
+Example config:
+
+```yaml
+stabilize_building: 1
+settings:
+  engine:
+    kind: vidstab
+    detect:
+      shakiness: 5
+      accuracy: 15
+      stepsize: 6
+      mincontrast: 0.25
+      reference_frame: 1
+    transform:
+      optalgo: opt
+      smoothing: 15
+  crop:
+    min_area_ratio: 0.25
+    min_height_px: 480
+    center_safe_margin: 0.10
+  rejection:
+    max_missing_fraction: 0.05
+    max_mad_fraction: 0.50
+    max_scale_jump: 0.15
+    max_abs_angle_rad: 0.02
+    max_abs_zoom_percent: 2.0
+  io:
+    cache_dir: null
+    report_format: yaml
+```
+
+Dependencies: `ffmpeg` (with `vidstabdetect`/`vidstabtransform`), `ffprobe`, `pyyaml`.
+
 ## video_scruncher.py
 
 Design doc for compressing silent segments while preserving visual diversity.
