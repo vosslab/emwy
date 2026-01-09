@@ -98,8 +98,9 @@ Dependencies: `ffmpeg`, `ffprobe`, `numpy`. `matplotlib` is required for `--debu
 ## stabilize_building.py
 
 Stabilizes "bird on a building" footage as a standalone media-prep step (not an EMWY YAML feature).
-This is global stabilization that aims to make the building static with a crop-only, single static
-crop rectangle for the entire output range; it fails explicitly when crop constraints cannot be met.
+This is global stabilization that aims to make the building static, then apply a single static crop
+rectangle for the entire output range; by default it prefers crop-to-content but can optionally fall
+back to a strictly budgeted border fill for rare jerk frames.
 
 Example:
 
@@ -109,9 +110,10 @@ python3 tools/stabilize_building.py -i IMG_3495.mov -o IMG_3495.stabilized.mkv -
 
 Config file:
 
-- The tool looks for `<input>.stabilize_building.config.yaml` by default.
-- If it does not exist, a default config is written automatically.
-- Use `-c, --config` to point to a different config.
+- By default, no config file is read or written (code defaults only).
+- Use `-c, --config PATH` to read a config; if `PATH` does not exist, the tool writes defaults to `PATH` and then reads it.
+- Use `--write-default-config` to write `<input>.stabilize_building.config.yaml` and exit 0.
+- Use `--use-default-config` to read `<input>.stabilize_building.config.yaml` (error if missing).
 - The config file starts with `stabilize_building: 1` to distinguish it from EMWY YAML.
 
 Outputs:
@@ -146,14 +148,27 @@ settings:
       smoothing: 15
   crop:
     min_area_ratio: 0.25
-    min_height_px: 480
+    min_height_px: 0
+    min_height_ratio: 0.65
     center_safe_margin: 0.10
+  border:
+    mode: crop_prefer_fill_fallback
+    fill:
+      kind: center_patch_median
+      patch_fraction: 0.10
+      sample_frames: 25
+      max_area_ratio: 0.02
+      max_frames_ratio: 0.02
+      max_consecutive_frames: 15
   rejection:
+    mode: budgeted
     max_missing_fraction: 0.05
     max_mad_fraction: 0.50
-    max_scale_jump: 0.15
-    max_abs_angle_rad: 0.02
-    max_abs_zoom_percent: 2.0
+    max_scale_jump: 0.50
+    max_abs_angle_rad: 0.60
+    max_abs_zoom_percent: 35.0
+    outlier_max_frames_ratio: 0.90
+    outlier_max_consecutive_frames: 600
   io:
     cache_dir: null
     report_format: yaml

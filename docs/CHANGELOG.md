@@ -1,9 +1,20 @@
 # Changelog
 
 ## Unreleased
-- Added `tools/stabilize_building.py` standalone "bird on a building" stabilization tool (vid.stab via ffmpeg) with crop-only failure-first behavior and a sidecar report.
+- Added `tools/stabilize_building.py` standalone "bird on a building" stabilization tool (vid.stab via ffmpeg) with crop-to-content and a sidecar report.
+- Added optional, budgeted border fill fallback for rare jerk frames when crop-only is infeasible.
+- Improved stabilize_building motion rejection reporting with per-metric thresholds, reason codes, and a one-screen stderr summary.
+- Fixed stabilize_building to treat vid.stab transforms as relative when deriving global motions and applying stabilization.
+- Switched stabilize_building motion rejection from strict max thresholds to a budgeted outlier model (rare bad frames allowed; rejects sustained motion/zoom/rotation).
+- Added `motion.required_thresholds_to_pass` to stabilize_building reports on motion rejection failures.
+- Updated stabilize_building default motion thresholds to be permissive enough to pass phone clips with occasional extreme frames (tune down after confirming pipeline).
+- Added a stderr note when stabilize_building uses an existing default config file so runs do not accidentally ignore new code defaults.
+- Updated stabilize_building default border fill budgets to tolerate short jerk bursts while keeping the fill fraction constrained.
+- Adjusted fill fallback crop selection to meet basic constraints without forcing safe-region containment, and emit a warning (not a hard fail) when fill can reach into the safe region.
+- Fixed stabilize_building audio copying to select a single usable audio stream (avoid codec-none auxiliary tracks that can break muxing).
+- Changed stabilize_building config behavior: when `-c` is omitted, no config file is read or written (code defaults only); added explicit `--write-default-config` and `--use-default-config` modes.
 - Documented the stabilization tool in `docs/TOOLS.md`, `docs/FILE_STRUCTURE.md`, and `tools/README.md` and aligned the stabilization plan with the implementation approach.
-- Added pytest coverage for `tools/stabilize_building.py` using a tiny synthetic shaky clip.
+- Added pytest coverage for `tools/stabilize_building.py` including crop-only and fill-fallback modes using tiny synthetic clips.
 - Added concrete algorithm guidance for the stabilization tool (motion parsing, frame alignment, smoothing, crop computation) and a transform-only test suite idea.
 - Specified a concrete crop-rectangle derivation (intersection of per-frame valid regions) and added minimal motion-path reliability heuristics.
 - Clarified crop feasibility derivation from the motion path and defined minimum failure/unreliable-analysis rules for the stabilization tool.

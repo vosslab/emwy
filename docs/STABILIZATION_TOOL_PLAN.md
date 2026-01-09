@@ -106,6 +106,24 @@ This crop-only strategy is intentionally strict. It is designed for the "bird on
 where the building is the global reference frame; if the building leaves the frame, stabilization is
 expected to fail.
 
+Optional fallback strategy (jerk return clips):
+
+Some clips are "mostly stable" with rare extreme camera jerks (for example, a sudden bump) that
+would cause crop-only to fail by shrinking the intersection crop rectangle too far.
+
+To support this without adding adaptive zoom or per-frame crop, the tool may optionally support a
+budgeted border fill fallback:
+
+- Prefer crop-to-content when crop-only is feasible.
+- If crop-only is not feasible, allow limited border fill under a strict budget.
+- If the fill budget is exceeded, fail (or split as a future enhancement).
+
+Fill determinism:
+
+- Choose one deterministic fill color per output (for example: center_patch_median from sampled
+  frames) and keep it constant for the whole output.
+- Keep crop static (no adaptive crop) for this tool version.
+
 ### Performance and reuse
 
 - Motion estimation is treated as an expensive analysis step.
@@ -129,6 +147,14 @@ Minimum failure decision rule (single boolean):
 - Compute a single static crop rectangle for the stabilized range.
 - Fail if any crop constraint (`min_area_ratio`, `min_height_px`, `center_safe_margin`) cannot be met
   by that one static crop rectangle over the entire stabilized range.
+
+If the tool is configured with a border fill fallback mode:
+
+- Attempt crop-only first.
+- If crop-only fails, compute the required fill for a fixed crop rectangle that meets the crop
+  constraints.
+- Fail if any fill budget is exceeded (per-frame area, number of frames needing fill, or longest run
+  of consecutive frames needing fill).
 
 Minimum "unreliable analysis" conditions (non-exhaustive):
 
