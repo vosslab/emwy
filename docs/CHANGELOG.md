@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Updated CODE_ARCHITECTURE.md with detailed component descriptions and data flow.
+- Added FILE_STRUCTURE.md documenting repository layout and file organization.
 - Frozen TUI elapsed time once completion is printed.
 - Fixed command total estimation for animated overlay text generators.
 - Colorized dashboard and project panels to match the Nord-style palette.

@@ -1,20 +1,14 @@
 # Byte-compiled / optimized / DLL files
-__pycache__/
 *.py[cod]
-*$py.class
 
-<<<<<<< HEAD
 #ignore movie files
 *.mkv
 *.mp4
 *.avi
 
-.DS_Store
 pyflakes.txt
-=======
 # macOS
 .DS_Store
->>>>>>> 2cafafe (clean up md files)
 
 # C extensions
 *.so
