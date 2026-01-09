@@ -1,6 +1,19 @@
 # Changelog
 
 ## Unreleased
+- Added concrete algorithm guidance for the stabilization tool (motion parsing, frame alignment, smoothing, crop computation) and a transform-only test suite idea.
+- Specified a concrete crop-rectangle derivation (intersection of per-frame valid regions) and added minimal motion-path reliability heuristics.
+- Clarified crop feasibility derivation from the motion path and defined minimum failure/unreliable-analysis rules for the stabilization tool.
+- Clarified the stabilization tool contract to require exactly two decode passes per analysis and to base crop feasibility on analysis metadata.
+- Tightened stabilization tool plan wording to remove remaining YAML-feature drift and standardize "crop infeasible" failure language.
+- Clarified the stabilization tool outputs (stabilized video + sidecar report) and failure behavior as media preparation rather than YAML editing intent.
+- Decided stabilization will ship as a standalone tool (like `tools/silence_annotator.py`) instead of adding new EMWY YAML v2 authoring fields.
+- Resolved remaining stabilization-plan contradictions (determinism wording, crop-only enforcement, and precise crop constraint definitions).
+- Tightened stabilization plan guarantees: removed bitwise reproducibility, committed to crop-only borders, and added explicit failure thresholds and motion/zoom/subtitle rules.
+- Clarified the "bird on a building" mental model: globally align to keep the building static and fail when the building leaves the usable crop.
+- Tightened the stabilization plan to default to crop-to-content with explicit failure on low overlap to keep the frame center in view.
+- Expanded the stabilization feature plan with vid.stab-specific notes on determinism, caching, border fill, and failure modes.
+- Added `docs/STABILIZATION_TOOL_PLAN.md` (renamed from `docs/STABILIZATION_FEATURE_PLAN.md`) documenting global video stabilization guarantees and an implementation plan.
 - Updated CODE_ARCHITECTURE.md with detailed component descriptions and data flow.
 - Added FILE_STRUCTURE.md documenting repository layout and file organization.
 - Frozen TUI elapsed time once completion is printed.
