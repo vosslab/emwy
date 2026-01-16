@@ -84,7 +84,7 @@ class TitleCard(object):
 		cmd += " -r %d "%(self.framerate)
 		cmd += " -i \"%s\" "%(image_pattern)
 		cmd += " -codec:v %s -filter:v 'fps=%d,format=yuv420p' "%(self.codec, self.framerate)
-		cmd += " -crf %d -preset ultrafast -tune fastdecode -profile:v main -pix_fmt yuv420p "%(self.crf)
+		cmd += " -crf %d -preset ultrafast -pix_fmt yuv420p "%(self.crf)
 		cmd += " \"%s\" "%(self.outfile)
 		utils.runCmd(cmd)
 

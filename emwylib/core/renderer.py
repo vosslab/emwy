@@ -557,6 +557,7 @@ class Renderer():
 		tc.framerate = self.project.profile['fps_float']
 		tc.length = float(duration)
 		tc.crf = self.project.output['crf']
+		tc.codec = codec
 		tc.outfile = out_file
 		if font_file is not None:
 			tc.fontfile = font_file
@@ -1047,13 +1048,13 @@ class Renderer():
 			cmd += f" {segment} + "
 		cmd = cmd[:-2]
 		cmd += f" -o {output_file} "
-		utils.runCmd(cmd)
+		self._run_mkvmerge(cmd, output_file)
 		utils.ensure_file_exists(output_file)
 
 	#============================
 	def _mux_segment(self, video_file: str, audio_file: str, output_file: str) -> None:
 		cmd = f"mkvmerge -A -S {video_file} -D -S {audio_file} -o {output_file}"
-		utils.runCmd(cmd)
+		self._run_mkvmerge(cmd, output_file)
 		utils.ensure_file_exists(output_file)
 
 	#============================
@@ -1093,6 +1094,25 @@ class Renderer():
 		for filepath in temp_files:
 			if filepath and os.path.exists(filepath):
 				os.remove(filepath)
+
+	#============================
+	def _run_mkvmerge(self, cmd: str, output_file: str) -> None:
+		try:
+			utils.runCmd(cmd)
+		except RuntimeError as exc:
+			message = str(exc)
+			if "mkvmerge" not in message:
+				raise
+			stderr_text = ""
+			if "stderr:" in message:
+				stderr_text = message.split("stderr:", 1)[1].strip()
+			for line in stderr_text.splitlines():
+				line = line.strip()
+				if line.lower().startswith("error"):
+					raise
+			if output_file and os.path.exists(output_file):
+				return
+			raise
 
 	#============================
 	def _make_temp_path(self, filename: str) -> str:

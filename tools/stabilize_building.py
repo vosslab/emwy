@@ -1153,7 +1153,6 @@ def compute_constraint_crop_rect(width: int, height: int, min_area_ratio: float,
 		dict: Crop rectangle {x,y,w,h} or empty {w:0,h:0}.
 	"""
 	aspect = float(width) / float(height)
-	safe_w = float(width) * (1.0 - 2.0 * float(center_safe_margin))
 	safe_h = float(height) * (1.0 - 2.0 * float(center_safe_margin))
 	required_h = max(float(min_height_px), safe_h)
 	required_area = float(min_area_ratio) * float(width) * float(height)
@@ -1543,7 +1542,6 @@ def motion_reliability_ok(width: int, height: int, transforms: list, rejection: 
 		tuple[bool, list, dict]: (ok, reasons, stats)
 	"""
 	reasons = []
-	total = len(transforms)
 	non_reference = [item for item in transforms if not item.get("is_reference")]
 	missing = sum(1 for item in non_reference if item.get("missing"))
 	missing_fraction = float(missing) / float(len(non_reference)) if len(non_reference) > 0 else 1.0

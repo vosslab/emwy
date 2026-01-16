@@ -12,6 +12,9 @@
 - Added a python3 shebang and executable bit for tools/video_scruncher.py.
 - Defaulted titlecard movie encoding to libx264 for wider ffmpeg compatibility.
 - Added pytest coverage for titlecard font loading and ffmpeg command assembly.
+- Aligned titlecard encoding options with renderer settings to improve mkvmerge appends.
+- Cleaned unused variables flagged by pyflakes in stabilize_building.py.
+- Allowed mkvmerge warnings when output files are still produced.
 - Added `tools/stabilize_building.py` standalone "bird on a building" stabilization tool (vid.stab via ffmpeg) with crop-to-content and a sidecar report.
 - Added optional, budgeted border fill fallback for rare jerk frames when crop-only is infeasible.
 - Improved stabilize_building motion rejection reporting with per-metric thresholds, reason codes, and a one-screen stderr summary.
