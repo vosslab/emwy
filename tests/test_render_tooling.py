@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 """
 Pytest coverage for ffmpeg, sox, and mkvmerge tooling.

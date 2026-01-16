@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 
 ###
 #set of programs to create a title card video
@@ -32,6 +31,7 @@ class TitleCard(object):
 		self.textcolor = (142, 71, 0)
 		self.fnt = None
 		self.framerate = 60
+		self.codec = "libx264"
 		self.defaultshift = 0.5
 		self.imgcode = "aaadahsdgg"
 		self.outfile = "titlecard.mkv"
@@ -83,7 +83,7 @@ class TitleCard(object):
 		cmd = "ffmpeg -y "
 		cmd += " -r %d "%(self.framerate)
 		cmd += " -i \"%s\" "%(image_pattern)
-		cmd += " -codec:v libx265 -filter:v 'fps=%d,format=yuv420p' "%(self.framerate)
+		cmd += " -codec:v %s -filter:v 'fps=%d,format=yuv420p' "%(self.codec, self.framerate)
 		cmd += " -crf %d -preset ultrafast -tune fastdecode -profile:v main -pix_fmt yuv420p "%(self.crf)
 		cmd += " \"%s\" "%(self.outfile)
 		utils.runCmd(cmd)

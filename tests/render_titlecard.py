@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 """
 Render a single title card video for quick manual validation.

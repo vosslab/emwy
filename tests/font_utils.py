@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 """
 Font discovery helpers for tests.

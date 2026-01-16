@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 from emwylib.media.sox import normalizeAudio
 from emwylib.media.sox import removeNoise

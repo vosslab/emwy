@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 from emwylib.media.ffmpeg_extract import splitAudioFfmpeg
 from emwylib.media.ffmpeg_extract import extractAudio

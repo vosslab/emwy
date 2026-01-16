@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 """
 emwy_yaml_writer.py

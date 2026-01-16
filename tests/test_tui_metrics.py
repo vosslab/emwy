@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 """
 Unit tests for emwy_tui metrics helpers.
