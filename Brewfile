@@ -1,5 +1,3 @@
-tap "homebrew/core"
-
 brew "ffmpeg"
 brew "sox"
 brew "mkvtoolnix"

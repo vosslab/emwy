@@ -1,196 +1,208 @@
 # File structure
 
-This document describes the emwy repository layout and where different types of files belong.
+This document describes the emwy repository layout and where different files
+belong.
 
 ## Top-level layout
 
 ```
 emwy/
-  AGENTS.md              Agent collaboration guidance
-  Brewfile               Homebrew dependencies for macOS
-  EMWY_YAML_v1_SPEC.md   Legacy v1 format specification (deprecated)
-  EMWY_YAML_v2_SPEC.md   Current v2 format specification
-  LICENSE                GPLv3 license text
-  MANIFEST.in            Package manifest for sdist builds
-  README.md              Project overview and quickstart
-  emwy_cli.py            Primary CLI entry point
-  emwy_tui.py            Textual TUI wrapper for renders
-  pip_requirements.txt   Python dependencies
-  pyproject.toml         Package metadata and build config
-  devel/                 Developer and release scripts
-  docs/                  Documentation
-  emwylib/               Core Python library
-  samples/               Example project files
-  tests/                 Test suite
-  tools/                 Helper scripts and utilities
++- AGENTS.md
++- Brewfile
++- LICENSE
++- MANIFEST.in
++- README.md
++- ascii_compliance.txt
++- emwy_cli.py
++- emwy_tui.py
++- pip_requirements.txt
++- pyproject.toml
++- pyflakes.txt
++- shebang_report.txt
++- devel/
++- docs/
++- emwylib/
++- samples/
++- tests/
+`- tools/
 ```
+
+Top-level highlights:
+
+- [README.md](README.md): Project overview and quick start.
+- [AGENTS.md](AGENTS.md): Agent workflow and coding guidance.
+- [pyproject.toml](pyproject.toml): Packaging metadata and scripts.
+- [pip_requirements.txt](pip_requirements.txt): Python dependencies.
+- [emwy_cli.py](emwy_cli.py): Primary CLI entry point.
+- [emwy_tui.py](emwy_tui.py): Textual TUI wrapper.
+- [ascii_compliance.txt](ascii_compliance.txt): ASCII compliance report output.
+- [pyflakes.txt](pyflakes.txt): Pyflakes report output.
+- [shebang_report.txt](shebang_report.txt): Shebang scan report output.
 
 ## Key subtrees
 
-### emwylib/
+### Core library
 
-Core library code:
+Core pipeline code in [emwylib/](emwylib/):
 
 ```
 emwylib/
   __init__.py
-  version.py           Package version string
-  titlecard.py         Title card image generation
-  transforms.py        RGB color transforms
-  ffmpeglib.py         FFmpeg helpers
-  soxlib.py            Sox helpers
-  medialib.py          Media inspection utilities
-  core/                Core pipeline modules
+  version.py
+  titlecard.py
+  transforms.py
+  ffmpeglib.py
+  soxlib.py
+  medialib.py
+  core/
     __init__.py
-    loader.py          YAML v2 parser
-    timeline.py        Timeline compiler
-    renderer.py        Render executor
-    project.py         EmwyProject orchestrator
-    utils.py           Shared utilities
-  media/               Low-level media wrappers
+    loader.py
+    timeline.py
+    renderer.py
+    project.py
+    utils.py
+  media/
     __init__.py
-    ffmpeg.py          FFmpeg interface
-    ffmpeg_extract.py  FFmpeg extraction commands
-    ffmpeg_render.py   FFmpeg rendering commands
-    sox.py             Sox interface
-    sox_normalize.py   Sox normalization
-    sox_edit.py        Sox editing
-  exporters/           Export format modules
+    ffmpeg.py
+    ffmpeg_extract.py
+    ffmpeg_render.py
+    sox.py
+    sox_normalize.py
+    sox_edit.py
+  exporters/
     __init__.py
-    mlt.py             MLT XML exporter
+    mlt.py
 ```
 
-### tests/
+### Tests
 
-Test suite and static analysis:
+Tests and repo hygiene checks in [tests/](tests/):
 
 ```
 tests/
-  run_pyflakes.sh              Pyflakes static analysis runner
-  font_utils.py                Font discovery test helper
-  render_titlecard.py          Titlecard render helper
-  test_emwy_yaml_writer.py     YAML writer tests
-  test_enabled_entries.py      Entry enable/disable tests
-  test_ffmpeg_overlays.py      Overlay rendering tests
-  test_font_usage.py           Font path tests
-  test_integration_render.py   End-to-end render tests
-  test_mlt_export.py           MLT export tests
-  test_playback_styles.py      Playback style tests
-  test_render_tooling.py       Tooling behavior tests
-  test_speed_sync.py           Speed synchronization tests
-  test_tui_metrics.py          TUI metrics tests
+  check_ascii_compliance.py
+  font_utils.py
+  render_titlecard.py
+  run_ascii_compliance.py
+  run_pyflakes.sh
+  test_emwy_yaml_writer.py
+  test_enabled_entries.py
+  test_ffmpeg_overlays.py
+  test_font_usage.py
+  test_indentation.py
+  test_integration_render.py
+  test_mlt_export.py
+  test_playback_styles.py
+  test_render_tooling.py
+  test_repo_hygiene.py
+  test_shebangs.py
+  test_speed_sync.py
+  test_stabilize_building_tool.py
+  test_tui_metrics.py
 ```
 
-### tools/
+### Tools
 
-Helper scripts for common workflows:
+Helper scripts in [tools/](tools/):
 
 ```
 tools/
-  README.md                    Tools documentation
-  silence_annotator.py         Silence detection and EMWY YAML generation
-  stabilize_building.py        "Bird on a building" stabilization tool (derived stabilized media)
-  emwy_yaml_writer.py          YAML output helper module
-  video_scruncher.py           Video compression utility
-  config_silence.yml           Silence annotator config example
-  demo_codex.mp4.emwy.yaml     Demo project file
-  demo_codex.small.emwy.yaml   Minimal demo project
+  README.md
+  config_silence.yml
+  demo_codex.small.emwy.yaml
+  emwy_yaml_writer.py
+  silence_annotator.py
+  stabilize_building.py
+  video_scruncher.py
 ```
 
-### devel/
+### Development scripts
 
-Developer and release automation:
+Release helpers in [devel/](devel/):
 
 ```
 devel/
-  commit_changelog.py          Changelog commit helper
-  submit_to_pypi.py            PyPI release script
+  commit_changelog.py
+  submit_to_pypi.py
 ```
 
-### samples/
+### Samples
 
-Example project files for testing and demonstration:
+Example projects in [samples/](samples/):
 
 ```
 samples/
-  gangnam.emwy.yaml            Example music video project
-  runGangnam_v2.sh             Run script for gangnam example
-  secret_of_51.emwy.yaml       Another example project
+  gangnam.emwy.yaml
+  runGangnam_v2.sh
+  secret_of_51.emwy.yaml
 ```
 
 ## Generated artifacts
 
-The following are generated and ignored by git:
+Ignored or regenerated outputs include:
 
-- `__pycache__/`: Python bytecode
-- `*.pyc`, `*.pyo`: Compiled Python files
-- `build/`, `dist/`, `*.egg-info/`: Package build outputs
-- `.pytest_cache/`: Pytest cache
-- `.mypy_cache/`: Mypy cache
-- `pyflakes.txt`: Pyflakes output (generated by `run_pyflakes.sh`)
-- `*.mkv`, `*.mp4`, `*.avi`: Video outputs (in some configurations)
+- [ascii_compliance.txt](ascii_compliance.txt): Output from
+  [tests/run_ascii_compliance.py](tests/run_ascii_compliance.py).
+- [pyflakes.txt](pyflakes.txt): Output from [tests/run_pyflakes.sh](tests/run_pyflakes.sh).
+- [shebang_report.txt](shebang_report.txt): Output from
+  [tests/test_shebangs.py](tests/test_shebangs.py).
+- `__pycache__/`, `*.pyc`: Python bytecode artifacts.
+- `build/`, `dist/`, `*.egg-info/`: Packaging outputs.
+- `.pytest_cache/`, `.mypy_cache/`: Test and type-check caches.
+- `*.mkv`, `*.mp4`, `*.avi`: Video outputs (ignored by default).
 
-Temporary render files go to a per-run temp directory by default (controlled by `--cache-dir`).
+Temporary render files default to a per-run temp directory (see `--cache-dir` in
+[docs/CLI.md](docs/CLI.md)).
 
 ## Documentation map
 
-Documentation lives in `docs/`:
+Documentation lives in [docs/](docs/):
 
-- `CHANGELOG.md`: User-facing change history
-- `CLI.md`: Command-line options
-- `CODE_ARCHITECTURE.md`: Code structure (this companion)
-- `COOKBOOK.md`: Editing recipes
-- `DEBUGGING.md`: Troubleshooting
-- `DEVELOPMENT.md`: Developer setup
-- `FAQ.md`: Common questions
-- `FORMAT.md`: YAML project file format
-- `INSTALL.md`: Installation instructions
-- `MLT_INTEROP.md`: MLT XML mapping
-- `EXPORT_MLT_XML_SPEC.md`: MLT export behavior
-- `IMPORT_MLT_XML_SPEC.md`: MLT import draft spec
-- `PYTHON_STYLE.md`: Python coding conventions
-- `REPO_STYLE.md`: Repository conventions
-- `MARKDOWN_STYLE.md`: Markdown formatting rules
-- `RELEASE_HISTORY.md`: Version release log
-- `ROADMAP.md`: Planned work
-- `SHOTCUT.md`: Shotcut compatibility
-- `TODO.md`: Backlog tasks
-- `TOOLS.md`: Helper script documentation
+- [docs/INSTALL.md](docs/INSTALL.md): System dependencies and install steps.
+- [docs/CLI.md](docs/CLI.md): CLI usage and flags.
+- [docs/FORMAT.md](docs/FORMAT.md): YAML project format overview.
+- [docs/TOOLS.md](docs/TOOLS.md): Tooling and helper scripts.
+- [docs/DEBUGGING.md](docs/DEBUGGING.md): Common errors and diagnostics.
+- [docs/COOKBOOK.md](docs/COOKBOOK.md): Editing recipes.
+- [docs/FAQ.md](docs/FAQ.md): Common questions and design notes.
+- [docs/EMWY_YAML_v1_SPEC.md](docs/EMWY_YAML_v1_SPEC.md): Legacy v1 spec.
+- [docs/EMWY_YAML_v2_SPEC.md](docs/EMWY_YAML_v2_SPEC.md): Current v2 spec.
+- [docs/MLT_INTEROP.md](docs/MLT_INTEROP.md): EMWY and MLT mapping notes.
+- [docs/EXPORT_MLT_XML_SPEC.md](docs/EXPORT_MLT_XML_SPEC.md): MLT export spec.
+- [docs/IMPORT_MLT_XML_SPEC.md](docs/IMPORT_MLT_XML_SPEC.md): Draft import spec.
+- [docs/SHOTCUT.md](docs/SHOTCUT.md): Shotcut compatibility notes.
+- [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md): Code layout and data flow.
+- [docs/FILE_STRUCTURE.md](docs/FILE_STRUCTURE.md): Repository layout (this doc).
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): Developer workflows.
+- [docs/REPO_STYLE.md](docs/REPO_STYLE.md): Repo conventions.
+- [docs/PYTHON_STYLE.md](docs/PYTHON_STYLE.md): Python coding conventions.
+- [docs/MARKDOWN_STYLE.md](docs/MARKDOWN_STYLE.md): Documentation style.
+- [docs/CHANGELOG.md](docs/CHANGELOG.md): User-facing change history.
+- [docs/RELEASE_HISTORY.md](docs/RELEASE_HISTORY.md): Release log.
+- [docs/ROADMAP.md](docs/ROADMAP.md): Planned work.
+- [docs/TODO.md](docs/TODO.md): Backlog tasks.
+- [docs/SECURITY.md](docs/SECURITY.md): Security notes.
+- [docs/AUTHORS.md](docs/AUTHORS.md): Maintainers and contributors.
+- [docs/STABILIZATION_TOOL_PLAN.md](docs/STABILIZATION_TOOL_PLAN.md): Stabilization plan.
 
 Root-level docs:
 
-- `README.md`: Project overview
-- `AGENTS.md`: Agent collaboration guidance
-- `LICENSE`: License text
-- `EMWY_YAML_v2_SPEC.md`: Format specification (kept at root for visibility)
+- [README.md](README.md): Project overview.
+- [AGENTS.md](AGENTS.md): Agent collaboration guidance.
+- [LICENSE](LICENSE): License text.
 
 ## Where to add new work
 
-### New Python code
-
-- Core pipeline changes: `emwylib/core/`
-- Media processing: `emwylib/media/`
-- New export formats: `emwylib/exporters/`
-- New import formats: `emwylib/importers/` (create if needed)
-- Image generation: `emwylib/titlecard.py` or new module in `emwylib/`
-
-### New tests
-
-- Add to `tests/` with filename `test_*.py`
-- Use pytest fixtures and assertions
-- Keep tests deterministic and fast
-
-### New documentation
-
-- User-facing docs: `docs/` with SCREAMING_SNAKE_CASE filename
-- Update `docs/CHANGELOG.md` for any user-facing changes
-
-### New tools
-
-- Add to `tools/` with descriptive snake_case filename
-- Document in `docs/TOOLS.md`
-
-### New sample projects
-
-- Add to `samples/` with `.emwy.yaml` extension
-- Include run script if helpful
+- **Core pipeline**: Add or update modules in [emwylib/core/](emwylib/core/).
+- **Media processing**: Add helpers in [emwylib/media/](emwylib/media/).
+- **Export formats**: Add modules in [emwylib/exporters/](emwylib/exporters/).
+- **Import formats**: Create [emwylib/importers/](emwylib/importers/) when needed.
+- **New generators**: Extend [emwylib/titlecard.py](emwylib/titlecard.py) or add
+  a new module under [emwylib/](emwylib/).
+- **Tests**: Add pytest files under [tests/](tests/) using `test_*.py` names.
+- **Docs**: Add docs under [docs/](docs/) using SCREAMING_SNAKE_CASE names and
+  update [docs/CHANGELOG.md](docs/CHANGELOG.md).
+- **Tools**: Add scripts under [tools/](tools/) and document them in
+  [docs/TOOLS.md](docs/TOOLS.md).
+- **Samples**: Add example projects under [samples/](samples/) with `.emwy.yaml`
+  extensions.

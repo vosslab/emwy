@@ -1,114 +1,114 @@
 # Code architecture
 
-This document describes the emwy code layout and where new features belong.
+This document describes the emwy code layout and the main execution paths.
 
 ## Overview
 
-emwy is a command-line video editor that compiles YAML project files into rendered video output. The pipeline is:
-
-1. **Load**: YAML is parsed into a normalized project model.
-2. **Compile**: Timeline segments are expanded into a renderable plan and compiled playlists for exporters.
-3. **Render**: The renderer runs ffmpeg/sox per segment, muxes A/V, and concatenates the results.
-4. **Export**: Optional exporters (MLT) read the compiled model.
-
-MLT XML is an optional export format, not the canonical render path.
+emwy is a command-line video editor that parses YAML projects into a compiled
+timeline and renders segments with ffmpeg/sox before muxing outputs. MLT XML is
+an optional export format, not the primary render path.
 
 ## Major components
 
 ### Entry points
 
-- `emwy_cli.py`: Primary CLI entry point. Parses arguments and runs `EmwyProject`.
-- `emwy_tui.py`: Textual TUI wrapper for interactive renders with progress dashboard.
-- `emwylib/exporters/mlt.py`: MLT XML export entry point (`python3 -m emwylib.exporters.mlt`).
+- [emwy_cli.py](emwy_cli.py): Primary CLI entry point that parses args and runs
+  [emwylib/core/project.py](emwylib/core/project.py).
+- [emwy_tui.py](emwy_tui.py): Textual TUI wrapper that drives the same render
+  pipeline with progress and logging views.
+- [emwylib/exporters/mlt.py](emwylib/exporters/mlt.py): MLT XML exporter entry
+  point (`python3 -m emwylib.exporters.mlt`).
 
-### Core library (`emwylib/core/`)
+### Core pipeline
 
-- `loader.py`: Parses YAML v2 and builds a `ProjectData` instance. Handles defaults, timeline segment parsing, and basic validation.
-- `timeline.py`: Timeline compiler that expands segments into compiled playlists/stack. Handles overlays, playback styles, and segment expansion.
-- `renderer.py`: Executes the render plan using ffmpeg/sox and muxes the final output with mkvmerge.
-- `project.py`: Orchestrates loader, timeline, and renderer. Exposes `EmwyProject` used by entry points.
-- `utils.py`: Shared utility functions for time formatting, path handling, and common helpers.
+- [emwylib/core/loader.py](emwylib/core/loader.py): Parses YAML projects into a
+  `ProjectData` model and applies defaults.
+- [emwylib/core/timeline.py](emwylib/core/timeline.py): Expands timeline
+  segments into compiled playback stacks and overlay tracks.
+- [emwylib/core/renderer.py](emwylib/core/renderer.py): Executes the render plan
+  with ffmpeg/sox and muxes outputs with mkvmerge.
+- [emwylib/core/project.py](emwylib/core/project.py): Orchestrates loader,
+  timeline, and renderer via `EmwyProject`.
+- [emwylib/core/utils.py](emwylib/core/utils.py): Shared helpers and formatting.
 
-### Media wrappers (`emwylib/media/`)
+### Media helpers
 
-- `ffmpeg.py`: High-level ffmpeg interface.
-- `ffmpeg_extract.py`: Low-level ffmpeg extraction commands.
-- `ffmpeg_render.py`: Low-level ffmpeg rendering commands.
-- `sox.py`: High-level sox interface.
-- `sox_normalize.py`: Sox audio normalization helpers.
-- `sox_edit.py`: Sox audio editing operations.
+- [emwylib/media/](emwylib/media/): Low-level ffmpeg/sox wrappers used by the
+  renderer.
+- [emwylib/ffmpeglib.py](emwylib/ffmpeglib.py), [emwylib/soxlib.py](emwylib/soxlib.py),
+  [emwylib/medialib.py](emwylib/medialib.py): Additional media utilities.
+- [emwylib/titlecard.py](emwylib/titlecard.py): Title and chapter card image
+  generation.
+- [emwylib/transforms.py](emwylib/transforms.py): RGB transform helpers.
 
-### Top-level library modules (`emwylib/`)
+### Exporters
 
-- `titlecard.py`: Title card and chapter card image generation using Pillow/numpy.
-- `transforms.py`: Affine color transforms for images (RGBTransform class).
-- `ffmpeglib.py`: Additional ffmpeg helpers.
-- `soxlib.py`: Additional sox helpers.
-- `medialib.py`: Media inspection and metadata utilities.
-- `version.py`: Package version string.
+- [emwylib/exporters/](emwylib/exporters/): Export formats (currently MLT XML).
 
-### Exporters (`emwylib/exporters/`)
+### Tools
 
-- `mlt.py`: Generates MLT XML from v2 YAML projects. Uses lxml.
+- [tools/silence_annotator.py](tools/silence_annotator.py): Generate EMWY YAML
+  from audio silence detection.
+- [tools/stabilize_building.py](tools/stabilize_building.py): Global
+  stabilization tool for existing media.
+- [tools/video_scruncher.py](tools/video_scruncher.py): Video compression helper.
 
 ## Data flow
 
-End-to-end flow for a typical render:
+Typical render flow:
 
 ```
-.emwy.yaml
-   |
-   v
-loader.py (parse + validate)
-   |
-   v
-ProjectData instance
-   |
-   v
-timeline.py (expand segments, compile playlists)
-   |
-   v
-Render plan (compiled stack/playlists)
-   |
-   v
-renderer.py (per-segment ffmpeg/sox, mkvmerge concat)
-   |
-   v
+project.emwy.yaml
+  |
+  v
+loader.py (parse + defaults)
+  |
+  v
+ProjectData
+  |
+  v
+timeline.py (compile segments and overlays)
+  |
+  v
+renderer.py (ffmpeg/sox renders + mkvmerge mux)
+  |
+  v
 output.mkv
 ```
 
-Optional MLT export branches after the compile step and writes XML instead of rendering.
+MLT export branches after compilation and writes XML instead of rendering.
 
 ## Testing and verification
 
-Tests live in `tests/`:
+- [tests/](tests/): pytest-style test files and helpers.
+- [tests/run_pyflakes.sh](tests/run_pyflakes.sh): Pyflakes static analysis.
+- [tests/run_ascii_compliance.py](tests/run_ascii_compliance.py): ASCII and
+  ISO-8859-1 compliance scan.
+- [tests/check_ascii_compliance.py](tests/check_ascii_compliance.py): Per-file
+  ASCII/ISO-8859-1 checker.
 
-- `test_*.py`: pytest test files covering YAML parsing, rendering, overlays, playback styles, and TUI metrics.
-- `run_pyflakes.sh`: Static analysis runner for pyflakes.
-- `font_utils.py`, `render_titlecard.py`: Test helpers.
-
-Run tests with:
-
-```bash
-pytest tests/
-```
-
-Run static analysis with:
-
-```bash
-./tests/run_pyflakes.sh
-```
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the preferred test workflow.
 
 ## Extension points
 
-- **New YAML fields**: Update `emwylib/core/loader.py` first, then propagate to timeline and renderer as needed.
-- **Timeline behavior** (segment compilation, overlays, transitions): Update `emwylib/core/timeline.py`.
-- **Rendering changes** (filters, codecs, mux rules): Update `emwylib/core/renderer.py`.
-- **New video transforms** (stabilization, color grading): Add to `emwylib/media/` and wire through renderer.
-- **Interchange formats** (OTIO, Shotcut): Add under `emwylib/exporters/` or future `emwylib/importers/`.
-- **New generator types** (title cards, overlays): Extend `emwylib/titlecard.py` or add new generator modules.
+- **New YAML fields**: Update [emwylib/core/loader.py](emwylib/core/loader.py)
+  and propagate to [emwylib/core/timeline.py](emwylib/core/timeline.py) and
+  [emwylib/core/renderer.py](emwylib/core/renderer.py).
+- **Timeline behavior**: Extend [emwylib/core/timeline.py](emwylib/core/timeline.py).
+- **Rendering and codecs**: Extend [emwylib/core/renderer.py](emwylib/core/renderer.py)
+  and [emwylib/media/](emwylib/media/).
+- **New generators**: Add modules under [emwylib/](emwylib/) or extend
+  [emwylib/titlecard.py](emwylib/titlecard.py).
+- **New export formats**: Add modules under [emwylib/exporters/](emwylib/exporters/).
+- **New import formats**: Create [emwylib/importers/](emwylib/importers/) when
+  import support is implemented.
+- **Standalone tools**: Add scripts under [tools/](tools/) and document them in
+  [docs/TOOLS.md](docs/TOOLS.md).
 
 ## Known gaps
 
-- `emwylib/importers/` does not exist yet. MLT import is documented but not implemented.
-- No subject-tracking or rolling-shutter correction transforms.
+- `pyproject.toml` registers a console script at `emwy:main`, but there is no
+  `emwy.py` module in the repo. Verify the intended packaging entry point.
+- [emwylib/importers/](emwylib/importers/) does not exist yet; import support is
+  specified in [docs/IMPORT_MLT_XML_SPEC.md](docs/IMPORT_MLT_XML_SPEC.md) but not
+  implemented.

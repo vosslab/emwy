@@ -1,28 +1,38 @@
-# Installation Guide
+# Install
 
-## System Requirements
-- Linux, macOS, or Windows Subsystem for Linux with FFmpeg, MLT/melt, SoX, and MediaInfo available in the `PATH`.
-- Python 3.12 recommended, Python 3.8 minimum.
-- At least 8 GB RAM for rendering hour-long lessons plus temporary disk space equal to your source footage size.
+Install emwy to run the CLI from this repo and access the Python modules that
+power renders and exporters.
 
-## Python Environment
-1. Create or activate a virtual environment (`python3 -m venv .venv && source .venv/bin/activate`).
-2. Install emwy and helper tools:
-   ```bash
-   pip install -r pip_requirements.txt
-   pip install -e .
-   ```
-3. Verify dependencies with `pyflakes` and `python -m emwy --help`.
+## Requirements
 
-## Media Tooling
-- **FFmpeg**: Required for extracting, transcoding, and muxing. Package managers usually provide an up-to-date build.
-- **MLT / melt**: Provide the timeline engine. On macOS use Homebrew (`brew install mlt`).
-- **SoX**: Handles normalization and noise sampling. Install via your package manager.
-- **MediaInfo**: Used for probing assets and validating codecs.
+- Python 3.8+ (3.12 recommended).
+- ffmpeg, sox, mkvmerge, and mediainfo available on PATH.
+- MLT/melt only if you plan to use MLT XML output with external tools.
 
-## Post-Install Checks
-1. Run `tests/run_samples.sh` to ensure the CLI renders bundled sample projects.
-2. Confirm `python3 -m emwylib.exporters.mlt -y sample.emwy.yaml -o sample.mlt` writes MLT XML.
-3. Inspect generated artifacts under `samples/output/` for AV-sync, resolution, and card placement.
+## Install steps
 
-If any tool is missing, re-run installation for that component and ensure its binary is accessible.
+- Create and activate a virtual environment:
+  ```bash
+  python3 -m venv .venv
+  source .venv/bin/activate
+  ```
+- Install Python dependencies:
+  ```bash
+  pip install -r pip_requirements.txt
+  ```
+- Install the package in editable mode if you want the `emwy` console script:
+  ```bash
+  pip install -e .
+  ```
+
+## Verify install
+
+```bash
+python3 emwy_cli.py -h
+```
+
+## Known gaps
+
+- TODO: Confirm the `emwy` console script works as packaged and document its
+  preferred invocation.
+- TODO: Document supported operating systems and any platform-specific setup.

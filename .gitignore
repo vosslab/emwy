@@ -1,5 +1,8 @@
 # Byte-compiled / optimized / DLL files
 *.py[cod]
+ascii_compliance.txt
+shebang_report.txt
+
 
 #ignore movie files
 *.mkv

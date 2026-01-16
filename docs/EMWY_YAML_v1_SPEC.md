@@ -70,7 +70,7 @@ Only certain keys are recognized by the v1 code path. Commonly used keys:
 - `audio_format` (`WAV` or `MP3`)
 - `audio_mode` (`mono` or `stereo`)
 - `samplerate` (int, Hz)
-- `bitrate` (int, used as “bit depth” in v1 conventions)
+- `bitrate` (int, used as "bit depth" in v1 conventions)
 - `lame_preset` (string, MP3 preset name)
 
 `video:` keys:
