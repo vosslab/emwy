@@ -138,7 +138,7 @@ def highlight_command(cmd: str):
 
 def runCmd(cmd: str) -> None:
 	showcmd = cmd.strip()
-	showcmd = re.sub("  *", " ", showcmd)
+	showcmd = re.sub(r"\s+", " ", showcmd)
 	start_time = time.time()
 	index = _next_command_index()
 	prefix = _command_prefix(index, _command_total)
@@ -173,7 +173,7 @@ def runCmd(cmd: str) -> None:
 				stdout=subprocess.PIPE, close_fds=False)
 		else:
 			raise
-	proc.communicate()
+	stdout_data, stderr_data = proc.communicate()
 	duration = time.time() - start_time
 	if _command_reporter is not None:
 		_command_reporter({
@@ -184,6 +184,18 @@ def runCmd(cmd: str) -> None:
 			'index': index,
 			'total': _command_total,
 		})
+	if proc.returncode != 0:
+		error_text = ""
+		if stderr_data:
+			error_text = stderr_data.decode("utf-8", errors="replace").strip()
+		if error_text == "" and stdout_data:
+			error_text = stdout_data.decode("utf-8", errors="replace").strip()
+		if error_text != "":
+			raise RuntimeError(
+				f"command failed ({proc.returncode}): {showcmd}\n"
+				f"stderr: {error_text}"
+			)
+		raise RuntimeError(f"command failed ({proc.returncode}): {showcmd}")
 	return
 
 #============================================

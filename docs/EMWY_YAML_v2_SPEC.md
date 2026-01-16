@@ -664,6 +664,22 @@ output:
   merge_batch_size: 8
 ```
 
+### Codec guidance (x264 vs x265)
+
+For YouTube uploads, x264 (H.264) is the default best choice. It is the most
+universally compatible, and YouTube's recommended upload settings list H.264
+video with AAC audio as the standard target.
+
+x265 (H.265/HEVC) can make a smaller file at similar quality, which can help if
+upload bandwidth is the bottleneck, especially for long or 4K videos. The tradeoffs
+are slower encoding, sometimes slower or fussier processing, and more edge-case
+compatibility pain across tools.
+
+Practical rule:
+
+- 1080p (most cases): use x264.
+- 4K or very long videos with slow upload: x265 is reasonable.
+
 Optional batching controls:
 
 - `merge_batch_threshold`: if segment or overlay track entries exceed this count,

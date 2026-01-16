@@ -1138,7 +1138,7 @@ class ProjectLoader():
 			raise RuntimeError("output.merge_batch_size must be >= 1")
 		return {
 			'file': output_file,
-			'video_codec': output.get('video_codec', 'libx265'),
+			'video_codec': output.get('video_codec', 'libx264'),
 			'audio_codec': output.get('audio_codec', 'pcm_s16le'),
 			'crf': int(output.get('crf', 26)),
 			'container': output.get('container', None),

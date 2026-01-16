@@ -5,6 +5,9 @@
 - Refreshed CODE_ARCHITECTURE and FILE_STRUCTURE docs to match current layout and entry points.
 - Updated INSTALL and added USAGE docs with verified commands and known gaps.
 - Fixed README quick start command to include the required YAML flag.
+- Raised on failed external commands and normalized whitespace in runCmd output.
+- Defaulted output video_codec to libx264 to match the v2 spec and ffmpeg availability.
+- Added x264 vs x265 guidance for YouTube uploads in the v2 spec output section.
 - Added `tools/stabilize_building.py` standalone "bird on a building" stabilization tool (vid.stab via ffmpeg) with crop-to-content and a sidecar report.
 - Added optional, budgeted border fill fallback for rare jerk frames when crop-only is infeasible.
 - Improved stabilize_building motion rejection reporting with per-metric thresholds, reason codes, and a one-screen stderr summary.
