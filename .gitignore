@@ -1,12 +1,13 @@
 # Byte-compiled / optimized / DLL files
 *.py[cod]
 
+
 #ignore movie files
 *.mkv
 *.mp4
 *.avi
+
 .DS_Store
 report_bandit.txt
 report_pyright.txt
 report_ascii_compliance.txt
-
