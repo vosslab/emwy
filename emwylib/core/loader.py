@@ -84,8 +84,24 @@ class ProjectLoader():
 
 	#============================
 	def _validate_required_keys(self, data: dict) -> None:
+		# detect tool config files passed by mistake
+		tool_config_keys = ('silence_annotator', 'stabilize_building')
+		for tool_key in tool_config_keys:
+			if data.get(tool_key) is not None:
+				raise RuntimeError(
+					f"this is a {tool_key} settings file, not an emwy project; "
+					"use the .emwy.yaml file instead"
+				)
+		if 'emwy' not in data:
+			raise RuntimeError(
+				"this file is not an emwy project yaml; "
+				"expected an .emwy.yaml file with emwy: 2 at the top level"
+			)
 		if data.get('emwy') != 2:
-			raise RuntimeError("emwy must be set to 2 for v2 projects")
+			raise RuntimeError(
+				f"unsupported emwy version: {data.get('emwy')}; "
+				"only emwy: 2 is supported"
+			)
 		if data.get('timeline') is None:
 			raise RuntimeError("timeline.segments is required for v2 projects")
 		if data.get('playlists') is not None or data.get('stack') is not None:

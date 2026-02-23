@@ -90,6 +90,26 @@ def command_prefix(index: int, total) -> str:
 
 #============================================
 
+def print_warning(message: str, detail: str = None) -> None:
+	"""
+	Print a warning message to stderr and notify the command reporter if set.
+
+	Args:
+		message: short warning shown on screen and in logs.
+		detail: verbose text written only to the debug log, not shown on screen.
+	"""
+	import sys
+	if _command_reporter is not None:
+		_command_reporter({
+			'event': 'warning',
+			'message': message,
+			'detail': detail,
+		})
+	if not _quiet_mode:
+		print(f"WARNING: {message}", file=sys.stderr)
+
+#============================================
+
 def _ensure_rich_printer() -> None:
 	global _rich_console
 	global _rich_highlighter

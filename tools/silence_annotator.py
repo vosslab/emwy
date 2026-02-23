@@ -1810,7 +1810,9 @@ def main() -> None:
 	intro_title = None
 	if settings['title_card_enabled']:
 		base_name = os.path.splitext(os.path.basename(args.input_file))[0]
-		intro_title = settings['title_card_text'].replace("{name}", base_name)
+		# replace underscores with spaces for readable title card text
+		display_name = base_name.replace("_", " ")
+		intro_title = settings['title_card_text'].replace("{name}", display_name)
 	video_meta = probe_video_stream(args.input_file)
 	audio_meta = probe_audio_stream(args.input_file)
 	profile = {

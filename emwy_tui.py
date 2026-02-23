@@ -288,6 +288,16 @@ class EmwyTuiApp(App):
 			self._update_eta_cache()
 			self._write_log(f"end ({seconds:.3f}s): {command}")
 			self._update_metrics()
+		if event_type == 'warning':
+			warning_msg = event.get('message', '')
+			self.log_widget.write(
+				Text(f"warning: {warning_msg}", style=f"{NORD_COLORS['strings']}")
+			)
+			self._write_log(f"warning: {warning_msg}")
+			# write full detail to debug log only
+			detail = event.get('detail')
+			if detail:
+				self._write_log(f"warning detail:\n{detail}")
 
 	#============================
 	def _write_log(self, message: str) -> None:

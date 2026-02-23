@@ -1029,7 +1029,11 @@ class Renderer():
 	def _video_codec_args(self, codec: str, crf: int) -> str:
 		if codec == 'ffv1':
 			return f" -codec:v {codec} "
-		return f" -codec:v {codec} -crf {crf} -preset ultrafast "
+		# pin profile/level/refs so all segments produce identical H.264
+		# SPS/PPS codec private data for clean mkvmerge appends
+		args = f" -codec:v {codec} -crf {crf} -preset ultrafast "
+		args += " -profile:v high -level:v 4.1 "
+		return args
 
 	#============================
 	def _concatenate_video(self, segment_files: list, output_file: str) -> None:
@@ -1106,11 +1110,22 @@ class Renderer():
 			stderr_text = ""
 			if "stderr:" in message:
 				stderr_text = message.split("stderr:", 1)[1].strip()
+			# check for fatal mkvmerge errors
 			for line in stderr_text.splitlines():
 				line = line.strip()
 				if line.lower().startswith("error"):
 					raise
+			# warn but continue if output file was produced
 			if output_file and os.path.exists(output_file):
+				# only show actual Warning: lines, not verbose info
+				warning_lines = [
+					line.strip() for line in stderr_text.splitlines()
+					if line.strip().lower().startswith("warning")
+				]
+				if warning_lines:
+					# condense for terminal, full stderr to debug log
+					short_msg = f"mkvmerge: {len(warning_lines)} warning(s)"
+					utils.print_warning(short_msg, detail=stderr_text)
 				return
 			raise
 

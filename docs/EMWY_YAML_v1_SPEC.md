@@ -1,6 +1,6 @@
 # EMWY YAML v1 Specification
 
-Status: Legacy, for emwy v1.x  
+Status: Legacy, for emwy v1.x
 Purpose: Document the original YAML format used by emwy so the v2 implementation can be understood against the older semantics.
 
 This spec describes the format implemented by `emwy_cli.py` in this repository (not an idealized format). v1 is intentionally simple and has several sharp edges.
@@ -48,7 +48,7 @@ You can override specific parameters under `audio:` and `video:` (see below).
 
 ### `speed`
 
-`speed.normal` is the default playback speed applied to segments with `type: normal`.  
+`speed.normal` is the default playback speed applied to segments with `type: normal`.
 `speed.fast_forward` is the speed applied to segments with `type: fastforward`.
 
 If `speed` is omitted, emwy uses internal defaults (typically normal ~1.1 and fast_forward ~25).
@@ -153,19 +153,19 @@ Each timing entry value is a dictionary. The most important key is `type`.
 
 Supported `type` values used by the v1 pipeline:
 
-- `normal`  
+- `normal`
   Includes the segment and applies `speed.normal`.
 
-- `fastforward`  
+- `fastforward`
   Includes the segment and applies `speed.fast_forward`.
 
-- `skip`  
+- `skip`
   Excludes the segment.
 
-- `noise`  
+- `noise`
   Excludes the segment. Historically intended to mark a noise sample window for noise reduction, but in the current v1 code path it behaves primarily as a skipped segment.
 
-- `stop`  
+- `stop`
   Excludes the segment and typically serves as the final terminator marker.
 
 Notes:

@@ -38,7 +38,7 @@ class TitleCard(object):
 		self.randimg = None
 		self.temp_dir = None
 		self.quiet = False
-		
+
 	#===============================
 	def setType(self):
 		self.fnt = self._load_font()
@@ -83,8 +83,10 @@ class TitleCard(object):
 		cmd = "ffmpeg -y "
 		cmd += " -r %d "%(self.framerate)
 		cmd += " -i \"%s\" "%(image_pattern)
-		cmd += " -codec:v %s -filter:v 'fps=%d,format=yuv420p' "%(self.codec, self.framerate)
+		cmd += " -codec:v %s "%(self.codec)
 		cmd += " -crf %d -preset ultrafast -pix_fmt yuv420p "%(self.crf)
+		cmd += " -profile:v high -level:v 4.1 "
+		cmd += " -r %d "%(self.framerate)
 		cmd += " \"%s\" "%(self.outfile)
 		utils.runCmd(cmd)
 
@@ -201,4 +203,4 @@ if __name__ == '__main__':
 	tc = TitleCard()
 	tc.setType()
 	tc.createCards()
-	
+

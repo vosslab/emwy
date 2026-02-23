@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- Added four section title cards to the Writing_Webwork_with_AI_Agents EMWY YAML: "ChatGPT vs WebWork" (~01:47), "Amino Acid Isoelectric Points" (~05:58), "Codex vs Claude" (~09:17), and "Comparing Results" (~15:51).
+- Added `-d`/`--debug` flag to `emwy_cli.py` that writes a timestamped debug log to `emwy_cli.log`, matching the TUI's existing `-d` debug log feature.
+- Added `print_warning()` to `emwylib/core/utils.py` that prints to stderr and notifies the command reporter.
+- Changed `_run_mkvmerge` to print a condensed mkvmerge warning count instead of silently swallowing warnings or dumping the entire verbose stderr.
+- Pinned H.264 `-profile:v high -level:v 4.1` in `_video_codec_args` and `titlecard.py` so all segments produce identical SPS/PPS codec private data, eliminating mkvmerge "codec's private data does not match" warnings during concatenation.
+- Removed redundant `-filter:v 'fps=N,format=yuv420p'` from `titlecard.py` encoding; now uses direct `-r` and `-pix_fmt` consistent with all other segment types.
+- Replaced underscores with spaces in silence_annotator title card text derived from filenames for readable display.
+- Improved YAML loader error messages to distinguish tool config files, non-emwy files, and wrong-version projects instead of a single generic error.
 - Simplified README with a short quick start and curated documentation links.
 - Refreshed CODE_ARCHITECTURE and FILE_STRUCTURE docs to match current layout and entry points.
 - Updated INSTALL and added USAGE docs with verified commands and known gaps.
