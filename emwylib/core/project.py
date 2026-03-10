@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import shutil
 from emwylib.core import utils
 from emwylib.core.loader import ProjectLoader

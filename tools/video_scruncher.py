@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 """Script name
 video_scruncher.py
 
