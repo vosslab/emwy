@@ -86,8 +86,9 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--time-range", dest="time_range", type=str, default=None,
 		help=(
-			"Limit refinement to time range 'START:END' in seconds, "
-			"e.g. '30:120'."
+			"Limit seed collection and refinement to time range in seconds. "
+			"Format: 'START:END', 'START:' (to end), or ':END' (from start). "
+			"Examples: '30:120', '200:'."
 		),
 	)
 	parser.add_argument(
@@ -190,11 +191,15 @@ def _probe_video(input_file: str) -> dict:
 def _parse_time_range(time_range_str: str | None) -> tuple | None:
 	"""Parse a 'START:END' time range string into a (start_s, end_s) tuple.
 
+	Supports open-ended ranges: '200:' means from 200s to end,
+	':500' means from start to 500s.
+
 	Args:
-		time_range_str: String like '30:120' or None.
+		time_range_str: String like '30:120', '200:', ':500', or None.
 
 	Returns:
-		Tuple (start_s, end_s) as floats, or None if input is None.
+		Tuple (start_s, end_s) where either may be None for open-ended
+		ranges, or None if input is None.
 
 	Raises:
 		RuntimeError: If the string format is invalid.
@@ -206,8 +211,10 @@ def _parse_time_range(time_range_str: str | None) -> tuple | None:
 		raise RuntimeError(
 			f"Invalid --time-range format '{time_range_str}', expected 'START:END'"
 		)
-	start_s = float(parts[0])
-	end_s = float(parts[1])
+	# parse start, allowing empty string for open-ended start
+	start_s = float(parts[0]) if parts[0].strip() else None
+	# parse end, allowing empty string for open-ended end
+	end_s = float(parts[1]) if parts[1].strip() else None
 	return (start_s, end_s)
 
 
@@ -235,6 +242,31 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 
 
 #============================================
+def _load_interval_cache(intervals_path: str) -> tuple:
+	"""Load interval cache and build a write-through callback.
+
+	Returns the cache dict and a callback that persists new entries
+	to the cache file immediately after each interval is solved.
+
+	Args:
+		intervals_path: Path to the intervals cache JSON file.
+
+	Returns:
+		Tuple (intervals_cache, on_interval_cached_callback).
+	"""
+	intervals_file = state_io.load_intervals(intervals_path)
+	intervals_cache = intervals_file.get("cached_intervals", {})
+
+	def _on_interval_cached(fingerprint: str, result: dict) -> None:
+		"""Persist a newly solved interval to the cache file."""
+		intervals_cache[fingerprint] = result
+		intervals_file["cached_intervals"] = intervals_cache
+		state_io.write_intervals(intervals_path, intervals_file)
+
+	return (intervals_cache, _on_interval_cached)
+
+
+#============================================
 def main() -> None:
 	"""Main entry point for the track_runner v2 CLI."""
 	t_total_start = time.time()
@@ -254,9 +286,10 @@ def main() -> None:
 	if config_path is None:
 		config_path = config.default_config_path(args.input_file)
 
-	# paths for seeds and diagnostics (derived from input file)
+	# paths for seeds, diagnostics, and intervals cache (derived from input file)
 	seeds_path = state_io.default_seeds_path(args.input_file)
 	diag_path = state_io.default_diagnostics_path(args.input_file)
+	intervals_path = state_io.default_intervals_path(args.input_file)
 
 	# handle --write-default-config: write and exit
 	if args.write_default_config:
@@ -291,6 +324,9 @@ def main() -> None:
 
 	# store fps in diagnostics dict for later use by review module
 	fps_for_diag = fps
+
+	# parse optional time range (applies to both seed collection and refinement)
+	time_range = _parse_time_range(args.time_range)
 
 	# initialize YOLO detector
 	print("initializing YOLO detector...")
@@ -330,6 +366,7 @@ def main() -> None:
 			frame_count_override=video_info["frame_count"],
 			debug=args.debug,
 			save_callback=save_seeds_incrementally,
+			time_range=time_range,
 		)
 		if not seeds:
 			raise RuntimeError("no seeds collected; cannot proceed without seeds")
@@ -368,15 +405,26 @@ def main() -> None:
 		print(f"seed-only mode: {len(seeds)} seeds saved, exiting before solve")
 		return
 
-	# validate: need at least 2 visible seeds for interval solving
-	visible_seeds = [
-		s for s in seeds if s.get("status", "visible") == "visible"
+	# validate: need at least 2 usable seeds (visible + partial) for interval solving
+	usable_seeds = [
+		s for s in seeds
+		if s.get("status", "visible") in ("visible", "partial")
 	]
-	if len(visible_seeds) < 2:
+	visible_count = sum(1 for s in usable_seeds if s.get("status", "visible") == "visible")
+	partial_count = sum(1 for s in usable_seeds if s.get("status") == "partial")
+	if len(usable_seeds) < 2:
 		raise RuntimeError(
-			f"need at least 2 visible seeds; "
-			f"got {len(visible_seeds)} ({len(seeds)} total)"
+			f"need at least 2 usable seeds (visible or partial); "
+			f"got {len(usable_seeds)} ({len(seeds)} total)"
 		)
+
+	# log absence seed counts if any exist
+	not_in_frame_count = sum(1 for s in seeds if s.get("status") == "not_in_frame")
+	obstructed_count = sum(1 for s in seeds if s.get("status") == "obstructed")
+	if not_in_frame_count > 0 or obstructed_count > 0 or partial_count > 0:
+		print(f"  seed status breakdown: "
+			f"{visible_count} visible, {partial_count} partial, "
+			f"{not_in_frame_count} not_in_frame, {obstructed_count} obstructed")
 
 	# seeds already contain cx, cy, w, h, frame_index from _build_seed_dict()
 	solver_seeds = seeds
@@ -389,7 +437,7 @@ def main() -> None:
 	print(f"  workers: {num_workers} (of {cpu_count} CPUs)")
 
 	# run interval solver with weak-interval tracking callback
-	print(f"running interval solver ({len(visible_seeds)} visible seeds, {num_workers} workers)...")
+	print(f"running interval solver ({len(usable_seeds)} usable seeds, {num_workers} workers)...")
 	# queue to collect weak interval results during solving
 	weak_queue = queue.Queue()
 	seeds_added_during_solve = 0
@@ -405,11 +453,14 @@ def main() -> None:
 			weak_queue.put(result)
 
 	t_solve_start = time.time()
+	iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
 	with encoder.VideoReader(args.input_file) as reader:
 		diagnostics = interval_solver.solve_all_intervals(
 			reader, solver_seeds, det, cfg,
 			num_workers=num_workers, debug=args.debug,
 			on_interval_complete=_on_interval_complete,
+			intervals_cache=iv_cache,
+			on_interval_cached=iv_cache_cb,
 		)
 	# inject fps for review module
 	diagnostics["fps"] = fps_for_diag
@@ -484,10 +535,13 @@ def main() -> None:
 						f"Re-solving with updated seeds..."
 					)
 					t_resolve_start = time.time()
+					iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
 					with encoder.VideoReader(args.input_file) as reader:
 						diagnostics = interval_solver.solve_all_intervals(
 							reader, solver_seeds, det, cfg,
 							num_workers=num_workers, debug=args.debug,
+							intervals_cache=iv_cache,
+							on_interval_cached=iv_cache_cb,
 						)
 					diagnostics["fps"] = fps_for_diag
 					t_resolve_elapsed = time.time() - t_resolve_start
@@ -563,9 +617,12 @@ def main() -> None:
 			solver_seeds = seeds
 			print("re-solving with updated seeds...")
 			t_resolve_start = time.time()
+			iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
 			with encoder.VideoReader(args.input_file) as reader:
 				diagnostics = interval_solver.solve_all_intervals(
 					reader, solver_seeds, det, cfg,
+					intervals_cache=iv_cache,
+					on_interval_cached=iv_cache_cb,
 				)
 			diagnostics["fps"] = fps_for_diag
 			t_resolve_elapsed = time.time() - t_resolve_start
@@ -584,8 +641,6 @@ def main() -> None:
 			print("all intervals trusted -- skipping refinement")
 		else:
 			print(f"refinement mode: {args.refine}")
-			# parse optional time range
-			time_range = _parse_time_range(args.time_range)
 			gap_threshold_frames = int(args.gap_threshold * fps_for_diag)
 			# compute seed targets using review module
 			target_frames = review.generate_refinement_targets(
@@ -632,9 +687,12 @@ def main() -> None:
 				solver_seeds = seeds
 				print("re-solving with updated seeds...")
 				t_resolve_start = time.time()
+				iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
 				with encoder.VideoReader(args.input_file) as reader:
 					diagnostics = interval_solver.solve_all_intervals(
 						reader, solver_seeds, det, cfg,
+						intervals_cache=iv_cache,
+						on_interval_cached=iv_cache_cb,
 					)
 				diagnostics["fps"] = fps_for_diag
 				t_resolve_elapsed = time.time() - t_resolve_start

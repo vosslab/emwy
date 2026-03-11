@@ -2,7 +2,32 @@
 
 ## 2026-03-11
 
+### Additions and New Features
+- Added interval cache to persist solved intervals across runs. New JSON cache file (`*.track_runner.intervals.json`) stores fused tracks, scores, and margins keyed by a deterministic fingerprint of seed endpoints. On re-run after Ctrl+C, previously solved intervals load from cache and show `[CACHED]`, skipping expensive re-solving. Cache invalidation is implicit via fingerprint mismatch when seeds change.
+- Added `default_intervals_path()`, `load_intervals()`, `write_intervals()`, and `interval_fingerprint()` to [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py) following the existing seeds/diagnostics pattern.
+- Added `intervals_cache` and `on_interval_cached` parameters to `solve_all_intervals()` in [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py). Cache hits skip both parallel worker dispatch and sequential solving. Uncached intervals are persisted to the cache file immediately after solving.
+- Added `_load_interval_cache()` helper to [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py) to load cache and build a write-through callback. Wired into all 4 `solve_all_intervals()` call sites.
+
 ### Fixes and Maintenance
+- Fixed `--time-range` flag being silently ignored during `--seed-only` seed collection. Time range is now parsed before seed collection and passed to `collect_seeds()` in [emwy_tools/track_runner/seeding.py](emwy_tools/track_runner/seeding.py).
+- Fixed `_parse_time_range()` crashing on open-ended ranges like `200:` or `:500`. Now returns `None` for the missing endpoint instead of calling `float('')`.
+- Added `time_range` parameter to `collect_seeds()` in [emwy_tools/track_runner/seeding.py](emwy_tools/track_runner/seeding.py). Filters candidate frame indices to only those within the specified time range before presenting them to the user.
+- Updated `--time-range` help text to indicate it applies to both seed collection and refinement.
+
+- Added `partial` seed status for partially obstructed runners. Press `p` in the seeding UI to enter partial mode, then draw the torso box. Partial seeds have reliable position but unreliable appearance (jersey color contaminated by obstruction).
+- Added `_apply_absence_erasure()` to `interval_solver.py`. After trajectory stitching, erases frames within 1.0s of `not_in_frame` seeds and 0.5s of `obstructed` seeds. Prevents garbage propagation data from persisting through absence zones.
+- Added absence seed logging in `cli.py`. Prints breakdown of visible, partial, not_in_frame, and obstructed seed counts when non-visible seeds exist.
+
+### Behavior or Interface Changes
+- Interval solver now treats `partial` seeds as usable interval endpoints alongside `visible` seeds. Partial seeds provide position data (cx, cy, w, h) but are excluded from appearance model construction to avoid jersey color contamination.
+- Renamed internal variable `visible_seeds` to `usable_seeds` in `interval_solver.py` and `cli.py` to reflect inclusion of partial seeds as interval endpoints.
+- Removed `cyclical_prior` parameter from `solve_interval()`, `_solve_interval_worker()`, and `solve_all_intervals()` return dict. `_detect_cyclical_prior()` retained as unused utility for potential future bbox area refinement.
+- Removed sequential interval 1 gate in `solve_all_intervals()`. All intervals are now dispatched to the parallel pool immediately, eliminating the ~5-minute sequential bottleneck before workers start.
+- Added `backward_reader` parameter to `solve_interval()`. When provided, forward and backward propagation run concurrently in threads using separate `VideoReader` instances. `_solve_interval_worker()` creates a second reader automatically.
+
+### Fixes and Maintenance
+- Added `KeyboardInterrupt` handler to parallel solving loop in `solve_all_intervals()`. On Ctrl+C, cancels pending futures and calls `pool.shutdown(wait=False, cancel_futures=True)` to kill workers immediately instead of waiting for them to finish. Prevents orphaned worker processes from consuming CPU after interrupt.
+- Added sequential-read optimization to `VideoReader.read_frame()` in `encoder.py`. Skips the `CAP_PROP_POS_FRAMES` seek when reading the next consecutive frame, avoiding expensive MKV keyframe searches during propagation.
 - Added 30-second heartbeat output to `propagate_forward()` and `propagate_backward()` in `propagator.py`. When `debug=True`, prints frames completed, elapsed time, and rate every 30 seconds. Eliminates minutes of silence during optical flow propagation on large frames.
 - Added `flush=True` to all debug print statements in `solve_interval()` propagation section to ensure output appears immediately.
 - Added completion timing around the first sequential interval solve in `solve_all_intervals()`. Prints elapsed time when interval 1 finishes.

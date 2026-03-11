@@ -43,6 +43,8 @@ class VideoReader:
 		self.fps = self.cap.get(cv2.CAP_PROP_FPS)
 		self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 		self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+		# track position so sequential reads skip expensive seeks
+		self._next_frame = 0
 
 	#============================================
 	def __iter__(self):
@@ -53,17 +55,22 @@ class VideoReader:
 		"""
 		# reset to beginning of video
 		self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+		self._next_frame = 0
 		frame_index = 0
 		while True:
 			ret, frame = self.cap.read()
 			if not ret:
 				break
+			self._next_frame = frame_index + 1
 			yield (frame_index, frame)
 			frame_index += 1
 
 	#============================================
 	def read_frame(self, frame_index: int) -> numpy.ndarray | None:
 		"""Read a specific frame by index.
+
+		Skips the seek when reading the next consecutive frame, which
+		avoids an expensive MKV keyframe search on every call.
 
 		Args:
 			frame_index: 0-based frame number.
@@ -73,11 +80,13 @@ class VideoReader:
 		"""
 		if frame_index < 0 or frame_index >= self.frame_count:
 			return None
-		# seek to the requested frame
-		self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+		# only seek when the requested frame is not the next in sequence
+		if frame_index != self._next_frame:
+			self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
 		ret, frame = self.cap.read()
 		if not ret:
 			return None
+		self._next_frame = frame_index + 1
 		return frame
 
 	#============================================

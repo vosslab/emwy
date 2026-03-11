@@ -19,6 +19,7 @@ import rich.progress
 import propagator
 import hypothesis
 import scoring
+import state_io
 
 # module-level shared counter for parallel workers
 # set by _init_worker() via ProcessPoolExecutor initializer
@@ -47,6 +48,7 @@ AGREE_CENTER_FRACTION = 0.3
 # Scale agreement tolerance: height ratio difference
 AGREE_SCALE_FRACTION = 0.15
 # Minimum number of frames for cyclical prior detection
+# retained for potential future bbox area refinement
 CYCLICAL_MIN_FRAMES = 900   # ~30s at 30fps
 # Expected lap period range in seconds for track events
 CYCLICAL_PERIOD_MIN_S = 25.0
@@ -150,6 +152,7 @@ def fuse_tracks(
 
 
 #============================================
+# retained for potential future bbox area refinement
 def _detect_cyclical_prior(
 	trajectory: list,
 	fps: float,
@@ -228,9 +231,9 @@ def solve_interval(
 	seed_end: dict,
 	detector: object,
 	appearance_model: dict,
-	cyclical_prior: dict | None = None,
 	show_progress: bool = False,
 	frame_counter: object = None,
+	backward_reader: object = None,
 	debug: bool = False,
 ) -> dict:
 	"""Solve one interval between two seed frames.
@@ -246,11 +249,12 @@ def solve_interval(
 		seed_end: Seed state dict at the end of the interval.
 		detector: Person detector with a detect(frame) method.
 		appearance_model: Appearance model from propagator.build_appearance_model().
-		cyclical_prior: Optional dict with period estimate from _detect_cyclical_prior().
-			Currently reserved for future use; not yet applied.
 		show_progress: If True, show a rich progress bar for per-frame processing.
 		frame_counter: Optional multiprocessing.Value('i') shared counter.
 			Incremented after each frame is processed for progress reporting.
+		backward_reader: Optional second VideoReader for backward propagation.
+			When provided, forward and backward passes run concurrently in threads.
+			When None, both passes use `reader` sequentially.
 		debug: If True, print per-frame debug info (detection count, confidence).
 
 	Returns:
@@ -283,26 +287,47 @@ def solve_interval(
 		conf=float(seed_end.get("conf", 1.0)),
 	)
 
-	# propagate forward from start to end
+	# propagate forward from start to end, and backward from end to start
 	n_frames = end_frame - start_frame
-	if debug:
-		print(f"    propagating forward {n_frames} frames ({start_frame}-{end_frame})...", flush=True)
-	forward_track = propagator.propagate_forward(
-		reader, start_frame, start_state, end_frame, appearance_model,
-		debug=debug,
-	)
-	if debug:
-		print(f"    forward done ({len(forward_track)} states)", flush=True)
 
-	# propagate backward from end to start; result is [end_frame..start_frame]
-	if debug:
-		print(f"    propagating backward {n_frames} frames ({end_frame}-{start_frame})...", flush=True)
-	backward_raw = propagator.propagate_backward(
-		reader, end_frame, end_state, start_frame, appearance_model,
-		debug=debug,
-	)
-	if debug:
-		print(f"    backward done ({len(backward_raw)} states)", flush=True)
+	if backward_reader is not None:
+		# run forward and backward concurrently using threads
+		# OpenCV releases the GIL during frame reads so threads give real parallelism
+		if debug:
+			print(f"    propagating forward+backward {n_frames} frames concurrently...", flush=True)
+		with concurrent.futures.ThreadPoolExecutor(max_workers=2) as thread_pool:
+			fwd_future = thread_pool.submit(
+				propagator.propagate_forward,
+				reader, start_frame, start_state, end_frame, appearance_model,
+				debug,
+			)
+			bwd_future = thread_pool.submit(
+				propagator.propagate_backward,
+				backward_reader, end_frame, end_state, start_frame, appearance_model,
+				debug,
+			)
+			forward_track = fwd_future.result()
+			backward_raw = bwd_future.result()
+		if debug:
+			print(f"    forward+backward done ({len(forward_track)}+{len(backward_raw)} states)", flush=True)
+	else:
+		# sequential path: single reader for both passes
+		if debug:
+			print(f"    propagating forward {n_frames} frames ({start_frame}-{end_frame})...", flush=True)
+		forward_track = propagator.propagate_forward(
+			reader, start_frame, start_state, end_frame, appearance_model,
+			debug=debug,
+		)
+		if debug:
+			print(f"    forward done ({len(forward_track)} states)", flush=True)
+		if debug:
+			print(f"    propagating backward {n_frames} frames ({end_frame}-{start_frame})...", flush=True)
+		backward_raw = propagator.propagate_backward(
+			reader, end_frame, end_state, start_frame, appearance_model,
+			debug=debug,
+		)
+		if debug:
+			print(f"    backward done ({len(backward_raw)} states)", flush=True)
 	# backward_raw index 0 = start_frame (earliest), last = end_frame
 	# align length with forward_track
 	n = min(len(forward_track), len(backward_raw))
@@ -478,13 +503,13 @@ def _solve_interval_worker(
 	seed_end: dict,
 	appearance_data: dict,
 	config: dict,
-	cyclical_prior: dict | None,
 	worker_id: int,
 ) -> dict:
 	"""Worker function for parallel interval solving.
 
-	Creates its own VideoReader and detector, solves one interval,
-	then closes resources. Must be a module-level function for pickling.
+	Creates its own VideoReader pair and detector, solves one interval
+	with concurrent forward/backward propagation, then closes resources.
+	Must be a module-level function for pickling.
 
 	Args:
 		video_path: Path to input video file.
@@ -492,23 +517,25 @@ def _solve_interval_worker(
 		seed_end: Seed state dict for interval end.
 		appearance_data: Serializable appearance model dict.
 		config: Project configuration dict.
-		cyclical_prior: Optional cyclical prior dict.
 		worker_id: Worker identifier for progress display.
 
 	Returns:
 		Interval result dict from solve_interval().
 	"""
-	# each worker creates its own VideoReader and detector
+	# each worker creates its own VideoReader pair and detector
 	import encoder as _enc
 	import detection as _det
 	reader = _enc.VideoReader(video_path)
+	backward_reader = _enc.VideoReader(video_path)
 	detector = _det.create_detector(config)
 	# use the module-level shared counter set by _init_worker()
 	result = solve_interval(
 		reader, seed_start, seed_end, detector, appearance_data,
-		cyclical_prior, show_progress=False, frame_counter=_FRAME_COUNTER,
+		show_progress=False, frame_counter=_FRAME_COUNTER,
+		backward_reader=backward_reader,
 	)
 	reader.close()
+	backward_reader.close()
 	return result
 
 
@@ -579,6 +606,51 @@ def _print_interval_result_rich(
 	progress.console.print(_format_interval_result(result, fps))
 
 
+# erase radius in seconds around absence seeds (no position data)
+ABSENCE_ERASE_RADIUS_S = 1.0    # seconds to erase around not_in_frame
+OBSTRUCTED_ERASE_RADIUS_S = 0.5  # seconds to erase around obstructed
+
+
+#============================================
+def _apply_absence_erasure(
+	trajectory: list,
+	absence_seeds: list,
+	fps: float,
+) -> list:
+	"""Erase trajectory frames near absence seeds.
+
+	For each absence seed (not_in_frame or obstructed without position data),
+	sets trajectory frames within the erase radius to None. Partial seeds
+	are NOT erased because they have reliable position data.
+
+	Args:
+		trajectory: List of tracking state dicts (or None) indexed by frame.
+		absence_seeds: List of seed dicts with status not_in_frame or obstructed.
+		fps: Video frame rate for converting seconds to frames.
+
+	Returns:
+		The modified trajectory list (same object, modified in place).
+	"""
+	n = len(trajectory)
+	for seed in absence_seeds:
+		status = seed.get("status", "")
+		# only erase for seeds without position data
+		if status not in ("not_in_frame", "obstructed"):
+			continue
+		# choose erase radius based on status
+		if status == "not_in_frame":
+			radius_frames = int(round(ABSENCE_ERASE_RADIUS_S * fps))
+		else:
+			radius_frames = int(round(OBSTRUCTED_ERASE_RADIUS_S * fps))
+		seed_frame = int(seed["frame_index"])
+		# erase frames within the radius
+		erase_start = max(0, seed_frame - radius_frames)
+		erase_end = min(n - 1, seed_frame + radius_frames)
+		for fi in range(erase_start, erase_end + 1):
+			trajectory[fi] = None
+	return trajectory
+
+
 #============================================
 def solve_all_intervals(
 	reader: object,
@@ -588,6 +660,8 @@ def solve_all_intervals(
 	num_workers: int = 1,
 	debug: bool = False,
 	on_interval_complete: object = None,
+	intervals_cache: dict = None,
+	on_interval_cached: object = None,
 ) -> dict:
 	"""Solve all seed-to-seed intervals and stitch into a full trajectory.
 
@@ -611,32 +685,35 @@ def solve_all_intervals(
 		debug: If True, show per-frame debug output and progress bars.
 		on_interval_complete: Optional callback called with each interval result
 			dict as intervals finish. Used for interactive seed requesting.
+		intervals_cache: Optional dict of fingerprint->result for skipping
+			previously solved intervals. Keys are from state_io.interval_fingerprint().
+		on_interval_cached: Optional callback(fingerprint, cacheable_result)
+			called when a new interval is solved, for persisting to the cache file.
 
 	Returns:
 		Dict with keys:
 			- "intervals": list of interval result dicts
 			- "trajectory": full frame-by-frame tracking state list
-			- "cyclical_prior": optional prior dict or None
 	"""
 	info = reader.get_info()
 	fps = float(info.get("fps", 30.0))
 
-	# filter to visible seeds only
-	visible_seeds = [
+	# filter to usable seeds (visible + partial have position data)
+	usable_seeds = [
 		s for s in seeds
-		if s.get("status", "visible") == "visible"
+		if s.get("status", "visible") in ("visible", "partial")
 	]
 
-	if len(visible_seeds) < 2:
-		print("  interval_solver: need at least 2 visible seeds to solve intervals")
-		return {"intervals": [], "trajectory": [], "cyclical_prior": None}
+	if len(usable_seeds) < 2:
+		print("  interval_solver: need at least 2 usable seeds to solve intervals")
+		return {"intervals": [], "trajectory": []}
 
 	# sort by frame_index to ensure consecutive pairs are correct
-	visible_seeds_sorted = sorted(visible_seeds, key=lambda s: int(s["frame_index"]))
+	usable_seeds_sorted = sorted(usable_seeds, key=lambda s: int(s["frame_index"]))
 
 	# validate required fields on each seed - fail loud, never default to 0
 	required_fields = ("cx", "cy", "w", "h", "frame_index")
-	for seed_idx, seed in enumerate(visible_seeds_sorted):
+	for seed_idx, seed in enumerate(usable_seeds_sorted):
 		for field in required_fields:
 			if field not in seed:
 				raise RuntimeError(
@@ -651,7 +728,7 @@ def solve_all_intervals(
 
 	# deduplicate seeds by frame_index: keep latest pass when collisions exist
 	seen_frames = {}
-	for seed in visible_seeds_sorted:
+	for seed in usable_seeds_sorted:
 		fi = int(seed["frame_index"])
 		if fi in seen_frames:
 			existing = seen_frames[fi]
@@ -665,13 +742,19 @@ def solve_all_intervals(
 					f"keeping pass {existing.get('pass', 1)} over pass {seed.get('pass', 1)}")
 		else:
 			seen_frames[fi] = seed
-	if len(seen_frames) < len(visible_seeds_sorted):
-		dropped = len(visible_seeds_sorted) - len(seen_frames)
+	if len(seen_frames) < len(usable_seeds_sorted):
+		dropped = len(usable_seeds_sorted) - len(seen_frames)
 		print(f"  deduplicated {dropped} seeds with duplicate frame_index values")
-		visible_seeds_sorted = sorted(seen_frames.values(), key=lambda s: int(s["frame_index"]))
+		usable_seeds_sorted = sorted(seen_frames.values(), key=lambda s: int(s["frame_index"]))
 
 	# build appearance model from the first visible seed
-	first_seed = visible_seeds_sorted[0]
+	# prefer visible seeds over partial (partial has unreliable appearance)
+	visible_only = [s for s in usable_seeds_sorted if s.get("status", "visible") == "visible"]
+	if visible_only:
+		first_seed = visible_only[0]
+	else:
+		# fallback to partial if no visible seeds exist
+		first_seed = usable_seeds_sorted[0]
 	first_frame = reader.read_frame(int(first_seed["frame_index"]))
 	if first_frame is None:
 		raise RuntimeError(
@@ -687,74 +770,96 @@ def solve_all_intervals(
 	}
 	appearance_model = propagator.build_appearance_model(first_frame, seed_bbox)
 
-	total_intervals = len(visible_seeds_sorted) - 1
+	total_intervals = len(usable_seeds_sorted) - 1
 	interval_results = []
-	cyclical_prior = None
 	t_start = time.time()
 
-	# parallel solving path
-	if num_workers > 1 and total_intervals > 1:
+	# build all interval pairs and compute fingerprints for caching
+	all_pairs = []
+	all_fingerprints = []
+	for pair_idx in range(total_intervals):
+		s_start = usable_seeds_sorted[pair_idx]
+		s_end = usable_seeds_sorted[pair_idx + 1]
+		all_pairs.append((s_start, s_end))
+		fp = state_io.interval_fingerprint(s_start, s_end)
+		all_fingerprints.append(fp)
+
+	# separate cached hits from intervals that need solving
+	cached_results = [None] * total_intervals
+	uncached_indices = []
+	cache_hit_count = 0
+	if intervals_cache:
+		for pair_idx in range(total_intervals):
+			fp = all_fingerprints[pair_idx]
+			if fp in intervals_cache:
+				cached_results[pair_idx] = intervals_cache[fp]
+				cache_hit_count += 1
+			else:
+				uncached_indices.append(pair_idx)
+	else:
+		uncached_indices = list(range(total_intervals))
+
+	if cache_hit_count > 0:
+		print(f"  {cache_hit_count}/{total_intervals} intervals loaded from cache")
+		# print cached interval results
+		for pair_idx in range(total_intervals):
+			if cached_results[pair_idx] is not None:
+				result = cached_results[pair_idx]
+				line = _format_interval_result(result, fps)
+				print(f"{line}  [CACHED]")
+				if on_interval_complete is not None:
+					on_interval_complete(result)
+
+	# helper to persist a newly solved interval to the cache
+	def _cache_and_notify(pair_idx: int, result: dict) -> None:
+		"""Store a cacheable subset of the result and call on_interval_cached."""
+		if on_interval_cached is not None:
+			# strip forward_track and backward_track to cut cache size ~50%
+			cacheable = {
+				"start_frame": result["start_frame"],
+				"end_frame": result["end_frame"],
+				"fused_track": result["fused_track"],
+				"interval_score": result["interval_score"],
+				"identity_scores": result["identity_scores"],
+				"competitor_margins": result["competitor_margins"],
+			}
+			fp = all_fingerprints[pair_idx]
+			on_interval_cached(fp, cacheable)
+
+	uncached_count = len(uncached_indices)
+
+	# parallel solving path: only uncached intervals dispatched to the pool
+	if num_workers > 1 and uncached_count > 1:
 		# get video_path from reader for spawning worker readers
 		video_path = reader.video_path
-		# solve first interval sequentially to check for cyclical prior
-		seed_start = visible_seeds_sorted[0]
-		seed_end = visible_seeds_sorted[1]
-		start_frame = int(seed_start["frame_index"])
-		end_frame = int(seed_end["frame_index"])
-		print(f"  solving interval 1/{total_intervals} (frames {start_frame}-{end_frame})", flush=True)
-		t_first = time.time()
-		first_result = solve_interval(
-			reader, seed_start, seed_end, detector, appearance_model,
-			cyclical_prior, show_progress=debug, debug=debug,
-		)
-		t_first_elapsed = time.time() - t_first
-		print(f"  interval 1 complete ({t_first_elapsed:.1f}s)", flush=True)
-		interval_results.append(first_result)
-		_print_interval_result(first_result, fps)
-		if on_interval_complete is not None:
-			on_interval_complete(first_result)
-		# check for cyclical prior from first interval
-		partial_trajectory = stitch_trajectories(interval_results)
-		cyclical_prior = _detect_cyclical_prior(partial_trajectory, fps)
-		if cyclical_prior is not None:
-			print(
-				f"  cyclical prior detected: "
-				f"period={cyclical_prior['period_s']:.1f}s "
-				f"(corr={cyclical_prior['correlation']:.2f})"
-			)
-		# submit remaining intervals in parallel
-		remaining_pairs = []
-		for pair_idx in range(1, total_intervals):
-			remaining_pairs.append((
-				visible_seeds_sorted[pair_idx],
-				visible_seeds_sorted[pair_idx + 1],
-			))
-		# compute total frames across all remaining intervals for progress bar
+		# compute total frames across uncached intervals for progress bar
 		total_frames = 0
-		for s_start, s_end in remaining_pairs:
+		for ui in uncached_indices:
+			s_start, s_end = all_pairs[ui]
 			total_frames += int(s_end["frame_index"]) - int(s_start["frame_index"])
-		# cap actual workers to remaining interval count
-		actual_workers = min(num_workers, len(remaining_pairs))
-		print(f"  solving {len(remaining_pairs)} remaining intervals ({actual_workers} workers)...")
+		# cap actual workers to uncached interval count
+		actual_workers = min(num_workers, uncached_count)
+		print(f"  solving {uncached_count} intervals ({actual_workers} workers)...")
 		# create shared frame counter for cross-worker progress
 		frame_counter = multiprocessing.Value("i", 0)
-		# map futures to their submission index for ordered stitching
-		future_to_idx = {}
+		# map futures to their original pair index for ordered stitching
+		future_to_pair_idx = {}
 		with concurrent.futures.ProcessPoolExecutor(
 			max_workers=actual_workers,
 			initializer=_init_worker,
 			initargs=(frame_counter,),
 		) as pool:
-			for w_idx, (s_start, s_end) in enumerate(remaining_pairs):
+			for w_idx, ui in enumerate(uncached_indices):
+				s_start, s_end = all_pairs[ui]
 				future = pool.submit(
 					_solve_interval_worker,
 					video_path, s_start, s_end,
-					appearance_model, config, cyclical_prior, w_idx,
+					appearance_model, config, w_idx,
 				)
-				future_to_idx[future] = w_idx
+				future_to_pair_idx[future] = ui
 			# poll shared counter for frame-level progress instead of
 			# blocking on as_completed() with interval-level granularity
-			parallel_results = [None] * len(remaining_pairs)
+			parallel_results = {}
 			collected = set()
 			done_count = 0
 			with rich.progress.Progress(
@@ -767,53 +872,66 @@ def solve_all_intervals(
 					"  frames processed", total=total_frames,
 				)
 				last_wall_print = time.time()
-				while done_count < len(remaining_pairs):
-					# check for newly completed futures (non-blocking)
-					for future in list(future_to_idx):
-						if future.done() and future not in collected:
-							collected.add(future)
-							idx = future_to_idx[future]
-							result = future.result()
-							parallel_results[idx] = result
-							done_count += 1
-							# print interval result and completion count
-							_print_interval_result_rich(result, fps, progress)
-							if on_interval_complete is not None:
-								on_interval_complete(result)
-							if debug:
-								elapsed = time.time() - t_start
-								n_frames = result["end_frame"] - result["start_frame"]
+				try:
+					while done_count < uncached_count:
+						# check for newly completed futures (non-blocking)
+						for future in list(future_to_pair_idx):
+							if future.done() and future not in collected:
+								collected.add(future)
+								pair_idx = future_to_pair_idx[future]
+								result = future.result()
+								parallel_results[pair_idx] = result
+								done_count += 1
+								# persist to cache
+								_cache_and_notify(pair_idx, result)
+								# print interval result and completion count
+								_print_interval_result_rich(result, fps, progress)
+								if on_interval_complete is not None:
+									on_interval_complete(result)
+								if debug:
+									elapsed = time.time() - t_start
+									n_frames = result["end_frame"] - result["start_frame"]
+									progress.console.print(
+										f"    interval {result['start_frame']}-"
+										f"{result['end_frame']} done "
+										f"({n_frames} frames, {elapsed:.1f}s wall)"
+									)
 								progress.console.print(
-									f"    interval {result['start_frame']}-"
-									f"{result['end_frame']} done "
-									f"({n_frames} frames, {elapsed:.1f}s wall)"
+									f"  intervals complete: "
+									f"{done_count}/{uncached_count}"
 								)
-							progress.console.print(
-								f"  intervals complete: "
-								f"{done_count}/{len(remaining_pairs)}"
-							)
-					# update frame-level progress from shared counter
-					current_frames = frame_counter.value
-					progress.update(
-						frame_task, completed=current_frames,
-					)
-					# print wall time and throughput every 30 seconds
-					now = time.time()
-					if now - last_wall_print >= 30.0:
-						elapsed = now - t_start
-						fps_rate = current_frames / max(0.1, elapsed)
-						progress.console.print(
-							f"  wall time {elapsed:.0f}s  "
-							f"frames={current_frames}/{total_frames}  "
-							f"({fps_rate:.1f} frames/s)"
+						# update frame-level progress from shared counter
+						current_frames = frame_counter.value
+						progress.update(
+							frame_task, completed=current_frames,
 						)
-						last_wall_print = now
-					# brief sleep to avoid busy-waiting
-					time.sleep(0.2)
-			# append parallel results in original order
-			for result in parallel_results:
-				interval_results.append(result)
-	else:
+						# print wall time and throughput every 30 seconds
+						now = time.time()
+						if now - last_wall_print >= 30.0:
+							elapsed = now - t_start
+							fps_rate = current_frames / max(0.1, elapsed)
+							progress.console.print(
+								f"  wall time {elapsed:.0f}s  "
+								f"frames={current_frames}/{total_frames}  "
+								f"({fps_rate:.1f} frames/s)"
+							)
+							last_wall_print = now
+						# brief sleep to avoid busy-waiting
+						time.sleep(0.2)
+				except KeyboardInterrupt:
+					# cancel pending futures and kill workers immediately
+					print("\n  interrupted: cancelling workers...", flush=True)
+					for future in future_to_pair_idx:
+						future.cancel()
+					pool.shutdown(wait=False, cancel_futures=True)
+					raise
+		# merge cached and newly solved results in original order
+		for pair_idx in range(total_intervals):
+			if cached_results[pair_idx] is not None:
+				interval_results.append(cached_results[pair_idx])
+			else:
+				interval_results.append(parallel_results[pair_idx])
+	elif uncached_count > 0:
 		# sequential solving path with rich progress bar
 		with rich.progress.Progress(
 			rich.progress.TextColumn("{task.description}"),
@@ -822,47 +940,52 @@ def solve_all_intervals(
 			rich.progress.TimeRemainingColumn(),
 		) as progress:
 			task = progress.add_task(
-				"  solving intervals", total=total_intervals,
+				"  solving intervals", total=uncached_count,
 			)
-			for pair_idx in range(total_intervals):
-				seed_start = visible_seeds_sorted[pair_idx]
-				seed_end = visible_seeds_sorted[pair_idx + 1]
+			for ui in uncached_indices:
+				seed_start, seed_end = all_pairs[ui]
 
 				start_frame = int(seed_start["frame_index"])
 				end_frame = int(seed_end["frame_index"])
 
 				progress.console.print(
-					f"  solving interval {pair_idx + 1}/{total_intervals} "
+					f"  solving interval {ui + 1}/{total_intervals} "
 					f"(frames {start_frame}-{end_frame})"
 				)
 
-				# detect cyclical prior from trajectory built so far
-				if interval_results and cyclical_prior is None:
-					partial_trajectory = stitch_trajectories(interval_results)
-					cyclical_prior = _detect_cyclical_prior(partial_trajectory, fps)
-					if cyclical_prior is not None:
-						progress.console.print(
-							f"  cyclical prior detected: "
-							f"period={cyclical_prior['period_s']:.1f}s "
-							f"(corr={cyclical_prior['correlation']:.2f})"
-						)
-
 				result = solve_interval(
 					reader, seed_start, seed_end, detector, appearance_model,
-					cyclical_prior, show_progress=debug, debug=debug,
+					show_progress=debug, debug=debug,
 				)
-				interval_results.append(result)
+				cached_results[ui] = result
+				# persist to cache
+				_cache_and_notify(ui, result)
 				_print_interval_result_rich(result, fps, progress)
 				if on_interval_complete is not None:
 					on_interval_complete(result)
 				progress.update(task, advance=1)
+		# merge all results in original order
+		for pair_idx in range(total_intervals):
+			interval_results.append(cached_results[pair_idx])
+	else:
+		# all intervals were cached, no solving needed
+		for pair_idx in range(total_intervals):
+			interval_results.append(cached_results[pair_idx])
 
 	# stitch all intervals into full trajectory
 	trajectory = stitch_trajectories(interval_results)
 
+	# erase trajectory frames near absence seeds (not_in_frame, obstructed)
+	absence_seeds = [
+		s for s in seeds
+		if s.get("status", "") in ("not_in_frame", "obstructed")
+	]
+	if absence_seeds:
+		print(f"  erasing trajectory near {len(absence_seeds)} absence seeds")
+		trajectory = _apply_absence_erasure(trajectory, absence_seeds, fps)
+
 	output = {
 		"intervals": interval_results,
 		"trajectory": trajectory,
-		"cyclical_prior": cyclical_prior,
 	}
 	return output

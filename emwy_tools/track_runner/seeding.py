@@ -216,6 +216,7 @@ def _interactive_draw_box(
 		Drawn box as [x, y, w, h], or "skip" if spacebar pressed,
 		or "prev"/"next" if left/right arrow pressed,
 		or "not_in_frame"/"obstructed" if n/o pressed,
+		or "partial" if p pressed,
 		or None if ESC/q pressed to finish.
 	"""
 	# mutable state for the mouse callback closure
@@ -271,7 +272,7 @@ def _interactive_draw_box(
 		)
 		cv2.putText(
 			show,
-			"n=not in frame, o=obstructed",
+			"n=not in frame, o=obstructed, p=partial",
 			(10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
 			(0, 255, 255), 2,
 		)
@@ -307,6 +308,9 @@ def _interactive_draw_box(
 		# o key: mark runner as obstructed
 		if key == 111:
 			return "obstructed"
+		# p key: mark runner as partial (obstructed torso, but position known)
+		if key == 112:
+			return "partial"
 		# check if mouse drawing finished
 		if state["done"]:
 			# compute box from the two corner points
@@ -334,6 +338,7 @@ def collect_seeds(
 	frame_count_override: int | None = None,
 	debug: bool = False,
 	save_callback: object = None,
+	time_range: tuple | None = None,
 ) -> list:
 	"""Collect initial seed points for runner tracking (pass 1).
 
@@ -355,6 +360,8 @@ def collect_seeds(
 		debug: Enable verbose frame-reading output.
 		save_callback: Optional callable(seeds_list) invoked after each new
 			seed is collected, for crash-safe incremental saving.
+		time_range: Optional (start_s, end_s) tuple to limit candidate frames.
+			Either value may be None for open-ended ranges.
 
 	Returns:
 		List of seed dicts in v2 format (existing + newly collected).
@@ -389,6 +396,20 @@ def collect_seeds(
 
 	# generate candidates at the requested interval
 	seed_frame_indices = list(range(0, total_frames, frame_interval))
+	# filter candidates by time_range if provided
+	if time_range is not None:
+		start_s, end_s = time_range
+		start_frame = int(start_s * fps) if start_s is not None else 0
+		end_frame = int(end_s * fps) if end_s is not None else total_frames
+		original_count = len(seed_frame_indices)
+		seed_frame_indices = [
+			f for f in seed_frame_indices
+			if start_frame <= f <= end_frame
+		]
+		filtered = original_count - len(seed_frame_indices)
+		if filtered > 0:
+			print(f"  time_range filter: kept {len(seed_frame_indices)} "
+				f"of {original_count} candidates")
 	# filter out frames that already have seeds to prevent duplicates
 	if all_seeds:
 		existing_frame_set = set(int(s["frame_index"]) for s in all_seeds)
@@ -479,6 +500,31 @@ def collect_seeds(
 			# save incrementally to avoid losing work on crash
 			if save_callback is not None:
 				save_callback(all_seeds + new_seeds)
+			list_idx += 1
+			if list_idx < len(seed_frame_indices):
+				current_frame = seed_frame_indices[list_idx]
+			continue
+		# handle partial mode: user marks runner as partially obstructed,
+		# then draws the torso box on the same frame
+		if drawn_box == "partial":
+			print("  partial mode: draw the runner's torso box")
+			partial_box = _interactive_draw_box(frame)
+			if isinstance(partial_box, list):
+				# user drew a box: build seed with partial status
+				norm_box = normalize_seed_box(partial_box, config)
+				jersey_hsv = extract_jersey_color(frame, norm_box)
+				seed = _build_seed_dict(
+					frame_idx, time_sec, norm_box, jersey_hsv, pass_number, "initial",
+				)
+				# override status to partial (position good, appearance bad)
+				seed["status"] = "partial"
+				new_seeds.append(seed)
+				# save incrementally to avoid losing work on crash
+				if save_callback is not None:
+					save_callback(all_seeds + new_seeds)
+			else:
+				# user skipped or escaped the partial draw, treat as skip
+				pass
 			list_idx += 1
 			if list_idx < len(seed_frame_indices):
 				current_frame = seed_frame_indices[list_idx]
@@ -639,6 +685,31 @@ def collect_seeds_at_frames(
 			# save incrementally to avoid losing work on crash
 			if save_callback is not None:
 				save_callback(all_seeds + new_seeds)
+			list_idx += 1
+			if list_idx < len(sorted_targets):
+				current_frame = sorted_targets[list_idx]
+			continue
+		# handle partial mode: user marks runner as partially obstructed,
+		# then draws the torso box on the same frame
+		if drawn_box == "partial":
+			print("  partial mode: draw the runner's torso box")
+			partial_box = _interactive_draw_box(frame, predictions=frame_preds)
+			if isinstance(partial_box, list):
+				# user drew a box: build seed with partial status
+				norm_box = normalize_seed_box(partial_box, config)
+				jersey_hsv = extract_jersey_color(frame, norm_box)
+				seed = _build_seed_dict(
+					frame_idx, time_sec, norm_box, jersey_hsv, pass_number, mode,
+				)
+				# override status to partial (position good, appearance bad)
+				seed["status"] = "partial"
+				new_seeds.append(seed)
+				# save incrementally to avoid losing work on crash
+				if save_callback is not None:
+					save_callback(all_seeds + new_seeds)
+			else:
+				# user skipped or escaped the partial draw, treat as skip
+				pass
 			list_idx += 1
 			if list_idx < len(sorted_targets):
 				current_frame = sorted_targets[list_idx]
