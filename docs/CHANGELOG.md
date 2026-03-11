@@ -2,6 +2,14 @@
 
 ## 2026-03-11
 
+### Fixes and Maintenance
+- Refreshed `docs/CODE_ARCHITECTURE.md` and `docs/FILE_STRUCTURE.md` to reflect the
+  track_runner v2 rewrite: added track_runner v2 module map with all 12 modules and
+  their responsibilities, added track_runner data flow diagram, added `tools/` directory,
+  added new docs (`TRACK_RUNNER_V2_SPEC.md`, `SEED_VARIABILITY_FINDINGS.md`), removed
+  stale `kalman.py` and `tracker.py` from the file tree, and added `TRACK_VIDEOS/` to
+  generated artifacts.
+
 ### Decisions and Failures
 - Replaced Kalman filter backbone with seed-driven interval solver after measurements showed
   9-13x bbox overestimation in diagnostics, jersey color unusable below 30px, and camera

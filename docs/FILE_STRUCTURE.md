@@ -24,7 +24,8 @@ emwy/
 +- emwylib/
 +- emwy_tools/
 +- samples/
-`- tests/
++- tests/
+`- tools/
 ```
 
 Top-level highlights:
@@ -125,6 +126,7 @@ Helper scripts in [emwy_tools/](emwy_tools/):
 ```
 emwy_tools/
   README.md
+  run_tool.py
   tools_common.py
   emwy_yaml_writer.py
   config_silence.yml
@@ -149,12 +151,24 @@ emwy_tools/
     crop.py
     detection.py
     encoder.py
-    kalman.py
+    hypothesis.py
+    interval_solver.py
+    propagator.py
+    review.py
     scoring.py
     seeding.py
+    state_io.py
   video_scruncher/
     __init__.py
     video_scruncher.py
+```
+
+Standalone analysis scripts in [tools/](tools/):
+
+```
+tools/
+  measure_seed_variability.py
+  plot_seed_variability.py
 ```
 
 ### Development scripts
@@ -188,6 +202,7 @@ Ignored or regenerated outputs include:
 - `.pytest_cache/`, `.mypy_cache/`: Test and type-check caches.
 - `*.mkv`, `*.mp4`, `*.avi`: Video outputs (ignored by default).
 - `output_smoke/`: Smoke test output directory.
+- `TRACK_VIDEOS/`: Test video inputs (local only, not committed).
 
 Temporary render files default to a per-run temp directory (see `--cache-dir` in
 [docs/USAGE.md](docs/USAGE.md)).
@@ -222,8 +237,13 @@ Documentation lives in [docs/](docs/):
 - [docs/TODO.md](docs/TODO.md): Backlog tasks.
 - [docs/SECURITY.md](docs/SECURITY.md): Security notes.
 - [docs/AUTHORS.md](docs/AUTHORS.md): Maintainers and contributors.
-- [docs/STABILIZATION_TOOL_PLAN.md](docs/STABILIZATION_TOOL_PLAN.md): Stabilization plan.
+- [docs/TRACK_RUNNER_SPEC.md](docs/TRACK_RUNNER_SPEC.md): Legacy v1 track runner spec.
+- [docs/TRACK_RUNNER_V2_SPEC.md](docs/TRACK_RUNNER_V2_SPEC.md): Current v2 track
+  runner spec (seed-driven interval solver).
 - [docs/TRACK_RUNNER_TOOL_PLAN.md](docs/TRACK_RUNNER_TOOL_PLAN.md): Track runner plan.
+- [docs/STABILIZATION_TOOL_PLAN.md](docs/STABILIZATION_TOOL_PLAN.md): Stabilization plan.
+- [docs/SEED_VARIABILITY_FINDINGS.md](docs/SEED_VARIABILITY_FINDINGS.md): Seed
+  variability measurement results that motivated the v2 rewrite.
 
 Root-level docs:
 
@@ -240,9 +260,11 @@ Root-level docs:
 - **New generators**: Extend [emwylib/titlecard.py](emwylib/titlecard.py) or add
   a new module under [emwylib/](emwylib/).
 - **Tests**: Add pytest files under [tests/](tests/) using `test_*.py` names.
+- **Tool tests**: Add pytest files under [emwy_tools/tests/](emwy_tools/tests/).
 - **Docs**: Add docs under [docs/](docs/) using SCREAMING_SNAKE_CASE names and
   update [docs/CHANGELOG.md](docs/CHANGELOG.md).
 - **Tools**: Add sub-packages under [emwy_tools/](emwy_tools/) and document them
   in [docs/TOOLS.md](docs/TOOLS.md).
+- **Analysis scripts**: Add standalone scripts under [tools/](tools/).
 - **Samples**: Add example projects under [samples/](samples/) with `.emwy.yaml`
   extensions.

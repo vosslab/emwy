@@ -187,6 +187,68 @@ def merge_seeds(existing_seeds: list, new_seeds: list) -> list:
 
 
 #============================================
+def write_solver_diagnostics(
+	diagnostics: dict,
+	path: str,
+	fps: float,
+) -> None:
+	"""Serialize interval solver diagnostics to a JSON file.
+
+	Strips non-serializable objects and builds a compact summary
+	from the raw solver output before writing.
+
+	Args:
+		diagnostics: Dict from interval_solver.solve_all_intervals().
+		path: Output JSON file path.
+		fps: Video fps for inclusion in the file.
+	"""
+	# build a JSON-safe summary (do not write full per-frame trajectory)
+	intervals_summary = []
+	for iv in diagnostics.get("intervals", []):
+		score = iv.get("interval_score", {})
+		entry = {
+			"start_frame": iv["start_frame"],
+			"end_frame": iv["end_frame"],
+			"start_s": round(iv["start_frame"] / max(1.0, fps), 3),
+			"end_s": round(iv["end_frame"] / max(1.0, fps), 3),
+			"agreement_score": round(
+				float(score.get("agreement_score", 0.0)), 4,
+			),
+			"identity_score": round(
+				float(score.get("identity_score", 0.0)), 4,
+			),
+			"competitor_margin": round(
+				float(score.get("competitor_margin", 0.0)), 4,
+			),
+			"confidence": score.get("confidence", "low"),
+			"failure_reasons": score.get("failure_reasons", []),
+		}
+		intervals_summary.append(entry)
+
+	# preserve cyclical prior if detected
+	cyclical = diagnostics.get("cyclical_prior")
+	cyclical_safe = None
+	if cyclical is not None:
+		cyclical_safe = {
+			"period_frames": int(cyclical.get("period_frames", 0)),
+			"period_s": round(
+				float(cyclical.get("period_s", 0.0)), 3,
+			),
+			"correlation": round(
+				float(cyclical.get("correlation", 0.0)), 4,
+			),
+		}
+
+	diag_out = {
+		DIAGNOSTICS_HEADER_KEY: DIAGNOSTICS_HEADER_VALUE,
+		"fps": round(fps, 6),
+		"intervals": intervals_summary,
+		"cyclical_prior": cyclical_safe,
+	}
+	write_diagnostics(path, diag_out)
+
+
+#============================================
 
 # round-trip self-check for load/write pairs
 if __name__ == "__main__":

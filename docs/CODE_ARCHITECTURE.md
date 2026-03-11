@@ -8,6 +8,9 @@ emwy is a command-line video editor that parses YAML projects into a compiled
 timeline and renders segments with ffmpeg/sox before muxing outputs. MLT XML is
 an optional export format, not the primary render path.
 
+The repo also includes standalone tools under [emwy_tools/](emwy_tools/) for
+tasks like runner tracking, silence annotation, and video stabilization.
+
 ## Major components
 
 ### Entry points
@@ -51,14 +54,62 @@ an optional export format, not the primary render path.
   from audio silence detection.
 - [emwy_tools/stabilize_building/](emwy_tools/stabilize_building/): Global
   stabilization tool for existing media.
-- [emwy_tools/track_runner/](emwy_tools/track_runner/): Runner tracking and
-  video reframing from handheld footage.
+- [emwy_tools/track_runner/](emwy_tools/track_runner/): Seed-driven runner
+  tracking and video reframing from handheld footage (v2 interval solver).
 - [emwy_tools/video_scruncher/](emwy_tools/video_scruncher/): Video compression
   helper (placeholder).
+- [tools/](tools/): Standalone analysis scripts (seed variability measurement
+  and plotting).
+
+### track_runner v2 architecture
+
+The track_runner is a seed-driven interval solver that interpolates geometry
+between human-provided anchor points. The human establishes identity; the
+machine interpolates geometry. Modules are organized by responsibility:
+
+- [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py): Argparse,
+  multi-pass orchestration, seed format conversion.
+- [emwy_tools/track_runner/config.py](emwy_tools/track_runner/config.py): YAML
+  config load/write/validate (human-edited settings).
+- [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py):
+  JSON read/write for seeds and diagnostics (machine-managed data).
+- [emwy_tools/track_runner/propagator.py](emwy_tools/track_runner/propagator.py):
+  Frame-to-frame torso tracking using pyramidal Lucas-Kanade optical flow
+  and patch correlation.
+- [emwy_tools/track_runner/hypothesis.py](emwy_tools/track_runner/hypothesis.py):
+  Competing path generation, identity scoring, competitor margin computation.
+- [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py):
+  Per-interval bounded solving, forward/backward track fusion, cyclical prior
+  detection, trajectory stitching.
+- [emwy_tools/track_runner/scoring.py](emwy_tools/track_runner/scoring.py):
+  Interval confidence metrics (agreement, meeting point errors, confidence
+  classification).
+- [emwy_tools/track_runner/review.py](emwy_tools/track_runner/review.py): Weak
+  span identification and suggested seed frames with failure reasons.
+- [emwy_tools/track_runner/seeding.py](emwy_tools/track_runner/seeding.py):
+  Interactive seed collection with multi-pass refinement workflow.
+- [emwy_tools/track_runner/crop.py](emwy_tools/track_runner/crop.py): Adaptive
+  crop controller with exponential smoothing, trajectory-to-crop-rect
+  conversion with gap filling.
+- [emwy_tools/track_runner/detection.py](emwy_tools/track_runner/detection.py):
+  YOLO person detection as a supporting cue (not the tracking backbone).
+- [emwy_tools/track_runner/encoder.py](emwy_tools/track_runner/encoder.py):
+  Video reader/writer, audio copy, debug overlay drawing.
+
+Three canonical state types flow through these modules without mixing:
+
+- **Tracking state** (`cx, cy, w, h, conf, source`): where the torso is per frame.
+- **Hypothesis state**: tracking state plus identity score, competitor margin,
+  and failure reasons.
+- **Crop state** (`crop_cx, crop_cy, crop_size`): output crop rectangle,
+  downstream of tracking.
+
+See [docs/TRACK_RUNNER_V2_SPEC.md](docs/TRACK_RUNNER_V2_SPEC.md) for the full
+specification.
 
 ## Data flow
 
-Typical render flow:
+### EMWY render flow
 
 ```
 project.emwy.yaml
@@ -81,6 +132,35 @@ output.mkv
 
 MLT export branches after compilation and writes XML instead of rendering.
 
+### track_runner flow
+
+```
+Pass 1: human seeds (interactive, --seed-interval N)
+  |
+  v
+interval_solver (split timeline into seed-to-seed intervals)
+  |
+  +-- per interval:
+  |     propagator: forward from seed A, backward from seed B
+  |     hypothesis: generate and score competing paths
+  |     scoring: agreement + identity + competitor margin
+  |
+  v
+diagnostics (per-interval confidence, failure reasons)
+  |
+  v
+review (identify weak spans, suggest reseed frames)
+  |
+  v
+Pass 2+: user re-seeds (--refine suggested|interval|gaps)
+  |
+  v
+crop.py (smooth crop from final trajectory)
+  |
+  v
+encoder.py (render output video)
+```
+
 ## Testing and verification
 
 - [tests/](tests/): pytest-style test files and helpers.
@@ -90,7 +170,8 @@ MLT export branches after compilation and writes XML instead of rendering.
   ISO-8859-1 compliance gate.
 - [tests/check_ascii_compliance.py](tests/check_ascii_compliance.py): Per-file
   ASCII/ISO-8859-1 checker.
-- [emwy_tools/tests/](emwy_tools/tests/): Tool-specific tests.
+- [emwy_tools/tests/](emwy_tools/tests/): Tool-specific tests including
+  track_runner unit tests (54 tests covering all v2 modules).
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the preferred test workflow.
 
@@ -109,6 +190,10 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the preferred test workflow.
   import support is implemented.
 - **Standalone tools**: Add sub-packages under [emwy_tools/](emwy_tools/) and
   document them in [docs/TOOLS.md](docs/TOOLS.md).
+- **track_runner cues**: Add new tracking cues in
+  [emwy_tools/track_runner/propagator.py](emwy_tools/track_runner/propagator.py)
+  and wire them into
+  [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py).
 
 ## Known gaps
 

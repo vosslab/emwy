@@ -370,3 +370,54 @@ def compute_crop_trajectory(
 		rect = controller.update(state)
 		crop_rects.append(rect)
 	return crop_rects
+
+
+#============================================
+def trajectory_to_crop_rects(
+	trajectory: list,
+	video_info: dict,
+	config: dict,
+) -> list:
+	"""Compute crop rectangles from a solved trajectory with gap filling.
+
+	Fills None gaps in the trajectory with a center-frame fallback state
+	before passing to compute_crop_trajectory. Pads or trims to match
+	the total frame count from video_info.
+
+	Args:
+		trajectory: List of tracking state dicts from interval_solver.
+			May contain None entries for unsolved frames.
+		video_info: Dict with frame_count, width, height, fps.
+		config: Project configuration dict.
+
+	Returns:
+		List of (x, y, w, h) crop rectangles, one per frame.
+	"""
+	frame_width = video_info["width"]
+	frame_height = video_info["height"]
+	total_frames = video_info["frame_count"]
+
+	# fill any None gaps with fallback center state
+	fallback_cx = frame_width / 2.0
+	fallback_cy = frame_height / 2.0
+	full_trajectory = []
+	for i in range(total_frames):
+		if i < len(trajectory) and trajectory[i] is not None:
+			full_trajectory.append(trajectory[i])
+		else:
+			# center-frame fallback with low confidence
+			fallback = {
+				"cx": fallback_cx,
+				"cy": fallback_cy,
+				"w": float(frame_width) * 0.3,
+				"h": float(frame_height) * 0.5,
+				"conf": 0.1,
+				"source": "fallback",
+			}
+			full_trajectory.append(fallback)
+
+	# compute smoothed crop trajectory
+	crop_rects = compute_crop_trajectory(
+		full_trajectory, frame_width, frame_height, config,
+	)
+	return crop_rects

@@ -190,49 +190,33 @@ def _parse_time_range(time_range_str: str | None) -> tuple | None:
 
 
 #============================================
-def _trajectory_to_crop_rects(
-	trajectory: list,
-	video_info: dict,
-	cfg: dict,
-) -> list:
-	"""Compute crop rectangles from a solved trajectory.
+def _seeds_to_solver_format(seeds: list) -> list:
+	"""Convert seeding-format seeds to interval_solver format.
+
+	Seeding produces torso_box as [x, y, w, h] (top-left origin) and
+	uses 'frame' as the key. The interval solver expects cx, cy, w, h
+	(center origin) and 'frame_index'.
 
 	Args:
-		trajectory: List of tracking state dicts from interval_solver.
-		video_info: Dict with frame_count, width, height, fps.
-		cfg: Project configuration dict.
+		seeds: List of seed dicts from seeding module.
 
 	Returns:
-		List of (x, y, w, h) crop rectangles, one per frame.
+		List of seed dicts with cx, cy, w, h, frame_index keys added.
 	"""
-	frame_width = video_info["width"]
-	frame_height = video_info["height"]
-	total_frames = video_info["frame_count"]
-
-	# fill any None gaps with fallback center state
-	fallback_cx = frame_width / 2.0
-	fallback_cy = frame_height / 2.0
-	full_trajectory = []
-	for i in range(total_frames):
-		if i < len(trajectory) and trajectory[i] is not None:
-			full_trajectory.append(trajectory[i])
-		else:
-			# center-frame fallback with low confidence
-			fallback = {
-				"cx": fallback_cx,
-				"cy": fallback_cy,
-				"w": float(frame_width) * 0.3,
-				"h": float(frame_height) * 0.5,
-				"conf": 0.1,
-				"source": "fallback",
-			}
-			full_trajectory.append(fallback)
-
-	# use crop module to compute smoothed trajectory
-	crop_rects = crop.compute_crop_trajectory(
-		full_trajectory, frame_width, frame_height, cfg,
-	)
-	return crop_rects
+	converted = []
+	for seed in seeds:
+		out = dict(seed)
+		# convert torso_box [x, y, w, h] to center format
+		box = seed.get("torso_box", [0, 0, 0, 0])
+		x, y, w, h = float(box[0]), float(box[1]), float(box[2]), float(box[3])
+		out["cx"] = x + w / 2.0
+		out["cy"] = y + h / 2.0
+		out["w"] = w
+		out["h"] = h
+		# map frame -> frame_index
+		out["frame_index"] = int(seed.get("frame", 0))
+		converted.append(out)
+	return converted
 
 
 #============================================
@@ -256,57 +240,6 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 	else:
 		print("  all intervals trusted -- tracking quality is good")
 	print("")
-
-
-#============================================
-def _write_diagnostics(
-	diagnostics: dict,
-	path: str,
-	fps: float,
-) -> None:
-	"""Serialize interval solver diagnostics to a JSON file.
-
-	Strips non-serializable objects (numpy arrays, nested dicts that are
-	too large) before writing.
-
-	Args:
-		diagnostics: Dict from interval_solver.solve_all_intervals().
-		path: Output JSON file path.
-		fps: Video fps for inclusion in the file.
-	"""
-	# build a JSON-safe summary (do not write full per-frame trajectory)
-	intervals_summary = []
-	for iv in diagnostics.get("intervals", []):
-		score = iv.get("interval_score", {})
-		entry = {
-			"start_frame": iv["start_frame"],
-			"end_frame": iv["end_frame"],
-			"start_s": round(iv["start_frame"] / max(1.0, fps), 3),
-			"end_s": round(iv["end_frame"] / max(1.0, fps), 3),
-			"agreement_score": round(float(score.get("agreement_score", 0.0)), 4),
-			"identity_score": round(float(score.get("identity_score", 0.0)), 4),
-			"competitor_margin": round(float(score.get("competitor_margin", 0.0)), 4),
-			"confidence": score.get("confidence", "low"),
-			"failure_reasons": score.get("failure_reasons", []),
-		}
-		intervals_summary.append(entry)
-
-	cyclical = diagnostics.get("cyclical_prior")
-	cyclical_safe = None
-	if cyclical is not None:
-		cyclical_safe = {
-			"period_frames": int(cyclical.get("period_frames", 0)),
-			"period_s": round(float(cyclical.get("period_s", 0.0)), 3),
-			"correlation": round(float(cyclical.get("correlation", 0.0)), 4),
-		}
-
-	diag_out = {
-		state_io.DIAGNOSTICS_HEADER_KEY: state_io.DIAGNOSTICS_HEADER_VALUE,
-		"fps": round(fps, 6),
-		"intervals": intervals_summary,
-		"cyclical_prior": cyclical_safe,
-	}
-	state_io.write_diagnostics(path, diag_out)
 
 
 #============================================
@@ -407,12 +340,15 @@ def main() -> None:
 			f"got {len(visible_seeds)} ({len(seeds)} total)"
 		)
 
+	# convert seeds to solver format (torso_box -> cx/cy, frame -> frame_index)
+	solver_seeds = _seeds_to_solver_format(seeds)
+
 	# run interval solver
 	print(f"running interval solver ({len(visible_seeds)} visible seeds)...")
 	t_solve_start = time.time()
 	with encoder.VideoReader(args.input_file) as reader:
 		diagnostics = interval_solver.solve_all_intervals(
-			reader, seeds, det, cfg,
+			reader, solver_seeds, det, cfg,
 		)
 	# inject fps for review module
 	diagnostics["fps"] = fps_for_diag
@@ -420,7 +356,7 @@ def main() -> None:
 	print(f"  solve complete ({t_solve_elapsed:.1f}s)")
 
 	# write diagnostics
-	_write_diagnostics(diagnostics, diag_path, fps_for_diag)
+	state_io.write_solver_diagnostics(diagnostics, diag_path, fps_for_diag)
 	print(f"  diagnostics written to {diag_path}")
 
 	# print per-interval summary (always)
@@ -470,22 +406,23 @@ def main() -> None:
 				state_io.write_seeds(seeds_path, seeds_data_out)
 				print(f"  saved {len(seeds)} seeds to {seeds_path}")
 				# re-solve with updated seeds
+				solver_seeds = _seeds_to_solver_format(seeds)
 				print("re-solving with updated seeds...")
 				t_resolve_start = time.time()
 				with encoder.VideoReader(args.input_file) as reader:
 					diagnostics = interval_solver.solve_all_intervals(
-						reader, seeds, det, cfg,
+						reader, solver_seeds, det, cfg,
 					)
 				diagnostics["fps"] = fps_for_diag
 				t_resolve_elapsed = time.time() - t_resolve_start
 				print(f"  re-solve complete ({t_resolve_elapsed:.1f}s)")
-				_write_diagnostics(diagnostics, diag_path, fps_for_diag)
+				state_io.write_solver_diagnostics(diagnostics, diag_path, fps_for_diag)
 				_print_quality_summary(diagnostics, fps_for_diag)
 
 	# compute crop trajectory from final solved trajectory
 	print("computing crop trajectory...")
 	trajectory = diagnostics.get("trajectory", [])
-	crop_rects = _trajectory_to_crop_rects(trajectory, video_info, cfg)
+	crop_rects = crop.trajectory_to_crop_rects(trajectory, video_info, cfg)
 
 	# resolve output path
 	if args.output_file is not None:
