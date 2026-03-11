@@ -16,6 +16,12 @@ import yaml
 TOOL_CONFIG_HEADER_KEY = "track_runner"
 TOOL_CONFIG_HEADER_VALUE = 1
 
+SEEDS_HEADER_KEY = "track_runner_seeds"
+SEEDS_HEADER_VALUE = 1
+
+DIAGNOSTICS_HEADER_KEY = "track_runner_diagnostics"
+DIAGNOSTICS_HEADER_VALUE = 1
+
 #============================================
 
 def default_config() -> dict:
@@ -31,7 +37,7 @@ def default_config() -> dict:
 			"detection": {
 				"kind": "yolo",
 				"model": "yolov8n",
-				"detect_interval": 4,
+				"detect_interval": 1,
 				"confidence_threshold": 0.25,
 				"nms_threshold": 0.45,
 				"fallback": "hog",
@@ -48,6 +54,10 @@ def default_config() -> dict:
 				"confidence_threshold": 0.3,
 				"reacquire_threshold": 0.5,
 				"max_missed_before_lost": 60,
+				"max_vy_fraction": 0.03,
+				"max_v_log_h": 0.05,
+				"velocity_freeze_streak": 3,
+				"jerk_threshold": 0.3,
 			},
 			"scoring": {
 				"w_detect": 0.30,
@@ -58,15 +68,22 @@ def default_config() -> dict:
 				"w_motion": 0.05,
 				"hard_gate_aspect_min": 1.5,
 				"hard_gate_aspect_max": 4.0,
-				"hard_gate_scale_band": 3.0,
+				"hard_gate_scale_band": 2.0,
+				"max_bbox_area_fraction": 0.15,
+				"vertical_limit_scale": 0.5,
+				"max_displacement_per_frame": 80,
 			},
 			"crop": {
 				"aspect": "1:1",
 				"target_fill_ratio": 0.30,
+				"far_fill_ratio": 0.50,
+				"far_threshold_px": 120,
+				"very_far_fill_ratio": 0.65,
+				"very_far_threshold_px": 60,
 				"smoothing_attack": 0.15,
 				"smoothing_release": 0.05,
 				"max_crop_velocity": 30,
-				"min_crop_size": 360,
+				"min_crop_size": 200,
 			},
 			"jersey_color": {
 				"hsv_low": None,
@@ -93,7 +110,6 @@ def default_config() -> dict:
 				"report_format": "yaml",
 			},
 		},
-		"seeds": [],
 	}
 	return config
 
@@ -162,6 +178,9 @@ def load_config(path: str) -> dict:
 			f"config missing required header key: "
 			f"{TOOL_CONFIG_HEADER_KEY} in {path}"
 		)
+	# backward compat: warn if seeds found in config file
+	if "seeds" in config:
+		print(f"warning: seeds found in config file {path}; use separate seeds file instead")
 	return config
 
 #============================================
@@ -196,6 +215,116 @@ def default_config_path(input_file: str) -> str:
 	return f"{input_file}.track_runner.config.yaml"
 
 #============================================
+
+def default_seeds_path(input_file: str) -> str:
+	"""Build the default seeds file path based on the input file.
+
+	Args:
+		input_file: Input media file path.
+
+	Returns:
+		str: Seeds file path.
+	"""
+	return f"{input_file}.track_runner.seeds.yaml"
+
+#============================================
+
+def default_diagnostics_path(input_file: str) -> str:
+	"""Build the default diagnostics file path based on the input file.
+
+	Args:
+		input_file: Input media file path.
+
+	Returns:
+		str: Diagnostics file path.
+	"""
+	return f"{input_file}.track_runner.diagnostics.yaml"
+
+#============================================
+
+def load_seeds(path: str) -> list:
+	"""Load seeds from a seeds YAML file.
+
+	Returns an empty list if the file does not exist.
+
+	Args:
+		path: Path to the seeds YAML file.
+
+	Returns:
+		list: List of seed dicts.
+	"""
+	if not os.path.isfile(path):
+		return []
+	with open(path, "r") as fh:
+		data = yaml.safe_load(fh)
+	if not isinstance(data, dict):
+		return []
+	# validate header
+	if data.get(SEEDS_HEADER_KEY) != SEEDS_HEADER_VALUE:
+		print(f"warning: seeds file missing valid header: {path}")
+		return []
+	seeds = data.get("seeds", [])
+	return seeds
+
+#============================================
+
+def write_seeds(path: str, seeds: list) -> None:
+	"""Write seeds list to a YAML file.
+
+	Args:
+		path: Output file path.
+		seeds: List of seed dicts.
+	"""
+	data = {
+		SEEDS_HEADER_KEY: SEEDS_HEADER_VALUE,
+		"seeds": seeds,
+	}
+	with open(path, "w") as fh:
+		yaml.dump(data, fh, default_flow_style=False, sort_keys=False)
+	return
+
+#============================================
+
+def load_diagnostics(path: str) -> dict:
+	"""Load diagnostics from a diagnostics YAML file.
+
+	Returns an empty dict if the file does not exist.
+
+	Args:
+		path: Path to the diagnostics YAML file.
+
+	Returns:
+		dict: Diagnostics dictionary.
+	"""
+	if not os.path.isfile(path):
+		return {}
+	with open(path, "r") as fh:
+		data = yaml.safe_load(fh)
+	if not isinstance(data, dict):
+		return {}
+	# validate header
+	if data.get(DIAGNOSTICS_HEADER_KEY) != DIAGNOSTICS_HEADER_VALUE:
+		print(f"warning: diagnostics file missing valid header: {path}")
+		return {}
+	diag = dict(data)
+	# remove header key from returned dict
+	diag.pop(DIAGNOSTICS_HEADER_KEY, None)
+	return diag
+
+#============================================
+
+def write_diagnostics(path: str, diag: dict) -> None:
+	"""Write diagnostics dict to a YAML file.
+
+	Args:
+		path: Output file path.
+		diag: Diagnostics dictionary.
+	"""
+	data = {DIAGNOSTICS_HEADER_KEY: DIAGNOSTICS_HEADER_VALUE}
+	data.update(diag)
+	with open(path, "w") as fh:
+		yaml.dump(data, fh, default_flow_style=False, sort_keys=False)
+	return
 
 def merge_config(base: dict, override: dict) -> dict:
 	"""

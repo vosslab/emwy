@@ -1,8 +1,116 @@
 # Changelog
 
+## 2026-03-11
+
+### Removals and Deprecations
+- Deleted `emwy_tools/tests/test_stabilize_building.py` (4 integration tests requiring ffmpeg/vid.stab).
+- Deleted `emwy_tools/tests/test_emwy_yaml_writer.py` (5 unittest-based tests).
+- Trimmed 24 low-value tests from `emwy_tools/tests/test_track_runner.py`: removed config key-existence checks (5), signature-inspection tests (6), trivially obvious tests (7), redundant debug overlay test (1), duplicate seeding test (1), low-value detection test (1), and 3 of 6 quality grade tests. Remaining: 60 tests.
+
+### Additions and New Features
+- Added `_find_big_movement_regions()` to detect regions where the tracked bbox has sudden large displacements normalized by person height, flagging possible wrong-person switches. Uses `movement_threshold=0.15` (lower than jerk detection's 0.3) to catch subtler jumps across all frame sources.
+- Added `_find_area_change_regions()` to detect regions where the bbox area changes suddenly (>50% per frame gap), flagging possible target switches where the tracker locks onto a person of different size.
+- `--add-seeds` now targets six signal sources: problem-region streaks, seedless gaps, stall regions, movement regions, area change regions, and interval-based targets (when `--seed-interval` is also provided). Summary print shows counts for all six source types.
+- Added `_generate_interval_targets()` to produce regular-interval seed targets for `--add-seeds`, skipping frames near existing seeds (within 2*fps dedup distance).
+- Added `bbox_all_frames` key to tracking diagnostics storing `[frame_idx, cx, cy, w, h]` for all frames with a bbox, enabling movement and area change analysis on subsequent `--add-seeds` runs.
+- Added very-far adaptive crop tier: when the runner's bbox height is below `very_far_threshold_px` (default 60px), the fill ratio increases to `very_far_fill_ratio` (default 0.65) for a much tighter crop. Linear interpolation between very-far (60px) and far (120px) thresholds. A 54px runner now fills ~27% of the crop instead of ~15%.
+- Lowered `min_crop_size` from 360 to 200 pixels, allowing tighter crops for very small/far subjects without the minimum clamping the adaptive fill ratio system.
+- Added `max_v_log_h` cap (default 0.05) to Kalman size velocity in tracker, mirroring the existing `max_vy_fraction` vertical velocity cap. Prevents runaway bbox growth when the Kalman filter learns a growing-size trend.
+- Added `max_bbox_area_fraction` hard gate (default 0.15) in scoring to reject any candidate detection whose area exceeds 15% of the frame area. Prevents the tracker from locking onto a nearby bystander filling the frame.
+- Tightened default `hard_gate_scale_band` from 3.0 to 2.0 (allows up to 2x area change per frame instead of 3x) to reduce compounding size jumps.
+- Frame dimensions (`frame_width`, `frame_height`) now passed into scoring config so the area fraction gate can compute the frame area.
+- Added adaptive fill ratio to crop controller: when the runner is far away (small bounding box), the crop is tighter so the runner still fills a meaningful portion of the output frame. Controlled by `far_fill_ratio` (default 0.50) and `far_threshold_px` (default 120px) under `settings.crop`. Linear interpolation between far and baseline fill ratios.
+- Split track_runner config into three separate YAML files: `{video}.track_runner.config.yaml` (settings only), `{video}.track_runner.seeds.yaml` (seed bounding boxes), and `{video}.track_runner.diagnostics.yaml` (tracking diagnostics). Keeps settings file small and manageable.
+- Added `config.default_seeds_path()`, `config.default_diagnostics_path()`, `config.load_seeds()`, `config.write_seeds()`, `config.load_diagnostics()`, `config.write_diagnostics()` for handling the new file layout.
+- Added backward compatibility warning when seeds are found in the main config file.
+
+### Fixes and Maintenance
+- Improved debug overlay bounding box visibility: added black outline behind the colored rectangle for contrast, crosshair at bbox center, and box coordinate text label below the frame info.
+
+### Behavior or Interface Changes
+- Changed left/right arrow scrub step in seed selection GUI from 0.5 seconds to 0.2 seconds for finer navigation.
+- `default_config()` no longer includes a `seeds` key; seeds are stored in a separate file.
+- CLI now reads/writes seeds and diagnostics from/to their own YAML files instead of embedding them in the main config.
+- Migrated existing `Track_Test-1.mov` config from 38,502 lines to 56 lines by splitting seeds (2,794 lines) and diagnostics (35,213 lines) into separate files.
+
+### Developer Tests and Notes
+- Added tests for seeds/diagnostics round-trip, missing file handling, adaptive crop keys, and adaptive fill ratio behavior (far vs close runner).
+- Removed `test_config_round_trip` (no longer applicable after seeds removal from default config).
+
 ## 2026-03-10
 
 ### Additions and New Features
+- Added `_find_seedless_gaps()` helper to detect large stretches of video with no seeds and place seed targets every ~5 seconds within those gaps. Gaps shorter than 15 seconds are ignored.
+- Added `_find_stall_regions()` helper to detect regions where the tracked bbox barely moves (< 2% of frame width), indicating the tracker may have latched onto a stationary person. Skips first/last 5 seconds of video.
+- `--add-seeds` now targets three signal sources: problem-region streaks, seedless gaps, and stall regions. Targets are merged, deduplicated (within 2 seconds), and presented to the user with source labels.
+- Per-frame bbox center positions (`bbox_positions`) now saved in `tracking_diagnostics` for stall detection on subsequent `--add-seeds` runs without re-tracking.
+- Added motion jerkiness detection via `tracker.find_jerk_regions()` to flag sudden bbox jumps between consecutive detected frames (likely wrong-person switches). Uses `jerk_threshold` config key (default 0.3) to control sensitivity.
+- `--add-seeds` GUI now shows forward (blue) and backward (magenta) prediction overlays at problem frames so users can see where each tracking pass thought the runner was.
+- Per-frame forward/backward predictions stored in `tracking_diagnostics.predictions` for bad streak frames, along with `jerk_regions` list.
+- Jerk regions are merged with prediction-gap streaks for `--add-seeds` targeting.
+
+### Behavior or Interface Changes
+- `tracker.run_tracker()` now returns a 4-tuple `(crop_rects, frame_states, forward_states, backward_states)` instead of a 2-tuple.
+- Tracking quality grade downgrades by one letter when jerk regions are detected.
+- Quality report now prints jerk region count when nonzero.
+- Merged debug overlay into the single cropped output video. When `--debug` is passed, tracking bounding boxes and info text are drawn directly on the cropped/resized frames instead of producing a separate full-resolution debug video. Only one output video is produced regardless of `--debug`.
+- Removed `encode_parallel()`, `encode_debug_video()`, and `draw_debug_overlay()` from encoder.py, replaced by `draw_debug_overlay_cropped()` which transforms tracking bbox coordinates into crop-space.
+- Updated `--debug` help text to reflect the new behavior.
+
+### Previous additions and new features
+- Added `max_displacement_per_frame` hard gate (default 80 pixels) to track_runner scoring. This absolute pixel ceiling prevents wild crop jumps regardless of how wide the search radius grows during missed detection streaks. Configurable under `settings.scoring.max_displacement_per_frame`.
+- Added absence markers to track_runner seeding UI: press `n` to mark the runner as "not in frame" and `o` to mark as "obstructed" during seed selection. These create minimal seed dicts with a `status` field instead of bounding box data.
+- Tracker now handles absence marker seeds: `not_in_frame` drops confidence to floor and marks frames as `source: "absent"`, while `obstructed` bumps the missed streak but lets Kalman prediction continue normally.
+- Gap interpolation now skips stretches containing absent frames, avoiding interpolation through regions where the runner is known to be gone.
+- Quality report now displays absent frame count and percentage when nonzero.
+- Minimum seed validation now filters to visible seeds only, so absence markers alone do not satisfy the seed requirement.
+- `_find_worst_streaks()` now counts `absent` frames alongside `predicted` and `interpolated` for streak detection, so problem regions with absence markers are correctly identified for `--add-seeds`.
+- Added parallel detection pass to track_runner: splits frame range across N worker processes, each with its own `cv2.VideoCapture` and YOLO detector instance. Controlled by `-w`/`--workers` flag (default: half of CPU cores).
+- Added parallel forward+backward Kalman tracking passes using `ThreadPoolExecutor`. Both passes read from the same cached detections (read-only) and produce independent results, so no data races.
+- Added parallel crop+debug encoding via `encode_parallel()` in encoder.py: single decode pass writes to both crop and debug ffmpeg pipes concurrently, saving one full video decode when `--debug` is used.
+- Added `-w`/`--workers` CLI flag to track_runner for controlling parallel worker count. Default auto-detects to half of CPU cores.
+- Added wall-clock timing instrumentation to track_runner CLI: prints elapsed time for tracking, encoding, and audio mux phases, plus total time at the end.
+- Added `-d`/`--debug` CLI flag to track_runner (replaces `--write-debug-video`) that renders a full-resolution debug video with colored tracking bbox overlay (green=detected, yellow=predicted, orange=interpolated, red=lost), crop rectangle, frame number, source label, and confidence bar for visual inspection of tracking quality.
+- Added `draw_debug_overlay()` and `encode_debug_video()` functions to `emwy_tools/track_runner/encoder.py` for debug video rendering.
+- Added missing config keys to `default_config()`: `max_vy_fraction` and `velocity_freeze_streak` under `settings.tracking`, and `vertical_limit_scale` under `settings.scoring`, so all tracker tunables are in one place instead of scattered as hardcoded fallbacks.
+
+### Fixes and Maintenance
+- Fixed `_find_worst_streaks()` counting only `predicted` frames but missing `interpolated` frames. After gap interpolation (phase 5), predicted gaps were relabeled as `interpolated`, causing `--add-seeds` to report "no problem regions" even when many existed. Now counts both `predicted` and `interpolated` frames as missed-detection streaks.
+- Fixed quality grade thresholds that were far too lenient (A was >= 15% detection). Raised to meaningful values: A >= 85%, B >= 70%, C >= 50%, D >= 30%.
+- Fixed seed reinit logic in bidirectional tracking that always re-initialized Kalman at the init seed frame due to an `or` clause defeating the guard (`if seed is not init_seed or frame_idx == init_seed["frame_index"]`). Removed the `or` clause so the init seed is correctly skipped.
+- Renamed `--write-debug-video` flag to `-d`/`--debug` for convenience.
+- Increased `_find_worst_streaks` default `max_targets` from 10 to 24 so more problem regions are saved for `--add-seeds`.
+
+### Previous additions and new features
+- Added arrow key navigation (LEFT/RIGHT) to seeding UI for scrubbing forward/backward by 0.5 seconds when the runner is not visible at the exact seed interval frame.
+- Added `--add-seeds` CLI flag to `track_runner`: reads saved problem regions from a previous render and opens the seed UI at those frames so the user can add targeted seeds. New seeds merge with existing ones and tracking re-runs.
+- Normal render now saves `tracking_diagnostics` to the config YAML, including full `bad_streaks` data (start frame and length for each), so `--add-seeds` can read them back without re-running the tracker.
+- `--add-seeds` now places multiple seed targets across long streaks (~1 every 5 seconds of drift) instead of a single midpoint, so long problem regions get adequate coverage.
+- Normal render now prints problem regions and a `--add-seeds` hint when bad streaks are found.
+- Added `collect_seeds_at_frames()` in `seeding.py` for collecting seeds at specific frame indices rather than fixed intervals.
+- Added Kalman velocity freeze after 10+ consecutive missed detections to prevent predicted position from drifting away from last known location.
+- Refactored `tracker.py` from forward-only to bidirectional tracking. Detection runs once and is cached, then Kalman runs both forward and backward from seeds. Per-frame results are merged by confidence, so frames before the first seed and after the last seed both get high-quality tracking.
+- Added per-frame vertical velocity cap (`max_vy_fraction`, default 0.03x predicted person height per frame) on Kalman state to prevent upward drift. Scales with person size so closer runners get proportionally more slack.
+- Added vertical displacement hard gate (`vertical_limit_scale`, default 0.5x predicted person height) to reject candidates that jump too far vertically. Scales with the tracked person's bounding box so a closer (larger) runner allows more vertical motion than a distant one.
+- Added dynamic search radius widening in hard gates when detections are being missed (grows up to 3x after sustained miss streak), improving reacquisition after occlusion.
+- Added quality report to render output: letter grade (A-F) based on detection rate and worst drift duration, problem region listing with frame counts and durations, and actionable next-step guidance.
+- When `--add-seeds` is used, the quality report includes a before/after comparison showing detection rate, max streak, and problem region count changes.
+- Added post-merge gap interpolation (phase 5) to bidirectional tracker: when the runner is obstructed or undetected across a stretch, the tracker linearly interpolates the bounding box between the last detected frame before the gap and the first detected frame after the gap, producing smooth camera transitions instead of a frozen crop that jumps when detection resumes.
+- Quality report now shows interpolated frame count and percentage when gap smoothing is active.
+
+### Behavior or Interface Changes
+- Removed `--use-default-config` CLI flag from `track_runner`; auto-loading the per-input config file (or creating defaults) is now the default behavior. Use `-c`/`--config` to override with a specific path.
+- Changed default `detect_interval` from 4 to 1 (detect every frame). Person tracking is a hard problem and skipping frames costs more in missed detections than it saves in speed.
+- Lowered velocity freeze threshold from 10 to 3 consecutive missed detections (`velocity_freeze_streak` config key). With detect_interval=1, every miss is a real detection failure so velocity should freeze faster to prevent drift.
+
+### Fixes and Maintenance
+- Fixed problem regions in quality report displaying in length order instead of chronological order.
+- Quality report now shows detection hit rate (matched/attempted) instead of raw frame percentage, making it clear how often detection succeeds when it runs.
+
+### Previous additions and new features
+- Created `emwy_tools/track_runner/tracker.py` with `run_tracker()` function: forward-pass tracking loop that orchestrates Kalman prediction, YOLO detection, candidate scoring, and crop control into per-frame crop rectangles.
+- Wired full tracking pipeline into `emwy_tools/track_runner/cli.py`: YOLO detector init, seed collection (interactive or saved), tracker loop, cropped video encoding, and audio muxing. Tool now produces a cropped output video following a runner.
+- Added `emwy_tools/run_tool.py` dispatcher script that lists available tools or runs one by name with passthrough args.
 - Renamed `tools/` to `emwy_tools/` via `git mv` for branding and clarity.
 - Created `emwy_tools/tools_common.py` with shared utilities: `ensure_file_exists()`, `check_dependency()`, `run_process()`, `parse_time_seconds()`, `fps_fraction_to_float()`, `probe_video_stream()`, `probe_duration_seconds()`.
 - Split `emwy_tools/silence_annotator.py` (1867 lines) into `emwy_tools/silence_annotator/` sub-package with `detection.py`, `config.py`, and `silence_annotator.py` entry point.

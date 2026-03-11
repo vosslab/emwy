@@ -243,13 +243,21 @@ def collect_seeds(
 	if frame_interval < 1:
 		frame_interval = 1
 	seed_frame_indices = list(range(0, total_frames, frame_interval))
-	# collect seeds interactively
+	# scrub step is 0.2 seconds worth of frames
+	scrub_step = max(1, int(round(fps * 0.2)))
+	# collect seeds interactively using a mutable index pointer
 	seeds = []
-	for frame_idx in seed_frame_indices:
-		# seek to the target frame
+	list_idx = 0
+	current_frame = seed_frame_indices[0] if seed_frame_indices else 0
+	while list_idx < len(seed_frame_indices):
+		# seek to the current frame position
+		frame_idx = current_frame
 		cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
 		ret, frame = cap.read()
 		if not ret:
+			list_idx += 1
+			if list_idx < len(seed_frame_indices):
+				current_frame = seed_frame_indices[list_idx]
 			continue
 		time_sec = frame_idx / fps
 		# show frame and let user draw a rectangle
@@ -258,7 +266,30 @@ def collect_seeds(
 			# user pressed ESC or q to finish
 			break
 		if drawn_box == "skip":
-			# user pressed spacebar to skip this frame
+			# user pressed spacebar to skip to next seed interval
+			list_idx += 1
+			if list_idx < len(seed_frame_indices):
+				current_frame = seed_frame_indices[list_idx]
+			continue
+		if drawn_box == "prev":
+			# scrub backward by 0.2 seconds
+			current_frame = max(0, current_frame - scrub_step)
+			continue
+		if drawn_box == "next":
+			# scrub forward by 0.2 seconds
+			current_frame = min(total_frames - 1, current_frame + scrub_step)
+			continue
+		# handle absence markers (not_in_frame / obstructed)
+		if drawn_box in ("not_in_frame", "obstructed"):
+			seed = {
+				"frame_index": frame_idx,
+				"time_seconds": round(time_sec, 3),
+				"status": drawn_box,
+			}
+			seeds.append(seed)
+			list_idx += 1
+			if list_idx < len(seed_frame_indices):
+				current_frame = seed_frame_indices[list_idx]
 			continue
 		# process the drawn rectangle into a seed
 		norm_box = normalize_seed_box(drawn_box, config)
@@ -277,8 +308,117 @@ def collect_seeds(
 			"color_histogram": color_hist,
 		}
 		seeds.append(seed)
+		# advance to next seed interval after successful seed
+		list_idx += 1
+		if list_idx < len(seed_frame_indices):
+			current_frame = seed_frame_indices[list_idx]
 	cap.release()
 	cv2.destroyAllWindows()
+	cv2.waitKey(1)
+	return seeds
+
+
+#============================================
+def collect_seeds_at_frames(
+	video_path: str,
+	target_frames: list,
+	config: dict,
+	detector: object | None = None,
+	predictions: dict | None = None,
+) -> list:
+	"""Collect seed points at specific frame indices.
+
+	Opens an interactive UI at each target frame, with arrow key
+	scrubbing so the user can find the runner nearby.
+
+	Args:
+		video_path: Path to the input video file.
+		target_frames: List of frame indices to seed at.
+		config: Configuration dict with settings.seeding section.
+		detector: Optional person detector with a detect(frame) method.
+		predictions: Optional dict mapping frame_index to prediction
+			dicts with forward/backward bbox data for overlay display.
+
+	Returns:
+		List of seed dicts (same format as collect_seeds).
+	"""
+	if not target_frames:
+		return []
+	# open the video file
+	cap = cv2.VideoCapture(video_path)
+	if not cap.isOpened():
+		raise RuntimeError(f"cannot open video: {video_path}")
+	fps = cap.get(cv2.CAP_PROP_FPS)
+	total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+	if fps <= 0:
+		raise RuntimeError(f"invalid fps from video: {video_path}")
+	# scrub step is 0.2 seconds worth of frames
+	scrub_step = max(1, int(round(fps * 0.2)))
+	# sort target frames
+	sorted_targets = sorted(target_frames)
+	seeds = []
+	list_idx = 0
+	current_frame = sorted_targets[0]
+	while list_idx < len(sorted_targets):
+		frame_idx = current_frame
+		cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+		ret, frame = cap.read()
+		if not ret:
+			list_idx += 1
+			if list_idx < len(sorted_targets):
+				current_frame = sorted_targets[list_idx]
+			continue
+		time_sec = frame_idx / fps
+		# look up predictions for this frame if available
+		frame_preds = None
+		if predictions is not None:
+			frame_preds = predictions.get(frame_idx)
+		drawn_box = _interactive_draw_box(frame, predictions=frame_preds)
+		if drawn_box is None:
+			break
+		if drawn_box == "skip":
+			list_idx += 1
+			if list_idx < len(sorted_targets):
+				current_frame = sorted_targets[list_idx]
+			continue
+		if drawn_box == "prev":
+			current_frame = max(0, current_frame - scrub_step)
+			continue
+		if drawn_box == "next":
+			current_frame = min(total_frames - 1, current_frame + scrub_step)
+			continue
+		# handle absence markers (not_in_frame / obstructed)
+		if drawn_box in ("not_in_frame", "obstructed"):
+			seed = {
+				"frame_index": frame_idx,
+				"time_seconds": round(time_sec, 3),
+				"status": drawn_box,
+			}
+			seeds.append(seed)
+			list_idx += 1
+			if list_idx < len(sorted_targets):
+				current_frame = sorted_targets[list_idx]
+			continue
+		# process the drawn rectangle into a seed
+		norm_box = normalize_seed_box(drawn_box, config)
+		jersey_hsv = extract_jersey_color(frame, norm_box)
+		color_hist = extract_color_histogram(frame, norm_box)
+		full_box = _resolve_full_person_box(frame, norm_box, detector)
+		seed = {
+			"frame_index": frame_idx,
+			"time_seconds": round(time_sec, 3),
+			"torso_box": norm_box,
+			"full_person_box": full_box,
+			"jersey_hsv": list(jersey_hsv),
+			"color_histogram": color_hist,
+		}
+		seeds.append(seed)
+		list_idx += 1
+		if list_idx < len(sorted_targets):
+			current_frame = sorted_targets[list_idx]
+	cap.release()
+	cv2.destroyAllWindows()
+	cv2.waitKey(1)
 	return seeds
 
 
@@ -312,16 +452,59 @@ def _resolve_full_person_box(
 
 
 #============================================
-def _interactive_draw_box(frame: numpy.ndarray) -> list | str | None:
+def _draw_prediction_box(
+	frame: numpy.ndarray, prediction: dict,
+	color: tuple, label: str,
+) -> None:
+	"""Draw a prediction bounding box on a frame.
+
+	Converts center-format bbox (cx, cy, w, h) to corners and draws
+	a labeled rectangle with confidence value.
+
+	Args:
+		frame: BGR image to draw on (modified in place).
+		prediction: Dict with bbox [cx, cy, w, h], source, and confidence.
+		color: BGR color tuple for the rectangle.
+		label: Label string like "FWD" or "BWD".
+	"""
+	bbox = prediction.get("bbox")
+	if bbox is None or len(bbox) != 4:
+		return
+	cx, cy, w, h = bbox
+	# convert center format to corner format
+	x1 = int(cx - w / 2.0)
+	y1 = int(cy - h / 2.0)
+	x2 = int(cx + w / 2.0)
+	y2 = int(cy + h / 2.0)
+	# draw rectangle
+	cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+	# draw label with confidence
+	conf = prediction.get("confidence", 0.0)
+	label_text = f"{label} {conf:.2f}"
+	cv2.putText(
+		frame, label_text,
+		(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+		color, 1,
+	)
+
+
+#============================================
+def _interactive_draw_box(
+	frame: numpy.ndarray,
+	predictions: dict | None = None,
+) -> list | str | None:
 	"""Show a frame and let the user draw a rectangle interactively.
 
 	Uses cv2.imshow with a mouse callback for click-drag drawing.
 
 	Args:
 		frame: BGR image to display.
+		predictions: Optional dict with forward/backward prediction
+			data to draw as colored overlays on the frame.
 
 	Returns:
 		Drawn box as [x, y, w, h], or "skip" if spacebar pressed,
+		or "prev"/"next" if left/right arrow pressed,
 		or None if ESC/q pressed to finish.
 	"""
 	# mutable state for the mouse callback closure
@@ -332,6 +515,16 @@ def _interactive_draw_box(frame: numpy.ndarray) -> list | str | None:
 		"done": False,
 	}
 	display_frame = frame.copy()
+	# draw prediction overlays if available
+	if predictions is not None:
+		# forward prediction: blue
+		fwd = predictions.get("forward")
+		if fwd is not None:
+			_draw_prediction_box(display_frame, fwd, (255, 100, 0), "FWD")
+		# backward prediction: magenta
+		bwd = predictions.get("backward")
+		if bwd is not None:
+			_draw_prediction_box(display_frame, bwd, (255, 0, 255), "BWD")
 
 	#============================================
 	def mouse_callback(event: int, x: int, y: int, flags: int, param: object) -> None:
@@ -369,8 +562,14 @@ def _interactive_draw_box(frame: numpy.ndarray) -> list | str | None:
 		)
 		cv2.putText(
 			show,
-			"SPACE=skip, ESC/q=done",
+			"LEFT/RIGHT=scrub, SPACE=skip, ESC/q=done",
 			(10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+			(0, 255, 255), 2,
+		)
+		cv2.putText(
+			show,
+			"n=not in frame, o=obstructed",
+			(10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
 			(0, 255, 255), 2,
 		)
 		# draw the rectangle preview while dragging
@@ -386,10 +585,23 @@ def _interactive_draw_box(frame: numpy.ndarray) -> list | str | None:
 		# ESC or q: finish collecting seeds
 		if key == 27 or key == 113:
 			cv2.destroyWindow(SEED_WINDOW_TITLE)
+			cv2.waitKey(1)
 			return None
 		# spacebar: skip this frame
 		if key == 32:
 			return "skip"
+		# left arrow: scrub backward
+		if key == 81 or key == 2:
+			return "prev"
+		# right arrow: scrub forward
+		if key == 83 or key == 3:
+			return "next"
+		# n key: mark runner as not in frame
+		if key == 110:
+			return "not_in_frame"
+		# o key: mark runner as obstructed
+		if key == 111:
+			return "obstructed"
 		# check if mouse drawing finished
 		if state["done"]:
 			# compute box from the two corner points

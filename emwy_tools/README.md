@@ -3,6 +3,12 @@
 Utility scripts live here and are not part of the core render pipeline.
 Each tool is a sub-package with a shebang-runnable entry point script.
 
+Run `run_tool.py` to list available tools or dispatch to one:
+```bash
+source source_me.sh && python emwy_tools/run_tool.py
+source source_me.sh && python emwy_tools/run_tool.py silence_annotator -- --help
+```
+
 Quick index:
 - `silence_annotator/silence_annotator.py` detect silence and emit an EMWY v2 timeline YAML
 - `stabilize_building/stabilize_building.py` global stabilize and emit a derived stabilized video + sidecar report

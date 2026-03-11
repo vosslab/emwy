@@ -287,12 +287,18 @@ def create_detector(config: dict) -> YoloDetector | HogDetector:
 	if kind == "yolo":
 		weights_path = ensure_yolo_weights()
 		if weights_path:
-			return YoloDetector(
+			det = YoloDetector(
 				weights_path,
 				confidence_threshold=confidence_threshold,
 				nms_threshold=nms_threshold,
 			)
+			# store config for parallel worker recreation
+			det._config = config
+			return det
 		# fall back to HOG if weights unavailable
 		print("WARNING: YOLO weights unavailable, falling back to HOG detector")
 	# HOG detector
-	return HogDetector(confidence_threshold=confidence_threshold)
+	det = HogDetector(confidence_threshold=confidence_threshold)
+	# store config for parallel worker recreation
+	det._config = config
+	return det

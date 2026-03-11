@@ -60,10 +60,14 @@ class CropController:
 		frame_height: int,
 		aspect_ratio: float = 1.0,
 		target_fill_ratio: float = 0.30,
+		far_fill_ratio: float = 0.50,
+		far_threshold_px: int = 120,
+		very_far_fill_ratio: float = 0.65,
+		very_far_threshold_px: int = 60,
 		smoothing_attack: float = 0.15,
 		smoothing_release: float = 0.05,
 		max_crop_velocity: float = 30.0,
-		min_crop_size: int = 360,
+		min_crop_size: int = 200,
 		deadband_fraction: float = 0.02,
 	):
 		"""Initialize the crop controller.
@@ -72,7 +76,11 @@ class CropController:
 			frame_width: Width of the source video frame in pixels.
 			frame_height: Height of the source video frame in pixels.
 			aspect_ratio: Output crop width/height ratio (1.0 for square).
-			target_fill_ratio: Fraction of crop height the target should fill.
+			target_fill_ratio: Fraction of crop height the target should fill (baseline).
+			far_fill_ratio: Fill ratio when runner is small (far away).
+			far_threshold_px: Bbox height at which far_fill_ratio fully applies.
+			very_far_fill_ratio: Fill ratio when runner is very small (very far away).
+			very_far_threshold_px: Bbox height at which very_far_fill_ratio fully applies.
 			smoothing_attack: Alpha for large corrections (fast response).
 			smoothing_release: Alpha for small corrections (slow drift).
 			max_crop_velocity: Maximum pixels the crop center can move per frame.
@@ -83,6 +91,10 @@ class CropController:
 		self.frame_height = frame_height
 		self.aspect_ratio = aspect_ratio
 		self.target_fill_ratio = target_fill_ratio
+		self.far_fill_ratio = far_fill_ratio
+		self.far_threshold_px = far_threshold_px
+		self.very_far_fill_ratio = very_far_fill_ratio
+		self.very_far_threshold_px = very_far_threshold_px
 		self.smoothing_attack = smoothing_attack
 		self.smoothing_release = smoothing_release
 		self.max_crop_velocity = max_crop_velocity
@@ -114,8 +126,23 @@ class CropController:
 		fw, fh = frame_size
 		tcx, tcy, tw, th = target_box
 
-		# Step 1: compute desired crop size from target height
-		desired_crop_h = th / self.target_fill_ratio
+		# Step 1: compute adaptive fill ratio based on runner height
+		# three tiers: very far, far, and normal with linear interpolation
+		if th <= self.very_far_threshold_px:
+			# very far: tightest crop
+			fill = self.very_far_fill_ratio
+		elif th <= self.far_threshold_px:
+			# interpolate between very_far and far fill ratios
+			t = (th - self.very_far_threshold_px) / (self.far_threshold_px - self.very_far_threshold_px)
+			fill = self.very_far_fill_ratio + t * (self.far_fill_ratio - self.very_far_fill_ratio)
+		elif th >= self.far_threshold_px * 3:
+			# normal/close: baseline fill ratio
+			fill = self.target_fill_ratio
+		else:
+			# interpolate between far and baseline fill ratios
+			t = (th - self.far_threshold_px) / (self.far_threshold_px * 2)
+			fill = self.far_fill_ratio + t * (self.target_fill_ratio - self.far_fill_ratio)
+		desired_crop_h = th / fill
 		# clamp crop height to valid range
 		desired_crop_h = max(self.min_crop_size, min(desired_crop_h, fh))
 		# compute crop width from aspect ratio
@@ -284,13 +311,21 @@ def create_crop_controller(
 	smoothing_attack = float(crop_cfg.get("smoothing_attack", 0.15))
 	smoothing_release = float(crop_cfg.get("smoothing_release", 0.05))
 	max_crop_velocity = float(crop_cfg.get("max_crop_velocity", 30.0))
-	min_crop_size = int(crop_cfg.get("min_crop_size", 360))
+	min_crop_size = int(crop_cfg.get("min_crop_size", 200))
+	far_fill_ratio = float(crop_cfg.get("far_fill_ratio", 0.50))
+	far_threshold_px = int(crop_cfg.get("far_threshold_px", 120))
+	very_far_fill_ratio = float(crop_cfg.get("very_far_fill_ratio", 0.65))
+	very_far_threshold_px = int(crop_cfg.get("very_far_threshold_px", 60))
 
 	controller = CropController(
 		frame_width=frame_width,
 		frame_height=frame_height,
 		aspect_ratio=aspect_ratio,
 		target_fill_ratio=target_fill_ratio,
+		far_fill_ratio=far_fill_ratio,
+		far_threshold_px=far_threshold_px,
+		very_far_fill_ratio=very_far_fill_ratio,
+		very_far_threshold_px=very_far_threshold_px,
 		smoothing_attack=smoothing_attack,
 		smoothing_release=smoothing_release,
 		max_crop_velocity=max_crop_velocity,

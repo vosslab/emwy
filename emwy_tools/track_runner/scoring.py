@@ -29,13 +29,17 @@ def _bbox_center(bbox: list) -> tuple:
 
 
 #============================================
-def apply_hard_gates(candidates: list, prediction_state: dict, config: dict) -> list:
+def apply_hard_gates(
+	candidates: list, prediction_state: dict, config: dict,
+	missed_streak: int = 0,
+) -> list:
 	"""Filter candidates by hard gates, rejecting those that fail any gate.
 
 	Gates applied:
 		1. Search radius: candidate center within scaled predicted height.
-		2. Aspect ratio: candidate h/w within configured bounds.
-		3. Scale band: candidate area within factor of predicted area.
+		2. Vertical limit: candidate vertical displacement within fraction of search radius.
+		3. Aspect ratio: candidate h/w within configured bounds.
+		4. Scale band: candidate area within factor of predicted area.
 
 	Args:
 		candidates: List of detection dicts with "bbox", "confidence", "class_id".
@@ -57,30 +61,62 @@ def apply_hard_gates(candidates: list, prediction_state: dict, config: dict) -> 
 	aspect_min = scoring_cfg.get("hard_gate_aspect_min", 1.5)
 	aspect_max = scoring_cfg.get("hard_gate_aspect_max", 4.0)
 	scale_band = scoring_cfg.get("hard_gate_scale_band", 3.0)
+	# vertical motion limit as fraction of predicted person height
+	# runners move mostly horizontally; vertical jumps are usually wrong
+	# scales with person size: closer runner = larger box = more slack
+	vertical_limit_scale = scoring_cfg.get("vertical_limit_scale", 0.5)
 
 	# Compute the effective search radius
 	max_search_radius = max(min_search_radius, search_radius_scale * pred_h)
+
+	# widen search radius when detection is being missed
+	# grows by 5% per missed frame, up to 3x base radius
+	if missed_streak > 5:
+		widen_factor = min(3.0, 1.0 + (missed_streak - 5) / 20.0)
+		max_search_radius = max_search_radius * widen_factor
 
 	passed = []
 	for cand in candidates:
 		cand_cx, cand_cy, cand_w, cand_h = _bbox_center(cand["bbox"])
 
-		# Gate 1: search radius
+		# Gate 1: search radius (Euclidean distance)
 		dx = cand_cx - pred_cx
 		dy = cand_cy - pred_cy
 		dist = math.sqrt(dx * dx + dy * dy)
 		if dist > max_search_radius:
 			continue
 
-		# Gate 2: aspect ratio (height / width)
+		# Gate 1b: max displacement per frame (absolute pixel ceiling)
+		# prevents wild jumps even when search radius is widened
+		max_displacement = scoring_cfg.get("max_displacement_per_frame", 80)
+		if dist > max_displacement:
+			continue
+
+		# Gate 2: vertical displacement limit
+		# runners move mostly horizontally, so vertical jumps are
+		# capped relative to the predicted person height -- a closer
+		# (bigger) person allows more vertical motion than a distant one
+		max_vertical = pred_h * vertical_limit_scale
+		if abs(dy) > max_vertical:
+			continue
+
+		# Gate 3: aspect ratio (height / width)
 		if cand_w <= 0 or cand_h <= 0:
 			continue
 		aspect = cand_h / cand_w
 		if aspect < aspect_min or aspect > aspect_max:
 			continue
 
-		# Gate 3: scale band (area comparison)
+		# Gate 3b: max bbox area fraction (reject detections too large)
 		cand_area = cand_w * cand_h
+		max_area_frac = scoring_cfg.get("max_bbox_area_fraction", 0.15)
+		frame_w = config.get("frame_width", 1920)
+		frame_h = config.get("frame_height", 1080)
+		max_area = frame_w * frame_h * max_area_frac
+		if cand_area > max_area:
+			continue
+
+		# Gate 4: scale band (area comparison)
 		if pred_area > 0:
 			if cand_area < pred_area / scale_band:
 				continue

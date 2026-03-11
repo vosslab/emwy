@@ -29,15 +29,6 @@ HAS_TEST_VIDEO = os.path.isfile(TEST_VIDEO)
 
 
 #============================================
-def test_config_default_config_returns_dict() -> None:
-	"""default_config() returns dict with 'track_runner' key."""
-	import track_runner.config as config_mod
-	cfg = config_mod.default_config()
-	assert isinstance(cfg, dict)
-	assert "track_runner" in cfg
-
-
-#============================================
 def test_config_default_config_has_all_sections() -> None:
 	"""settings has detection, tracking, scoring, crop, seeding, output."""
 	import track_runner.config as config_mod
@@ -70,29 +61,6 @@ def test_config_validate_fails_on_missing_settings() -> None:
 	import track_runner.config as config_mod
 	with pytest.raises(RuntimeError):
 		config_mod.validate_config({"track_runner": 1})
-
-
-#============================================
-def test_config_round_trip() -> None:
-	"""write_config then load_config produces identical dict."""
-	import track_runner.config as config_mod
-	cfg = config_mod.default_config()
-	with tempfile.NamedTemporaryFile(
-		suffix=".yaml", mode="w", delete=False
-	) as tmp:
-		tmp_path = tmp.name
-	config_mod.write_config(tmp_path, cfg)
-	loaded = config_mod.load_config(tmp_path)
-	assert loaded == cfg
-	os.unlink(tmp_path)
-
-
-#============================================
-def test_config_default_path() -> None:
-	"""default_config_path('video.mp4') returns expected suffix."""
-	import track_runner.config as config_mod
-	result = config_mod.default_config_path("video.mp4")
-	assert result == "video.mp4.track_runner.config.yaml"
 
 
 #============================================
@@ -346,27 +314,6 @@ def test_scoring_better_candidate_scores_higher() -> None:
 	score_good = [c for c in scored if c["confidence"] == 0.95][0]["score"]
 	score_bad = [c for c in scored if c["confidence"] == 0.3][0]["score"]
 	assert score_good > score_bad
-
-
-#============================================
-def test_scoring_select_best_returns_highest() -> None:
-	"""select_best picks highest score."""
-	import track_runner.scoring as scoring_mod
-	candidates = [
-		{"score": 0.3, "bbox": [0, 0, 10, 10]},
-		{"score": 0.9, "bbox": [0, 0, 10, 10]},
-		{"score": 0.5, "bbox": [0, 0, 10, 10]},
-	]
-	best = scoring_mod.select_best(candidates)
-	assert best["score"] == 0.9
-
-
-#============================================
-def test_scoring_select_best_empty_returns_none() -> None:
-	"""select_best([]) returns None."""
-	import track_runner.scoring as scoring_mod
-	result = scoring_mod.select_best([])
-	assert result is None
 
 
 # ============================================================
@@ -696,3 +643,272 @@ def test_encoder_video_reader_iteration() -> None:
 	# check that indices are sequential
 	for i, (idx, _) in enumerate(frames_read):
 		assert idx == i
+
+
+# ============================================================
+# cli quality grade tests
+# ============================================================
+
+
+#============================================
+def test_quality_grade_a() -> None:
+	"""High detection rate and low streak earns A."""
+	import track_runner.cli as cli_mod
+	grade = cli_mod._tracking_quality_grade(90.0, 15, 30.0)
+	assert grade == "A"
+
+
+#============================================
+def test_quality_grade_f() -> None:
+	"""Very low detection rate earns F."""
+	import track_runner.cli as cli_mod
+	grade = cli_mod._tracking_quality_grade(10.0, 900, 30.0)
+	assert grade == "F"
+
+
+#============================================
+def test_quality_grade_old_thresholds_would_be_wrong() -> None:
+	"""15% detection should NOT be grade A (it was before the fix)."""
+	import track_runner.cli as cli_mod
+	grade = cli_mod._tracking_quality_grade(15.0, 30, 30.0)
+	assert grade != "A"
+
+
+# ============================================================
+# cli streak detection tests
+# ============================================================
+
+
+#============================================
+def test_find_worst_streaks_includes_interpolated() -> None:
+	"""Streaks of predicted+interpolated frames are found."""
+	import track_runner.cli as cli_mod
+	# build frame_states: 10 detected, then 40 interpolated, then 10 detected
+	states = []
+	for i in range(10):
+		states.append({"frame_index": i, "source": "detected"})
+	for i in range(10, 50):
+		states.append({"frame_index": i, "source": "interpolated"})
+	for i in range(50, 60):
+		states.append({"frame_index": i, "source": "detected"})
+	streaks = cli_mod._find_worst_streaks(states, min_streak=30)
+	assert len(streaks) == 1
+	assert streaks[0][0] == 10
+	assert streaks[0][1] == 40
+
+
+# ============================================================
+# debug overlay tests
+# ============================================================
+
+
+#============================================
+def test_debug_overlay_cropped_draws_on_frame() -> None:
+	"""draw_debug_overlay_cropped draws on the frame in-place."""
+	import track_runner.encoder as enc_mod
+	# create a 140x200 BGR frame (cropped/resized output)
+	frame = numpy.zeros((140, 200, 3), dtype=numpy.uint8)
+	state = {
+		"frame_index": 42,
+		"source": "detected",
+		"confidence": 0.85,
+		"bbox": (150.0, 100.0, 40.0, 80.0),
+	}
+	crop_rect = (50, 30, 200, 140)
+	enc_mod.draw_debug_overlay_cropped(frame, state, crop_rect, 200, 140)
+	# frame should have some non-zero pixels from drawing
+	assert not numpy.all(frame == 0)
+
+
+#============================================
+def test_debug_overlay_cropped_none_state() -> None:
+	"""draw_debug_overlay_cropped handles None state without crashing."""
+	import track_runner.encoder as enc_mod
+	frame = numpy.zeros((140, 200, 3), dtype=numpy.uint8)
+	crop_rect = (50, 30, 200, 140)
+	enc_mod.draw_debug_overlay_cropped(frame, None, crop_rect, 200, 140)
+	# should have drawn "NO DATA" text
+	assert not numpy.all(frame == 0)
+
+
+# ============================================================
+# absence marker tests
+# ============================================================
+
+
+#============================================
+def test_find_worst_streaks_includes_absent() -> None:
+	"""Streaks containing absent frames are found."""
+	import track_runner.cli as cli_mod
+	states = []
+	for i in range(10):
+		states.append({"frame_index": i, "source": "detected"})
+	for i in range(10, 30):
+		states.append({"frame_index": i, "source": "predicted"})
+	for i in range(30, 50):
+		states.append({"frame_index": i, "source": "absent"})
+	for i in range(50, 60):
+		states.append({"frame_index": i, "source": "detected"})
+	streaks = cli_mod._find_worst_streaks(states, min_streak=30)
+	assert len(streaks) == 1
+	# the streak covers both predicted and absent frames
+	assert streaks[0][0] == 10
+	assert streaks[0][1] == 40
+
+
+# ============================================================
+# jerk detection tests
+# ============================================================
+
+
+#============================================
+def test_find_jerk_regions_detects_jump() -> None:
+	"""Sudden 500px jump with 100px person height is flagged."""
+	import track_runner.tracker as tracker_mod
+	# smooth path then sudden jump
+	states = []
+	for i in range(20):
+		states.append({
+			"frame_index": i,
+			"source": "detected",
+			"confidence": 0.9,
+			"bbox": (100.0 + i * 2, 200.0, 40.0, 100.0),
+		})
+	# sudden 500px jump at frame 20
+	states.append({
+		"frame_index": 20,
+		"source": "detected",
+		"confidence": 0.9,
+		"bbox": (600.0, 200.0, 40.0, 100.0),
+	})
+	regions = tracker_mod.find_jerk_regions(states, min_streak=1)
+	assert len(regions) >= 1
+	# the jerk frame should be at frame 20
+	all_frames = set()
+	for start, length in regions:
+		for f in range(start, start + length):
+			all_frames.add(f)
+	assert 20 in all_frames
+
+
+#============================================
+def test_find_jerk_regions_ignores_smooth_motion() -> None:
+	"""2px per frame movement produces no jerk regions."""
+	import track_runner.tracker as tracker_mod
+	states = []
+	for i in range(50):
+		states.append({
+			"frame_index": i,
+			"source": "detected",
+			"confidence": 0.9,
+			"bbox": (100.0 + i * 2, 200.0, 40.0, 100.0),
+		})
+	regions = tracker_mod.find_jerk_regions(states)
+	assert len(regions) == 0
+
+
+#============================================
+def test_merge_streak_lists_overlap() -> None:
+	"""Overlapping streaks from two lists combine."""
+	import track_runner.cli as cli_mod
+	a = [(10, 20)]   # frames 10-29
+	b = [(25, 15)]   # frames 25-39
+	merged = cli_mod._merge_streak_lists(a, b)
+	assert len(merged) == 1
+	# merged should cover frames 10-39
+	assert merged[0][0] == 10
+	assert merged[0][1] == 30
+
+
+# ============================================================
+# config file separation tests
+# ============================================================
+
+
+#============================================
+def test_config_seeds_round_trip() -> None:
+	"""write_seeds then load_seeds returns same list."""
+	import track_runner.config as config_mod
+	seeds = [
+		{"frame_index": 0, "torso_box": [10, 10, 20, 30]},
+		{"frame_index": 100, "torso_box": [50, 50, 20, 30]},
+	]
+	with tempfile.NamedTemporaryFile(
+		suffix=".yaml", mode="w", delete=False
+	) as tmp:
+		tmp_path = tmp.name
+	config_mod.write_seeds(tmp_path, seeds)
+	loaded = config_mod.load_seeds(tmp_path)
+	assert loaded == seeds
+	os.unlink(tmp_path)
+
+
+#============================================
+def test_config_load_seeds_missing_file() -> None:
+	"""load_seeds returns empty list for missing file."""
+	import track_runner.config as config_mod
+	result = config_mod.load_seeds("/tmp/nonexistent_seeds_12345.yaml")
+	assert result == []
+
+
+#============================================
+def test_config_diagnostics_round_trip() -> None:
+	"""write_diagnostics then load_diagnostics returns same dict."""
+	import track_runner.config as config_mod
+	diag = {
+		"bad_streaks": [[10, 40]],
+		"max_streak": 40,
+		"detect_pct": 75.0,
+	}
+	with tempfile.NamedTemporaryFile(
+		suffix=".yaml", mode="w", delete=False
+	) as tmp:
+		tmp_path = tmp.name
+	config_mod.write_diagnostics(tmp_path, diag)
+	loaded = config_mod.load_diagnostics(tmp_path)
+	assert loaded == diag
+	os.unlink(tmp_path)
+
+
+#============================================
+def test_config_load_diagnostics_missing_file() -> None:
+	"""load_diagnostics returns empty dict for missing file."""
+	import track_runner.config as config_mod
+	result = config_mod.load_diagnostics("/tmp/nonexistent_diag_12345.yaml")
+	assert result == {}
+
+
+# ============================================================
+# adaptive fill ratio tests
+# ============================================================
+
+
+#============================================
+def test_crop_adaptive_fill_far_runner() -> None:
+	"""Small bbox (far runner) gets tighter crop than baseline."""
+	import track_runner.crop as crop_mod
+	# with far_fill_ratio=0.50, a 80px tall runner should get ~160px crop
+	ctrl = crop_mod.CropController(
+		1920, 1080, aspect_ratio=1.0,
+		target_fill_ratio=0.30, far_fill_ratio=0.50,
+		far_threshold_px=120, min_crop_size=100,
+	)
+	result = ctrl.update((960, 540, 30, 80), 1.0, (1920, 1080))
+	crop_h = result[3]
+	# crop height should be around 160 (80/0.50), not 267 (80/0.30)
+	assert crop_h < 200
+
+
+#============================================
+def test_crop_adaptive_fill_close_runner() -> None:
+	"""Large bbox (close runner) uses baseline fill ratio."""
+	import track_runner.crop as crop_mod
+	ctrl = crop_mod.CropController(
+		1920, 1080, aspect_ratio=1.0,
+		target_fill_ratio=0.30, far_fill_ratio=0.50,
+		far_threshold_px=120, min_crop_size=100,
+	)
+	result = ctrl.update((960, 540, 120, 400), 1.0, (1920, 1080))
+	crop_h = result[3]
+	# crop height should be around 1080 (clamped) or 400/0.30=1333 clamped to 1080
+	assert crop_h >= 1000
