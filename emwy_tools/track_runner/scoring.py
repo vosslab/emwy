@@ -1,253 +1,217 @@
-"""Candidate scoring module for track_runner.
+"""Interval confidence metrics for track_runner.
 
-Scores detection candidates against the current tracked state using
-hard gates (reject before scoring) and weighted scoring (normalized 0-1 terms).
+Takes interval evidence from forward and backward tracking passes and
+returns agreement score, identity score, competitor margin, and a
+final confidence label.
 """
 
-# Standard Library
-import math
-
-# local repo modules
-import kalman
+# PIP3 modules
+import numpy
 
 
 #============================================
-def _bbox_center(bbox: list) -> tuple:
-	"""Convert a top-left bounding box to center format.
-
-	Args:
-		bbox: List of [x, y, w, h] where x,y is the top-left corner.
-
-	Returns:
-		Tuple of (cx, cy, w, h) in center format.
-	"""
-	x, y, w, h = bbox
-	cx = x + w / 2.0
-	cy = y + h / 2.0
-	result = (cx, cy, w, h)
-	return result
-
-
-#============================================
-def apply_hard_gates(
-	candidates: list, prediction_state: dict, config: dict,
-	missed_streak: int = 0,
+def compute_meeting_point_errors(
+	forward_track: list,
+	backward_track: list,
 ) -> list:
-	"""Filter candidates by hard gates, rejecting those that fail any gate.
-
-	Gates applied:
-		1. Search radius: candidate center within scaled predicted height.
-		2. Vertical limit: candidate vertical displacement within fraction of search radius.
-		3. Aspect ratio: candidate h/w within configured bounds.
-		4. Scale band: candidate area within factor of predicted area.
+	"""Compute per-frame center and scale errors between forward and backward tracks.
 
 	Args:
-		candidates: List of detection dicts with "bbox", "confidence", "class_id".
-		prediction_state: Kalman state dict from predict step.
-		config: Project config dict with settings.tracking and settings.scoring.
+		forward_track: List of tracking state dicts from forward propagation.
+			Each dict has keys "cx", "cy", "w", "h", "conf", "source".
+		backward_track: List of tracking state dicts from backward propagation,
+			already reversed to align frame-by-frame with forward_track.
 
 	Returns:
-		List of candidates that pass all gates.
+		List of dicts with keys:
+			- "frame": int, frame index
+			- "center_err_px": float, Euclidean center distance in pixels
+			- "scale_err_pct": float, fractional height difference (0.0 to 1.0+)
 	"""
-	# Extract predicted bounding box in center format
-	pred_cx, pred_cy, pred_w, pred_h = kalman.get_bbox(prediction_state)
-	pred_area = pred_w * pred_h
-
-	# Read gate parameters from config
-	tracking_cfg = config.get("settings", {}).get("tracking", {})
-	scoring_cfg = config.get("settings", {}).get("scoring", {})
-	search_radius_scale = tracking_cfg.get("search_radius_scale", 1.5)
-	min_search_radius = tracking_cfg.get("min_search_radius", 100)
-	aspect_min = scoring_cfg.get("hard_gate_aspect_min", 1.5)
-	aspect_max = scoring_cfg.get("hard_gate_aspect_max", 4.0)
-	scale_band = scoring_cfg.get("hard_gate_scale_band", 3.0)
-	# vertical motion limit as fraction of predicted person height
-	# runners move mostly horizontally; vertical jumps are usually wrong
-	# scales with person size: closer runner = larger box = more slack
-	vertical_limit_scale = scoring_cfg.get("vertical_limit_scale", 0.5)
-
-	# Compute the effective search radius
-	max_search_radius = max(min_search_radius, search_radius_scale * pred_h)
-
-	# widen search radius when detection is being missed
-	# grows by 5% per missed frame, up to 3x base radius
-	if missed_streak > 5:
-		widen_factor = min(3.0, 1.0 + (missed_streak - 5) / 20.0)
-		max_search_radius = max_search_radius * widen_factor
-
-	passed = []
-	for cand in candidates:
-		cand_cx, cand_cy, cand_w, cand_h = _bbox_center(cand["bbox"])
-
-		# Gate 1: search radius (Euclidean distance)
-		dx = cand_cx - pred_cx
-		dy = cand_cy - pred_cy
-		dist = math.sqrt(dx * dx + dy * dy)
-		if dist > max_search_radius:
-			continue
-
-		# Gate 1b: max displacement per frame (absolute pixel ceiling)
-		# prevents wild jumps even when search radius is widened
-		max_displacement = scoring_cfg.get("max_displacement_per_frame", 80)
-		if dist > max_displacement:
-			continue
-
-		# Gate 2: vertical displacement limit
-		# runners move mostly horizontally, so vertical jumps are
-		# capped relative to the predicted person height -- a closer
-		# (bigger) person allows more vertical motion than a distant one
-		max_vertical = pred_h * vertical_limit_scale
-		if abs(dy) > max_vertical:
-			continue
-
-		# Gate 3: aspect ratio (height / width)
-		if cand_w <= 0 or cand_h <= 0:
-			continue
-		aspect = cand_h / cand_w
-		if aspect < aspect_min or aspect > aspect_max:
-			continue
-
-		# Gate 3b: max bbox area fraction (reject detections too large)
-		cand_area = cand_w * cand_h
-		max_area_frac = scoring_cfg.get("max_bbox_area_fraction", 0.15)
-		frame_w = config.get("frame_width", 1920)
-		frame_h = config.get("frame_height", 1080)
-		max_area = frame_w * frame_h * max_area_frac
-		if cand_area > max_area:
-			continue
-
-		# Gate 4: scale band (area comparison)
-		if pred_area > 0:
-			if cand_area < pred_area / scale_band:
-				continue
-			if cand_area > pred_area * scale_band:
-				continue
-
-		passed.append(cand)
-
-	return passed
-
-
-#============================================
-def score_candidates(
-	candidates: list,
-	prediction_state: dict,
-	appearance: dict | None,
-	config: dict,
-) -> list:
-	"""Score surviving candidates with weighted terms normalized 0-1.
-
-	Args:
-		candidates: List of detection dicts that passed hard gates.
-		prediction_state: Kalman state dict from predict step.
-		appearance: Optional appearance dict with "jersey_hsv" and/or
-			"color_histogram". If None, color score defaults to 0.5.
-		config: Project config dict with settings.scoring weights.
-
-	Returns:
-		List of candidate dicts, each with an added "score" float key.
-	"""
-	# Extract predicted bounding box and state
-	pred_cx, pred_cy, pred_w, pred_h = kalman.get_bbox(prediction_state)
-	pred_log_h = float(prediction_state["x"][2])
-
-	# Read scoring weights from config
-	scoring_cfg = config.get("settings", {}).get("scoring", {})
-	w_detect = scoring_cfg.get("w_detect", 0.30)
-	w_predict = scoring_cfg.get("w_predict", 0.25)
-	w_color = scoring_cfg.get("w_color", 0.15)
-	w_size = scoring_cfg.get("w_size", 0.15)
-	w_path = scoring_cfg.get("w_path", 0.10)
-	w_motion = scoring_cfg.get("w_motion", 0.05)
-
-	# Compute max search radius for prediction score normalization
-	tracking_cfg = config.get("settings", {}).get("tracking", {})
-	search_radius_scale = tracking_cfg.get("search_radius_scale", 1.5)
-	min_search_radius = tracking_cfg.get("min_search_radius", 100)
-	max_search_radius = max(min_search_radius, search_radius_scale * pred_h)
-
-	# Size score tolerance in log space (~2.7x size difference)
-	size_tolerance = 1.0
-
-	# Placeholder scores for unimplemented modules
-	path_score = 0.5
-	motion_score = 0.5
-
-	scored = []
-	for cand in candidates:
-		cand_cx, cand_cy, cand_w, cand_h = _bbox_center(cand["bbox"])
-
-		# Detector confidence, clamped 0-1
-		detect_score = max(0.0, min(1.0, cand["confidence"]))
-
-		# Prediction proximity score
-		dx = cand_cx - pred_cx
-		dy = cand_cy - pred_cy
-		dist = math.sqrt(dx * dx + dy * dy)
-		predict_score = 1.0 - dist / max_search_radius
-		predict_score = max(0.0, min(1.0, predict_score))
-
-		# Color score
-		color_score = _compute_color_score(appearance)
-
-		# Size score: log-height difference
-		if cand_h > 0:
-			cand_log_h = math.log(cand_h)
+	errors = []
+	# Iterate over the shorter of the two tracks to avoid index errors
+	num_frames = min(len(forward_track), len(backward_track))
+	for i in range(num_frames):
+		fwd = forward_track[i]
+		bwd = backward_track[i]
+		# Compute Euclidean center distance
+		dx = fwd["cx"] - bwd["cx"]
+		dy = fwd["cy"] - bwd["cy"]
+		center_err = float(numpy.sqrt(dx * dx + dy * dy))
+		# Compute scale error as fractional height difference
+		fwd_h = fwd["h"]
+		bwd_h = bwd["h"]
+		if fwd_h > 0 and bwd_h > 0:
+			# Use mean height as reference so the ratio is symmetric
+			mean_h = (fwd_h + bwd_h) / 2.0
+			scale_err = abs(fwd_h - bwd_h) / mean_h
 		else:
-			cand_log_h = pred_log_h
-		log_h_diff = abs(cand_log_h - pred_log_h)
-		size_score = 1.0 - log_h_diff / size_tolerance
-		size_score = max(0.0, min(1.0, size_score))
-
-		# Weighted sum
-		total = (
-			w_detect * detect_score
-			+ w_predict * predict_score
-			+ w_color * color_score
-			+ w_size * size_score
-			+ w_path * path_score
-			+ w_motion * motion_score
-		)
-
-		# Build scored candidate (copy original and add score)
-		scored_cand = dict(cand)
-		scored_cand["score"] = total
-		scored.append(scored_cand)
-
-	return scored
+			scale_err = 1.0
+		frame_error = {
+			"frame": i,
+			"center_err_px": center_err,
+			"scale_err_pct": scale_err,
+		}
+		errors.append(frame_error)
+	return errors
 
 
 #============================================
-def _compute_color_score(appearance: dict | None) -> float:
-	"""Compute color similarity score from appearance data.
+def compute_agreement(forward_track: list, backward_track: list) -> float:
+	"""Compute overall agreement score between forward and backward tracks.
 
-	Without a frame available, this returns a default value.
-	Full histogram comparison can be added later.
+	Per-frame center error is normalized by runner size (fraction of height),
+	so a 5px error for a 100px-tall runner is treated differently than 5px for
+	a 20px-tall runner. Center error is weighted 0.7 and scale error 0.3.
 
 	Args:
-		appearance: Optional appearance dict with "jersey_hsv" key.
+		forward_track: List of tracking state dicts from forward propagation.
+		backward_track: List of tracking state dicts from backward propagation,
+			aligned frame-by-frame with forward_track.
 
 	Returns:
-		Float color score between 0 and 1.
+		Float in [0.0, 1.0] where 1.0 means perfect agreement.
 	"""
-	# Without appearance data or frame, default to neutral score
-	if appearance is None:
-		return 0.5
-	# Placeholder: frame-based color comparison not yet available
-	return 0.5
+	num_frames = min(len(forward_track), len(backward_track))
+	if num_frames == 0:
+		return 0.0
+
+	frame_scores = []
+	for i in range(num_frames):
+		fwd = forward_track[i]
+		bwd = backward_track[i]
+		# Use mean height as the normalization reference
+		fwd_h = fwd["h"]
+		bwd_h = bwd["h"]
+		mean_h = (fwd_h + bwd_h) / 2.0
+		if mean_h <= 0:
+			frame_scores.append(0.0)
+			continue
+		# Normalized center error: fraction of runner height
+		dx = fwd["cx"] - bwd["cx"]
+		dy = fwd["cy"] - bwd["cy"]
+		center_err_px = float(numpy.sqrt(dx * dx + dy * dy))
+		# Clamp at 2x height so errors don't drive score below 0
+		normalized_center_err = min(center_err_px / mean_h, 2.0)
+		center_score = 1.0 - normalized_center_err / 2.0
+
+		# Scale error: symmetric fractional height difference
+		scale_err = abs(fwd_h - bwd_h) / mean_h
+		scale_err_clamped = min(scale_err, 1.0)
+		scale_score = 1.0 - scale_err_clamped
+
+		# Weighted combination: center matters more than scale
+		frame_score = 0.7 * center_score + 0.3 * scale_score
+		frame_scores.append(frame_score)
+
+	agreement = float(numpy.mean(frame_scores))
+	return agreement
 
 
 #============================================
-def select_best(scored_candidates: list) -> dict | None:
-	"""Return the candidate with the highest score.
+def classify_confidence(
+	agreement: float,
+	identity: float,
+	margin: float,
+) -> tuple:
+	"""Classify overall confidence from agreement, identity, and competitor margin.
+
+	Decision grid:
+		- High agreement (>0.8) + High separation (>0.5) -> "high"
+		- High agreement (>0.8) + Low separation         -> "low", ["low_separation"]
+		- Low agreement                                   -> "low", ["low_agreement"]
+		- Strong competitor (margin < 0.2)                -> adds "likely_identity_swap"
+		- Weak appearance (identity < 0.4)                -> adds "weak_appearance"
 
 	Args:
-		scored_candidates: List of candidate dicts each containing a "score" key.
+		agreement: Float [0, 1], forward/backward agreement score.
+		identity: Float [0, 1], average identity match score.
+		margin: Float [0, 1], average separation from competitors.
 
 	Returns:
-		The highest-scoring candidate dict, or None if the list is empty.
+		Tuple of (confidence_label: str, failure_reasons: list of str).
 	"""
-	if not scored_candidates:
-		return None
-	best = max(scored_candidates, key=lambda c: c["score"])
-	return best
+	failure_reasons = []
+
+	# Determine base confidence from agreement and separation
+	high_agreement = agreement > 0.8
+	high_separation = margin > 0.5
+	strong_competitor = margin < 0.2
+
+	if high_agreement and high_separation:
+		confidence = "high"
+	elif high_agreement and not high_separation:
+		confidence = "low"
+		failure_reasons.append("low_separation")
+	else:
+		# Low agreement regardless of separation
+		confidence = "low"
+		failure_reasons.append("low_agreement")
+		if strong_competitor:
+			failure_reasons.append("likely_identity_swap")
+
+	# Additional reason for weak appearance regardless of confidence level
+	if identity < 0.4:
+		failure_reasons.append("weak_appearance")
+
+	return (confidence, failure_reasons)
+
+
+#============================================
+def score_interval(
+	forward_track: list,
+	backward_track: list,
+	identity_scores: list,
+	competitor_margins: list,
+) -> dict:
+	"""Score an interval using forward/backward track evidence.
+
+	Args:
+		forward_track: List of tracking state dicts from forward propagation.
+			Each dict has keys "cx", "cy", "w", "h", "conf", "source".
+		backward_track: List of tracking state dicts from backward propagation,
+			already reversed to align frame-by-frame with forward_track.
+		identity_scores: List of per-frame identity match scores (float 0-1).
+		competitor_margins: List of per-frame competitor margin scores (float 0-1).
+
+	Returns:
+		Dict with keys:
+			- "agreement_score": float, forward/backward agreement [0, 1]
+			- "identity_score": float, average identity match [0, 1]
+			- "competitor_margin": float, average competitor separation [0, 1]
+			- "confidence": str, "high", "medium", or "low"
+			- "failure_reasons": list of str
+			- "meeting_point_error": list of per-frame error dicts
+	"""
+	# Compute agreement between forward and backward passes
+	agreement_score = compute_agreement(forward_track, backward_track)
+
+	# Average identity score across frames; default 0.0 if no data
+	if identity_scores:
+		identity_score = float(numpy.mean(identity_scores))
+	else:
+		identity_score = 0.0
+
+	# Average competitor margin across frames; default 0.0 if no data
+	if competitor_margins:
+		competitor_margin = float(numpy.mean(competitor_margins))
+	else:
+		competitor_margin = 0.0
+
+	# Classify confidence from the three aggregate signals
+	confidence, failure_reasons = classify_confidence(
+		agreement_score, identity_score, competitor_margin,
+	)
+
+	# Compute per-frame meeting point errors for diagnostic output
+	meeting_point_error = compute_meeting_point_errors(forward_track, backward_track)
+
+	result = {
+		"agreement_score": agreement_score,
+		"identity_score": identity_score,
+		"competitor_margin": competitor_margin,
+		"confidence": confidence,
+		"failure_reasons": failure_reasons,
+		"meeting_point_error": meeting_point_error,
+	}
+	return result

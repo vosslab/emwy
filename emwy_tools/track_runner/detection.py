@@ -1,4 +1,4 @@
-"""YOLO and HOG person detection for track_runner."""
+"""YOLO person detection for track_runner."""
 
 # Standard Library
 import os
@@ -10,8 +10,7 @@ import numpy
 
 # Constants for YOLO nano ONNX model
 # No pre-exported yolov8n.onnx exists on GitHub releases.
-# We download yolov8n.pt and export to ONNX via ultralytics if available,
-# otherwise fall back to HOG detector.
+# We download yolov8n.pt and export to ONNX via ultralytics.
 YOLO_PT_URL = (
 	"https://github.com/ultralytics/assets/releases/download/"
 	"v8.2.0/yolov8n.pt"
@@ -57,8 +56,7 @@ def ensure_yolo_weights(cache_dir: str | None = None) -> str:
 	"""Get YOLOv8n ONNX weights, downloading and exporting if needed.
 
 	Checks for cached ONNX file first. If missing, downloads yolov8n.pt
-	and exports to ONNX via ultralytics. Falls back gracefully if either
-	download or export fails.
+	and exports to ONNX via ultralytics.
 
 	Args:
 		cache_dir: Directory to store the weights file.
@@ -217,88 +215,35 @@ class YoloDetector:
 
 
 #============================================
-class HogDetector:
-	"""Person detector using HOG + SVM (OpenCV built-in)."""
-
-	#============================================
-	def __init__(self, confidence_threshold: float = 0.25):
-		"""Initialize the HOG person detector.
-
-		Args:
-			confidence_threshold: Minimum confidence to keep a detection.
-		"""
-		self.hog = cv2.HOGDescriptor()
-		self.hog.setSVMDetector(
-			cv2.HOGDescriptor_getDefaultPeopleDetector()
-		)
-		self.confidence_threshold = confidence_threshold
-
-	#============================================
-	def detect(self, frame: numpy.ndarray) -> list[dict]:
-		"""Detect persons in a video frame using HOG.
-
-		Args:
-			frame: BGR image as a numpy array (H, W, 3).
-
-		Returns:
-			List of detection dicts with keys:
-				bbox: [x, y, w, h] in original frame pixels (top-left corner)
-				confidence: detection confidence weight
-				class_id: always 0 (person)
-		"""
-		# detectMultiScale returns (rects, weights)
-		rects, weights = self.hog.detectMultiScale(frame)
-		results = []
-		for i, rect in enumerate(rects):
-			weight = float(weights[i])
-			if weight < self.confidence_threshold:
-				continue
-			# rect is (x, y, w, h) already in frame coordinates
-			detection = {
-				"bbox": [int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])],
-				"confidence": weight,
-				"class_id": PERSON_CLASS_ID,
-			}
-			results.append(detection)
-		return results
-
-
-#============================================
-def create_detector(config: dict) -> YoloDetector | HogDetector:
-	"""Create a person detector based on config settings.
+def create_detector(config: dict) -> YoloDetector:
+	"""Create a YOLO person detector from config settings.
 
 	Args:
 		config: Configuration dict with settings.detection section.
 			Expected keys under settings.detection:
-				kind: "yolo" or "hog"
 				confidence_threshold: float (optional, default 0.25)
 				nms_threshold: float (optional, default 0.45)
 
 	Returns:
-		A YoloDetector or HogDetector instance.
+		A YoloDetector instance.
+
+	Raises:
+		RuntimeError: If YOLO weights cannot be obtained.
 	"""
 	# extract detection settings with defaults
 	settings = config.get("settings", {})
 	detection = settings.get("detection", {})
-	kind = detection.get("kind", "yolo")
 	confidence_threshold = float(detection.get("confidence_threshold", 0.25))
 	nms_threshold = float(detection.get("nms_threshold", 0.45))
-	# try YOLO first if requested
-	if kind == "yolo":
-		weights_path = ensure_yolo_weights()
-		if weights_path:
-			det = YoloDetector(
-				weights_path,
-				confidence_threshold=confidence_threshold,
-				nms_threshold=nms_threshold,
-			)
-			# store config for parallel worker recreation
-			det._config = config
-			return det
-		# fall back to HOG if weights unavailable
-		print("WARNING: YOLO weights unavailable, falling back to HOG detector")
-	# HOG detector
-	det = HogDetector(confidence_threshold=confidence_threshold)
+	# obtain YOLO weights, raise on failure
+	weights_path = ensure_yolo_weights()
+	if not weights_path:
+		raise RuntimeError("YOLO weights unavailable; cannot create detector")
+	det = YoloDetector(
+		weights_path,
+		confidence_threshold=confidence_threshold,
+		nms_threshold=nms_threshold,
+	)
 	# store config for parallel worker recreation
 	det._config = config
 	return det

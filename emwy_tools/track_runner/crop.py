@@ -108,23 +108,30 @@ class CropController:
 	#============================================
 	def update(
 		self,
-		target_box: tuple,
-		confidence: float,
-		frame_size: tuple,
+		state: dict,
 	) -> tuple:
-		"""Update crop position given a target bounding box.
+		"""Update crop position given a tracking state dict.
 
 		Args:
-			target_box: (cx, cy, w, h) center and size of tracked runner.
-			confidence: 0.0 to 1.0 tracking confidence.
-			frame_size: (frame_width, frame_height) of current frame.
+			state: Tracking state with keys:
+				'cx' (float): center x of tracked subject in pixels,
+				'cy' (float): center y of tracked subject in pixels,
+				'w' (float): bounding box width in pixels,
+				'h' (float): bounding box height in pixels,
+				'conf' (float): tracking confidence 0.0 to 1.0,
+				'source' (str): source label for the tracking state.
 
 		Returns:
 			Tuple of (crop_x, crop_y, crop_w, crop_h) as integer pixel
 			coordinates where crop_x, crop_y is the top-left corner.
 		"""
-		fw, fh = frame_size
-		tcx, tcy, tw, th = target_box
+		fw = self.frame_width
+		fh = self.frame_height
+		tcx = state["cx"]
+		tcy = state["cy"]
+		# bounding box width is not used; only height drives fill ratio
+		th = state["h"]
+		confidence = state["conf"]
 
 		# Step 1: compute adaptive fill ratio based on runner height
 		# three tiers: very far, far, and normal with linear interpolation
@@ -332,3 +339,34 @@ def create_crop_controller(
 		min_crop_size=min_crop_size,
 	)
 	return controller
+
+
+#============================================
+def compute_crop_trajectory(
+	trajectory: list,
+	frame_width: int,
+	frame_height: int,
+	config: dict,
+) -> list:
+	"""Compute a smoothed crop rectangle for each frame in a trajectory.
+
+	Creates a CropController from config, feeds each tracking state through
+	it in order, and returns the resulting crop rectangles.
+
+	Args:
+		trajectory: List of tracking state dicts, one per frame. Each dict
+			must have keys 'cx', 'cy', 'w', 'h', 'conf', and 'source'.
+		frame_width: Width of the source video frame in pixels.
+		frame_height: Height of the source video frame in pixels.
+		config: Project configuration dictionary passed to create_crop_controller.
+
+	Returns:
+		List of (crop_x, crop_y, crop_w, crop_h) tuples, one per frame,
+		as integer pixel coordinates where crop_x, crop_y is the top-left corner.
+	"""
+	controller = create_crop_controller(config, frame_width, frame_height)
+	crop_rects = []
+	for state in trajectory:
+		rect = controller.update(state)
+		crop_rects.append(rect)
+	return crop_rects

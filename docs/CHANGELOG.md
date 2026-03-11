@@ -2,7 +2,103 @@
 
 ## 2026-03-11
 
+### Decisions and Failures
+- Replaced Kalman filter backbone with seed-driven interval solver after measurements showed
+  9-13x bbox overestimation in diagnostics, jersey color unusable below 30px, and camera
+  motion contaminating velocity state. The Kalman filter was optimized for radar tracking
+  of uniform-speed objects; runners change speed, stop, and are occluded for long stretches.
+- New philosophy: the human establishes identity at seed frames; the machine interpolates
+  geometry between trusted anchor points and flags intervals where it is uncertain.
+- Decision: tracks torso only (no full-person box estimation). Torso is more stable, more
+  discriminative for jersey color, and avoids leg/arm articulation noise.
+- Decision: competitor hypothesis tracking (up to 3 paths) runs alongside target tracking
+  so the solver can quantify ambiguity rather than silently choosing the wrong person.
+
+### Removals and Deprecations
+- Deleted `emwy_tools/track_runner/kalman.py` and `emwy_tools/track_runner/tracker.py`.
+  Both implemented the v1 Kalman filter tracking pipeline (Kalman predict/update, detection
+  matching, bidirectional pass merging, jerk region detection, interpolation). These are
+  replaced by the v2 interval_solver + propagator + hypothesis pipeline. No remaining
+  imports of either module exist in the codebase.
+- Rewrote `emwy_tools/track_runner/scoring.py` for v2: removed all v1 code (hard gates,
+  weighted candidate scoring, `select_best`, `apply_hard_gates`, `score_candidates`,
+  `_compute_color_score`, `_bbox_center`, and `kalman` import). New module has one job:
+  take interval evidence and return confidence metrics. New functions:
+  `score_interval()`, `compute_agreement()`, `compute_meeting_point_errors()`,
+  and `classify_confidence()`.
+
+### Behavior or Interface Changes
+- Refactored `emwy_tools/track_runner/detection.py`: removed `HogDetector` class and HOG
+  fallback logic. `create_detector()` now always returns a `YoloDetector` and raises
+  `RuntimeError` if YOLO weights are unavailable instead of silently falling back to HOG.
+  The detector is now a supporting cue used by `interval_solver`, not the backbone.
+- Simplified `emwy_tools/track_runner/config.py` to v2: header changed from `track_runner: 1` to `track_runner: 2`. Removed all Kalman/tracker-specific sections (tracking, scoring, camera_compensation, jersey_color, seeding, experiment, io). Default config is now ~15 lines covering detection (model, confidence_threshold) and processing (crop_aspect, crop_fill_ratio, video_codec, crf). Removed `load_seeds()`, `write_seeds()`, `load_diagnostics()`, `write_diagnostics()`, `default_seeds_path()`, `default_diagnostics_path()` (moving to state_io.py). `validate_config()` updated to check top-level `detection` and `processing` sections instead of the old nested `settings` structure.
+- Refactored `emwy_tools/track_runner/crop.py` to consume v2 trajectory dicts instead of the
+  v1 frame_states list format.
+- Seeds now stored as JSON instead of YAML (smaller files, no serialization edge cases).
+- Diagnostics now stored per-interval instead of per-frame, making files much more compact.
+
 ### Additions and New Features
+- Rewrote `emwy_tools/track_runner/cli.py` for v2 multi-pass orchestration. Removed all v1
+  orchestration functions (_find_worst_streaks, _find_seedless_gaps, find_jerk_regions,
+  _find_stall_regions, _find_big_movement_regions, _find_area_change_regions,
+  _merge_streak_lists, _streaks_to_seed_frames, _tracking_quality_grade, _print_quality_report,
+  _collect_predictions_for_streaks, _generate_interval_targets, _sanitize_seeds_for_yaml).
+  Removed imports of tracker, kalman, numpy, and tools_common. New data flow: config load ->
+  initial seeding (pass 1) -> interval_solver -> diagnostics -> optional --refine pass with
+  review-guided target frames -> crop trajectory -> encode -> mux audio. New helpers:
+  `_probe_video()` (ffprobe subprocess), `_parse_time_range()`, `_trajectory_to_crop_rects()`,
+  `_print_quality_summary()`, and `_write_diagnostics()`. Seeds and diagnostics use state_io.
+  New CLI flags: --refine, --gap-threshold, --time-range, --ignore-diagnostics.
+- Rewrote `emwy_tools/track_runner/seeding.py` for v2 multi-pass review-driven workflow.
+  Removed `find_overlapping_person()`, `estimate_full_person_from_torso()`,
+  `_resolve_full_person_box()`, `_draw_prediction_box()`, and `_compute_iou()` (v1 concepts
+  that estimated full-person boxes; v2 tracks torso only). Added `_build_seed_dict()` to
+  produce v2 seed format (frame, time_s, torso_box, jersey_hsv, cx, cy, w, h, pass, source,
+  mode, status) and `_draw_trajectory_preview()` for forward/backward overlay during
+  refinement. Updated `collect_seeds()` and `collect_seeds_at_frames()` with `pass_number`,
+  `mode`, and `existing_seeds` parameters so new seeds append without overwriting.
+  No imports from interval_solver, review, or scoring.
+- Created `emwy_tools/track_runner/state_io.py`: JSON read/write for seeds and diagnostics,
+  replacing the previous YAML-based file I/O in config.py.
+- Created `docs/TRACK_RUNNER_V2_SPEC.md`: v2 architecture specification covering the
+  interval solver, propagator, hypothesis tracker, and seed-driven workflow.
+- Created `emwy_tools/track_runner/review.py`: weak span identification and seed suggestion.
+  Key functions: `identify_weak_spans()` (one suggestion per failure reason, deduped by frame),
+  `generate_refinement_targets()` (three modes: suggested/interval/gap, comma-combinable,
+  time_range-filtered), `format_review_summary()` (human-readable interval table + suggestion
+  list), and `needs_refinement()` (bool fast-path check). Supports all seven failure reason
+  strings: low_agreement, low_separation, weak_appearance, detector_conflict,
+  stationary_ambiguity, likely_occlusion, likely_identity_swap.
+- Created `emwy_tools/track_runner/interval_solver.py`: per-interval bounded solver that splits
+  seed-to-seed intervals, propagates forward and backward, maintains competitor hypotheses,
+  fuses tracks with confidence-weighted averaging on agreement and winner-takes-all on
+  disagreement, scores each interval with scoring.py, and stitches all intervals into a full
+  trajectory. Key functions: `solve_all_intervals()`, `solve_interval()`, `fuse_tracks()`,
+  `stitch_trajectories()`, and `_detect_cyclical_prior()` (autocorrelation-based lap detection).
+  Console output per interval: frame range, duration, agree/margin/identity scores, [TRUST/WEAK].
+- Created `emwy_tools/track_runner/hypothesis.py`: competing path generation for interval solving.
+  Maintains up to 3 competitor paths from YOLO detections that do not overlap the target.
+  Key functions: `generate_competitors()`, `maintain_paths()`, `compute_identity_score()`,
+  `compute_competitor_margin()`, `_compute_iou()`, and `_propagate_competitor_simple()`.
+  Scale-gated identity scoring (>60px uses template correlation + HSV, 30-60px HSV only,
+  <30px returns neutral 0.5). Competitor margin quantifies target ambiguity for downstream use.
+- Created `emwy_tools/track_runner/propagator.py`: frame-to-frame local torso tracking using
+  Lucas-Kanade optical flow and normalized patch correlation. Key functions:
+  `build_appearance_model()`, `propagate_forward()`, `propagate_backward()`,
+  `_track_one_frame()`, `_extract_features()`, `_compute_median_flow()`,
+  `_estimate_scale_change()`, `_patch_correlation()`, and `make_seed_state()`.
+  Implements scale-gated blending (>60px appearance-heavy, 30-60px balanced, <30px flow-only),
+  stationary lock (5-frame near-zero-displacement streak triggers position-hold mode),
+  and per-frame confidence decay with floor at 0.1.
+- Updated `emwy_tools/track_runner/encoder.py` debug overlay for v2 tracking state format.
+  `draw_debug_overlay_cropped()` now accepts `state` dict with keys `cx, cy, w, h, conf, source`
+  and an optional `debug_state` dict. New overlay elements: solid green accepted torso box,
+  dashed blue forward track box, dashed orange backward track box, red competitor box (low margin),
+  confidence label (HIGH/MED/LOW), source label (seed/propagated/merged), interval ID `[start-end]`.
+  Added helpers `_draw_dashed_rect()` and `_box_to_crop_coords()`. Updated `_source_color()` for
+  v2 source values. Removed old v1 color constants and state fields (bbox, frame_index, confidence).
+  No imports from `kalman.py` or `tracker.py`.
 - Created `tools/measure_seed_variability.py`: self-contained measurement tool that loads seed and diagnostics YAML files and prints a comprehensive variability report with CSV export. Measures seed coverage, start-line static phase, torso area variability (344x range in Test-1), frame movement (65% of frame width), jersey HSV variability (hue spans 94% of range), torso-vs-full-person box relationship, diagnostics bbox overestimation (~9-13x too large), and cyclical lap patterns (~40s periods). Outputs raw and smoothed CSV to `output_smoke/`.
 - Created `tools/plot_seed_variability.py`: generates 6-panel matplotlib plots per video showing raw scatter and 15s running-averaged signals for torso area, center X/Y, jersey hue, saturation/value, and tracker bbox vs seed area comparison. Saves PNG to `output_smoke/`.
 - Created [docs/SEED_VARIABILITY_FINDINGS.md](docs/SEED_VARIABILITY_FINDINGS.md): analysis of seed variability measurements across Track_Test-1 and Track_Test-3. Key findings: 344x area ratio, jersey color spans 94% of hue range (unusable), tracker overestimates size by 9-13x, ~40s lap periods from center-x. Includes parameter ranges and six recommendations for the tracker rewrite.

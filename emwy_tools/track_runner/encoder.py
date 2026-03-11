@@ -346,31 +346,114 @@ def encode_cropped_video(
 
 
 #============================================
-# color constants for debug overlay drawing
-_COLOR_DETECTED = (0, 255, 0)       # green
-_COLOR_PREDICTED = (0, 255, 255)    # yellow
-_COLOR_INTERPOLATED = (0, 165, 255) # orange
-_COLOR_LOST = (0, 0, 255)          # red
+# color constants for debug overlay drawing (v2)
+_COLOR_ACCEPTED = (0, 255, 0)        # solid green: accepted torso track
+_COLOR_FORWARD = (255, 128, 0)       # dashed blue: forward track box
+_COLOR_BACKWARD = (0, 128, 255)      # dashed orange: backward track box
+_COLOR_COMPETITOR = (0, 0, 255)      # red: best competitor box (low margin)
+_COLOR_LOST = (0, 0, 200)           # dark red: no tracking data
 
 
 #============================================
 def _source_color(source: str) -> tuple:
-	"""Return a BGR color for a tracking source label.
+	"""Return a BGR color for a v2 tracking source label.
 
 	Args:
-		source: Frame source string (detected, predicted, interpolated, lost).
+		source: Frame source string (seed, propagated, merged).
 
 	Returns:
 		Tuple of (B, G, R) color values.
 	"""
 	color_map = {
-		"detected": _COLOR_DETECTED,
-		"predicted": _COLOR_PREDICTED,
-		"interpolated": _COLOR_INTERPOLATED,
-		"lost": _COLOR_LOST,
+		"seed": (0, 255, 128),        # bright green-teal for seed frames
+		"propagated": (0, 200, 255),  # yellow-orange for propagated frames
+		"merged": (255, 200, 0),      # cyan-blue for merged frames
 	}
 	color = color_map.get(source, _COLOR_LOST)
 	return color
+
+
+#============================================
+def _draw_dashed_rect(
+	frame: numpy.ndarray,
+	x1: int,
+	y1: int,
+	x2: int,
+	y2: int,
+	color: tuple,
+	thickness: int = 2,
+	dash_len: int = 10,
+) -> None:
+	"""Draw a dashed rectangle on the frame in-place.
+
+	Args:
+		frame: BGR image to draw on.
+		x1: Left edge of the rectangle.
+		y1: Top edge of the rectangle.
+		x2: Right edge of the rectangle.
+		y2: Bottom edge of the rectangle.
+		color: BGR color tuple.
+		thickness: Line thickness in pixels.
+		dash_len: Length of each dash segment in pixels.
+	"""
+	# top edge: left to right
+	x = x1
+	while x < x2:
+		x_end = min(x + dash_len, x2)
+		cv2.line(frame, (x, y1), (x_end, y1), color, thickness)
+		x += 2 * dash_len
+	# bottom edge: left to right
+	x = x1
+	while x < x2:
+		x_end = min(x + dash_len, x2)
+		cv2.line(frame, (x, y2), (x_end, y2), color, thickness)
+		x += 2 * dash_len
+	# left edge: top to bottom
+	y = y1
+	while y < y2:
+		y_end = min(y + dash_len, y2)
+		cv2.line(frame, (x1, y), (x1, y_end), color, thickness)
+		y += 2 * dash_len
+	# right edge: top to bottom
+	y = y1
+	while y < y2:
+		y_end = min(y + dash_len, y2)
+		cv2.line(frame, (x2, y), (x2, y_end), color, thickness)
+		y += 2 * dash_len
+
+
+#============================================
+def _box_to_crop_coords(
+	box: list,
+	crop_rect: tuple,
+	out_w: int,
+	out_h: int,
+) -> tuple:
+	"""Convert a [cx, cy, w, h] full-frame box to crop-space pixel coords.
+
+	Args:
+		box: [cx, cy, w, h] in full-frame coordinates.
+		crop_rect: (x, y, w, h) crop region in full-frame coordinates.
+		out_w: Output frame width in pixels.
+		out_h: Output frame height in pixels.
+
+	Returns:
+		Tuple of (x1, y1, x2, y2) pixel coordinates in crop-space.
+	"""
+	crop_x, crop_y, crop_w, crop_h = crop_rect
+	scale_x = out_w / crop_w if crop_w > 0 else 1.0
+	scale_y = out_h / crop_h if crop_h > 0 else 1.0
+	bcx, bcy, bw, bh = box
+	# transform center from full-frame to crop-space
+	cx_in_crop = (bcx - crop_x) * scale_x
+	cy_in_crop = (bcy - crop_y) * scale_y
+	bw_scaled = bw * scale_x
+	bh_scaled = bh * scale_y
+	x1 = int(cx_in_crop - bw_scaled / 2.0)
+	y1 = int(cy_in_crop - bh_scaled / 2.0)
+	x2 = int(cx_in_crop + bw_scaled / 2.0)
+	y2 = int(cy_in_crop + bh_scaled / 2.0)
+	return (x1, y1, x2, y2)
 
 
 #============================================
@@ -380,20 +463,28 @@ def draw_debug_overlay_cropped(
 	crop_rect: tuple,
 	out_w: int,
 	out_h: int,
+	debug_state: dict | None = None,
 ) -> None:
-	"""Draw tracking debug overlay on a cropped/resized frame in-place.
+	"""Draw v2 tracking debug overlay on a cropped/resized frame in-place.
 
-	Transforms the tracked bounding box from full-frame center coords
-	into crop-space pixel coords and draws it, along with source label
-	and confidence bar.
+	Transforms tracking boxes from full-frame center coords into
+	crop-space pixel coords. Draws accepted torso track (solid green),
+	forward/backward track boxes (dashed), competitor box (red), and
+	text labels for confidence, source, and interval ID.
 
 	Args:
 		frame: BGR image (already cropped and resized to out_w x out_h).
-		state: Per-frame state dict with bbox, source, confidence,
-			frame_index. None if the frame had no tracking data.
+		state: v2 per-frame state dict with keys: cx, cy, w, h, conf,
+			source. None if the frame had no tracking data.
 		crop_rect: Crop rectangle as (x, y, w, h) in full-frame coords.
 		out_w: Output frame width in pixels.
 		out_h: Output frame height in pixels.
+		debug_state: Optional dict with additional debug boxes and labels:
+			- "forward_box": [cx, cy, w, h] or None
+			- "backward_box": [cx, cy, w, h] or None
+			- "competitor_box": [cx, cy, w, h] or None
+			- "confidence_label": "HIGH" / "MED" / "LOW"
+			- "interval_id": str like "150-450"
 	"""
 	if state is None:
 		# no tracking data for this frame
@@ -403,51 +494,76 @@ def draw_debug_overlay_cropped(
 		)
 		return
 
-	source = state.get("source", "lost")
-	confidence = state.get("confidence", 0.0)
-	frame_idx = state.get("frame_index", 0)
-	bbox = state.get("bbox")
-	color = _source_color(source)
+	# extract v2 state fields
+	source = state.get("source", "")
+	conf = state.get("conf", 0.0)
+	cx = state.get("cx")
+	cy = state.get("cy")
+	w = state.get("w")
+	h = state.get("h")
 
-	# crop origin and scale factors for coordinate transform
-	crop_x, crop_y, crop_w, crop_h = crop_rect
-	scale_x = out_w / crop_w if crop_w > 0 else 1.0
-	scale_y = out_h / crop_h if crop_h > 0 else 1.0
+	# resolve debug_state values safely
+	if debug_state is None:
+		debug_state = {}
+	forward_box = debug_state.get("forward_box")
+	backward_box = debug_state.get("backward_box")
+	competitor_box = debug_state.get("competitor_box")
+	confidence_label = debug_state.get("confidence_label", "")
+	interval_id = debug_state.get("interval_id", "")
 
-	# draw tracked bounding box (center format: cx, cy, w, h)
-	if bbox is not None:
-		bcx, bcy, bw, bh = bbox
-		# transform from full-frame to crop-space coords
-		cx_in_crop = (bcx - crop_x) * scale_x
-		cy_in_crop = (bcy - crop_y) * scale_y
-		bw_scaled = bw * scale_x
-		bh_scaled = bh * scale_y
-		x1 = int(cx_in_crop - bw_scaled / 2.0)
-		y1 = int(cy_in_crop - bh_scaled / 2.0)
-		x2 = int(cx_in_crop + bw_scaled / 2.0)
-		y2 = int(cy_in_crop + bh_scaled / 2.0)
+	# draw dashed blue forward track box when available
+	if forward_box is not None:
+		fx1, fy1, fx2, fy2 = _box_to_crop_coords(forward_box, crop_rect, out_w, out_h)
+		_draw_dashed_rect(frame, fx1, fy1, fx2, fy2, _COLOR_FORWARD, thickness=2)
+
+	# draw dashed orange backward track box when available
+	if backward_box is not None:
+		bx1, by1, bx2, by2 = _box_to_crop_coords(backward_box, crop_rect, out_w, out_h)
+		_draw_dashed_rect(frame, bx1, by1, bx2, by2, _COLOR_BACKWARD, thickness=2)
+
+	# draw red competitor box when present (low margin situation)
+	if competitor_box is not None:
+		rx1, ry1, rx2, ry2 = _box_to_crop_coords(competitor_box, crop_rect, out_w, out_h)
+		# black outline for contrast
+		cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (0, 0, 0), 4)
+		cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), _COLOR_COMPETITOR, 2)
+
+	# draw accepted torso track as solid green box
+	if cx is not None and cy is not None and w is not None and h is not None:
+		accepted_box = [cx, cy, w, h]
+		ax1, ay1, ax2, ay2 = _box_to_crop_coords(accepted_box, crop_rect, out_w, out_h)
 		# black outline for contrast against any background
-		cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 0), 5)
-		# colored rectangle on top
-		cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
-		# crosshair at bbox center
-		cross_cx = int(cx_in_crop)
-		cross_cy = int(cy_in_crop)
+		cv2.rectangle(frame, (ax1, ay1), (ax2, ay2), (0, 0, 0), 5)
+		# solid green accepted track box
+		cv2.rectangle(frame, (ax1, ay1), (ax2, ay2), _COLOR_ACCEPTED, 3)
+		# crosshair at box center
+		cross_cx = int((ax1 + ax2) / 2)
+		cross_cy = int((ay1 + ay2) / 2)
 		cross_len = 12
 		cv2.line(frame, (cross_cx - cross_len, cross_cy), (cross_cx + cross_len, cross_cy), (0, 0, 0), 3)
 		cv2.line(frame, (cross_cx, cross_cy - cross_len), (cross_cx, cross_cy + cross_len), (0, 0, 0), 3)
-		cv2.line(frame, (cross_cx - cross_len, cross_cy), (cross_cx + cross_len, cross_cy), color, 1)
-		cv2.line(frame, (cross_cx, cross_cy - cross_len), (cross_cx, cross_cy + cross_len), color, 1)
-		# show box coordinates below frame label
-		box_label = f"box: {x1},{y1} {x2-x1}x{y2-y1}"
-		cv2.putText(frame, box_label, (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+		cv2.line(frame, (cross_cx - cross_len, cross_cy), (cross_cx + cross_len, cross_cy), _COLOR_ACCEPTED, 1)
+		cv2.line(frame, (cross_cx, cross_cy - cross_len), (cross_cx, cross_cy + cross_len), _COLOR_ACCEPTED, 1)
 
-	# draw frame info text in top-left
-	label = f"F:{frame_idx} {source} conf={confidence:.2f}"
-	cv2.putText(
-		frame, label, (10, 30),
-		cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2,
-	)
+	# build top-left info text: source and confidence value
+	source_color = _source_color(source)
+	source_label = f"src:{source}" if source else "src:unknown"
+	cv2.putText(frame, source_label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, source_color, 2)
+
+	# confidence label: HIGH / MED / LOW from debug_state, or compute fallback
+	if confidence_label:
+		conf_text = f"conf:{confidence_label} ({conf:.2f})"
+	else:
+		conf_text = f"conf:{conf:.2f}"
+	cv2.putText(frame, conf_text, (10, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.6, source_color, 2)
+
+	# interval ID in bottom-left corner when provided
+	if interval_id:
+		interval_text = f"[{interval_id}]"
+		cv2.putText(
+			frame, interval_text, (10, out_h - 12),
+			cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1,
+		)
 
 	# draw confidence bar in top-right corner
 	bar_w = 100
@@ -456,10 +572,10 @@ def draw_debug_overlay_cropped(
 	bar_y = 10
 	# background bar (dark gray)
 	cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (50, 50, 50), -1)
-	# filled portion (green to red gradient via confidence)
-	fill_w = int(bar_w * max(0.0, min(1.0, confidence)))
+	# filled portion scales with conf value
+	fill_w = int(bar_w * max(0.0, min(1.0, conf)))
 	# color: green at 1.0, red at 0.0
-	bar_g = int(255 * confidence)
-	bar_r = int(255 * (1.0 - confidence))
+	bar_g = int(255 * conf)
+	bar_r = int(255 * (1.0 - conf))
 	bar_color = (0, bar_g, bar_r)
 	cv2.rectangle(frame, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), bar_color, -1)
