@@ -256,7 +256,8 @@ def build_silence_timeline_yaml(input_file: str, output_media_file: str,
 	lines.append("emwy: 2")
 	lines.append("")
 	lines.append("profile:")
-	lines.append(f"  fps: {yaml_quote(profile['fps'])}")
+	# fps can be a float or string fraction like "30000/1001"
+	lines.append(f"  fps: {yaml_quote(str(profile['fps']))}")
 	lines.append(f"  resolution: [{profile['width']}, {profile['height']}]")
 	audio_line = f"  audio: {{sample_rate: {profile['sample_rate']}, "
 	audio_line += f"channels: {profile['channels']}}}"

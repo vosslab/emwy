@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-03-10
+
+### Additions and New Features
+- Renamed `tools/` to `emwy_tools/` via `git mv` for branding and clarity.
+- Created `emwy_tools/tools_common.py` with shared utilities: `ensure_file_exists()`, `check_dependency()`, `run_process()`, `parse_time_seconds()`, `fps_fraction_to_float()`, `probe_video_stream()`, `probe_duration_seconds()`.
+- Split `emwy_tools/silence_annotator.py` (1867 lines) into `emwy_tools/silence_annotator/` sub-package with `detection.py`, `config.py`, and `silence_annotator.py` entry point.
+- Split `emwy_tools/stabilize_building.py` (2282 lines) into `emwy_tools/stabilize_building/` sub-package with `config.py`, `crop.py`, `stabilize.py`, and `stabilize_building.py` entry point.
+- Created `emwy_tools/video_scruncher/` placeholder sub-package.
+- Created `emwy_tools/track_runner/track_runner.py` as shebang entry point (replaces `__main__.py`).
+- Moved tool tests to `emwy_tools/tests/` with shared `conftest.py`.
+- Created `emwy_tools/tests/test_tools_common.py` for shared utility tests.
+- Updated `source_me.sh` to add `emwy_tools/` to PYTHONPATH.
+
+### Behavior or Interface Changes
+- All tools now invoked as `source source_me.sh && python emwy_tools/<tool>/<tool>.py` instead of `source source_me.sh && python tools/<tool>.py`.
+- track_runner internal imports changed from fully-qualified (`import tools.track_runner.config`) to bare sibling imports (`import config`).
+- Removed duplicated utility functions from all tools; now use `tools_common.*` instead.
+- Removed duplicated `format_speed()` from silence_annotator; now uses `emwy_yaml_writer.format_speed()`.
+
+### Fixes and Maintenance
+- Refreshed README.md, INSTALL.md, and USAGE.md with correct Python 3.12 version, `source source_me.sh` bootstrap commands, `emwy_tools/` paths, and curated doc links.
+- Refreshed CODE_ARCHITECTURE.md and FILE_STRUCTURE.md to match current repo layout: updated test file listings, fixed stale report filenames, added `source_me.sh` and `TRACK_RUNNER_TOOL_PLAN.md`, corrected `tools/` to `emwy_tools/`.
+- Fixed `emwy_yaml_writer.build_silence_timeline_yaml()` to convert fps to string before quoting (was passing float to `yaml_quote()`).
+- Removed unused `yaml` import from `emwy_tools/track_runner/cli.py` and `emwy_tools/tests/test_track_runner.py`.
+- Removed shebangs from library modules (non-entry-point files).
+- Set executable bit on all entry point scripts.
+- Updated `tests/test_render_tooling.py` and `tests/test_integration_render.py` silence_annotator paths from `tools/` to `emwy_tools/silence_annotator/`.
+
+### Developer Tests and Notes
+- YOLO weights require ultralytics pip package for initial PT-to-ONNX export; cached after first run.
+- Detection tests skip gracefully when ONNX weights or test videos are unavailable.
+- All 555 tests pass (4 skipped) after reorganization.
+
 ## Unreleased
 - Added four section title cards to the Writing_Webwork_with_AI_Agents EMWY YAML: "ChatGPT vs WebWork" (~01:47), "Amino Acid Isoelectric Points" (~05:58), "Codex vs Claude" (~09:17), and "Comparing Results" (~15:51).
 - Added `-d`/`--debug` flag to `emwy_cli.py` that writes a timestamped debug log to `emwy_cli.log`, matching the TUI's existing `-d` debug log feature.

@@ -9,22 +9,22 @@ belong.
 emwy/
 +- AGENTS.md
 +- Brewfile
++- CLAUDE.md
 +- LICENSE
 +- MANIFEST.in
 +- README.md
-+- ascii_compliance.txt
 +- emwy_cli.py
 +- emwy_tui.py
 +- pip_requirements.txt
++- pip_requirements-dev.txt
 +- pyproject.toml
-+- pyflakes.txt
-+- shebang_report.txt
++- source_me.sh
 +- devel/
 +- docs/
 +- emwylib/
++- emwy_tools/
 +- samples/
-+- tests/
-`- tools/
+`- tests/
 ```
 
 Top-level highlights:
@@ -33,11 +33,9 @@ Top-level highlights:
 - [AGENTS.md](AGENTS.md): Agent workflow and coding guidance.
 - [pyproject.toml](pyproject.toml): Packaging metadata and scripts.
 - [pip_requirements.txt](pip_requirements.txt): Python dependencies.
+- [source_me.sh](source_me.sh): Shell bootstrap (sets PYTHONPATH and environment).
 - [emwy_cli.py](emwy_cli.py): Primary CLI entry point.
 - [emwy_tui.py](emwy_tui.py): Textual TUI wrapper.
-- [ascii_compliance.txt](ascii_compliance.txt): ASCII compliance report output.
-- [pyflakes.txt](pyflakes.txt): Pyflakes report output.
-- [shebang_report.txt](shebang_report.txt): Shebang scan report output.
 
 ## Key subtrees
 
@@ -80,40 +78,83 @@ Tests and repo hygiene checks in [tests/](tests/):
 
 ```
 tests/
+  conftest.py
   check_ascii_compliance.py
+  fix_ascii_compliance.py
+  fix_whitespace.py
   font_utils.py
+  git_file_utils.py
   render_titlecard.py
-  run_ascii_compliance.py
-  run_pyflakes.sh
-  test_emwy_yaml_writer.py
+  test_ascii_compliance.py
   test_enabled_entries.py
   test_ffmpeg_overlays.py
   test_font_usage.py
+  test_import_dot.py
+  test_import_requirements.py
+  test_import_star.py
   test_indentation.py
+  test_init_files.py
   test_integration_render.py
   test_mlt_export.py
   test_playback_styles.py
+  test_pyflakes_code_lint.py
   test_render_tooling.py
-  test_repo_hygiene.py
   test_shebangs.py
   test_speed_sync.py
-  test_stabilize_building_tool.py
+  test_titlecard.py
   test_tui_metrics.py
+  test_whitespace.py
+```
+
+Tool-specific tests in [emwy_tools/tests/](emwy_tools/tests/):
+
+```
+emwy_tools/tests/
+  __init__.py
+  conftest.py
+  test_emwy_yaml_writer.py
+  test_stabilize_building.py
+  test_tools_common.py
+  test_track_runner.py
 ```
 
 ### Tools
 
-Helper scripts in [tools/](tools/):
+Helper scripts in [emwy_tools/](emwy_tools/):
 
 ```
-tools/
+emwy_tools/
   README.md
+  tools_common.py
+  emwy_yaml_writer.py
   config_silence.yml
   demo_codex.small.emwy.yaml
-  emwy_yaml_writer.py
-  silence_annotator.py
-  stabilize_building.py
-  video_scruncher.py
+  tests/
+  silence_annotator/
+    __init__.py
+    silence_annotator.py
+    detection.py
+    config.py
+  stabilize_building/
+    __init__.py
+    stabilize_building.py
+    stabilize.py
+    crop.py
+    config.py
+  track_runner/
+    __init__.py
+    track_runner.py
+    cli.py
+    config.py
+    crop.py
+    detection.py
+    encoder.py
+    kalman.py
+    scoring.py
+    seeding.py
+  video_scruncher/
+    __init__.py
+    video_scruncher.py
 ```
 
 ### Development scripts
@@ -141,32 +182,30 @@ samples/
 
 Ignored or regenerated outputs include:
 
-- [ascii_compliance.txt](ascii_compliance.txt): Output from
-  [tests/run_ascii_compliance.py](tests/run_ascii_compliance.py).
-- [pyflakes.txt](pyflakes.txt): Output from [tests/run_pyflakes.sh](tests/run_pyflakes.sh).
-- [shebang_report.txt](shebang_report.txt): Output from
-  [tests/test_shebangs.py](tests/test_shebangs.py).
+- `report_*.txt`: Lint and analysis reports (git-ignored).
 - `__pycache__/`, `*.pyc`: Python bytecode artifacts.
 - `build/`, `dist/`, `*.egg-info/`: Packaging outputs.
 - `.pytest_cache/`, `.mypy_cache/`: Test and type-check caches.
 - `*.mkv`, `*.mp4`, `*.avi`: Video outputs (ignored by default).
+- `output_smoke/`: Smoke test output directory.
 
 Temporary render files default to a per-run temp directory (see `--cache-dir` in
-[docs/CLI.md](docs/CLI.md)).
+[docs/USAGE.md](docs/USAGE.md)).
 
 ## Documentation map
 
 Documentation lives in [docs/](docs/):
 
 - [docs/INSTALL.md](docs/INSTALL.md): System dependencies and install steps.
-- [docs/CLI.md](docs/CLI.md): CLI usage and flags.
-- [docs/FORMAT.md](docs/FORMAT.md): YAML project format overview.
+- [docs/USAGE.md](docs/USAGE.md): CLI workflows and example commands.
 - [docs/TOOLS.md](docs/TOOLS.md): Tooling and helper scripts.
 - [docs/DEBUGGING.md](docs/DEBUGGING.md): Common errors and diagnostics.
 - [docs/COOKBOOK.md](docs/COOKBOOK.md): Editing recipes.
 - [docs/FAQ.md](docs/FAQ.md): Common questions and design notes.
 - [docs/EMWY_YAML_v1_SPEC.md](docs/EMWY_YAML_v1_SPEC.md): Legacy v1 spec.
 - [docs/EMWY_YAML_v2_SPEC.md](docs/EMWY_YAML_v2_SPEC.md): Current v2 spec.
+- [docs/FORMAT.md](docs/FORMAT.md): Project file overview.
+- [docs/CLI.md](docs/CLI.md): CLI usage and flags.
 - [docs/MLT_INTEROP.md](docs/MLT_INTEROP.md): EMWY and MLT mapping notes.
 - [docs/EXPORT_MLT_XML_SPEC.md](docs/EXPORT_MLT_XML_SPEC.md): MLT export spec.
 - [docs/IMPORT_MLT_XML_SPEC.md](docs/IMPORT_MLT_XML_SPEC.md): Draft import spec.
@@ -184,6 +223,7 @@ Documentation lives in [docs/](docs/):
 - [docs/SECURITY.md](docs/SECURITY.md): Security notes.
 - [docs/AUTHORS.md](docs/AUTHORS.md): Maintainers and contributors.
 - [docs/STABILIZATION_TOOL_PLAN.md](docs/STABILIZATION_TOOL_PLAN.md): Stabilization plan.
+- [docs/TRACK_RUNNER_TOOL_PLAN.md](docs/TRACK_RUNNER_TOOL_PLAN.md): Track runner plan.
 
 Root-level docs:
 
@@ -202,7 +242,7 @@ Root-level docs:
 - **Tests**: Add pytest files under [tests/](tests/) using `test_*.py` names.
 - **Docs**: Add docs under [docs/](docs/) using SCREAMING_SNAKE_CASE names and
   update [docs/CHANGELOG.md](docs/CHANGELOG.md).
-- **Tools**: Add scripts under [tools/](tools/) and document them in
-  [docs/TOOLS.md](docs/TOOLS.md).
+- **Tools**: Add sub-packages under [emwy_tools/](emwy_tools/) and document them
+  in [docs/TOOLS.md](docs/TOOLS.md).
 - **Samples**: Add example projects under [samples/](samples/) with `.emwy.yaml`
   extensions.

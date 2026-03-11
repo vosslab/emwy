@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 
 """
-Unit tests for tools/emwy_yaml_writer.py.
+Unit tests for emwy_yaml_writer.py.
 """
 
 # Standard Library
-import os
-import sys
 import unittest
 
 # local repo modules
-TOOLS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tools"))
-if TOOLS_DIR not in sys.path:
-	sys.path.insert(0, TOOLS_DIR)
 import emwy_yaml_writer
 
 #============================================

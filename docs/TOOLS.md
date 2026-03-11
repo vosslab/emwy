@@ -1,8 +1,8 @@
 # Tools
 
-Utility scripts live in `tools/` and are not part of the core render pipeline.
+Utility scripts live in `emwy_tools/` and are not part of the core render pipeline.
 
-## silence_annotator.py
+## silence_annotator
 
 Detects silence in a video or audio file and writes an EMWY v2 YAML project
 that fast forwards the silent sections by default.
@@ -19,7 +19,7 @@ edited in one place.
 Example:
 
 ```bash
-python3 tools/silence_annotator.py -i movie.mp4
+source source_me.sh && python3 emwy_tools/silence_annotator/silence_annotator.py -i movie.mp4
 python3 emwy_cli.py -y movie.emwy.yaml
 ```
 
@@ -95,7 +95,7 @@ Dependencies: `ffmpeg`, `ffprobe`, `numpy`. `matplotlib` is required for `--debu
 
 `title_card.text_template` supports `{name}` (input filename without extension).
 
-## stabilize_building.py
+## stabilize_building
 
 Stabilizes "bird on a building" footage as a standalone media-prep step (not an EMWY YAML feature).
 This is global stabilization that aims to make the building static, then apply a single static crop
@@ -105,7 +105,7 @@ back to a strictly budgeted border fill for rare jerk frames.
 Example:
 
 ```bash
-python3 tools/stabilize_building.py -i IMG_3495.mov -o IMG_3495.stabilized.mkv --start 0 --duration 30
+source source_me.sh && python3 emwy_tools/stabilize_building/stabilize_building.py -i IMG_3495.mov -o IMG_3495.stabilized.mkv --start 0 --duration 30
 ```
 
 Config file:
@@ -176,7 +176,48 @@ settings:
 
 Dependencies: `ffmpeg` (with `vidstabdetect`/`vidstabtransform`), `ffprobe`, `pyyaml`.
 
-## video_scruncher.py
+## track_runner
+
+Tracks a single runner in handheld footage and produces a cropped/reframed output
+video following that runner. Uses YOLO person detection as the primary signal,
+Kalman filtering for temporal smoothing, and adaptive crop trajectory for smooth
+virtual camera output.
+
+This is a **detect-and-stabilize** tool: the camera operator already keeps the
+runner roughly in frame; the tool refines centering, removes jitter, and
+normalizes zoom.
+
+Example:
+
+```bash
+source source_me.sh && python3 emwy_tools/track_runner/track_runner.py -i race_footage.mov -o race_tracked.mp4
+```
+
+Config file:
+
+- By default, no config file is read or written (code defaults only).
+- Use `-c, --config PATH` to read a config.
+- Use `--write-default-config` to write `<input>.track_runner.config.yaml` and exit.
+- Use `--use-default-config` to read `<input>.track_runner.config.yaml` (error if missing).
+- The config file starts with `track_runner: 1`.
+
+Common flags:
+
+- `-i, --input` Input video file (required)
+- `-o, --output` Output video file
+- `--seed-interval` Seconds between seed frames (default 10)
+- `--aspect` Output crop aspect ratio (default "1:1")
+- `--write-debug-video` Write a debug overlay video
+- `--keep-temp` Keep temporary files
+
+Package structure: `emwy_tools/track_runner/` with modules for detection, kalman
+filtering, seeding, scoring, crop trajectory, and video encoding.
+
+Dependencies: `ffmpeg`, `ffprobe`, `opencv-python`, `numpy`, `pyyaml`.
+YOLO weights require `ultralytics` pip package for initial export; cached after first run.
+Falls back to HOG detector if YOLO weights are unavailable.
+
+## video_scruncher
 
 Design doc for compressing silent segments while preserving visual diversity.
 Currently a spec-only placeholder.

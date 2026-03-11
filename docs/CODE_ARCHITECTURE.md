@@ -47,11 +47,14 @@ an optional export format, not the primary render path.
 
 ### Tools
 
-- [tools/silence_annotator.py](tools/silence_annotator.py): Generate EMWY YAML
+- [emwy_tools/silence_annotator/](emwy_tools/silence_annotator/): Generate EMWY YAML
   from audio silence detection.
-- [tools/stabilize_building.py](tools/stabilize_building.py): Global
+- [emwy_tools/stabilize_building/](emwy_tools/stabilize_building/): Global
   stabilization tool for existing media.
-- [tools/video_scruncher.py](tools/video_scruncher.py): Video compression helper.
+- [emwy_tools/track_runner/](emwy_tools/track_runner/): Runner tracking and
+  video reframing from handheld footage.
+- [emwy_tools/video_scruncher/](emwy_tools/video_scruncher/): Video compression
+  helper (placeholder).
 
 ## Data flow
 
@@ -81,11 +84,13 @@ MLT export branches after compilation and writes XML instead of rendering.
 ## Testing and verification
 
 - [tests/](tests/): pytest-style test files and helpers.
-- [tests/run_pyflakes.sh](tests/run_pyflakes.sh): Pyflakes static analysis.
-- [tests/run_ascii_compliance.py](tests/run_ascii_compliance.py): ASCII and
-  ISO-8859-1 compliance scan.
+- [tests/test_pyflakes_code_lint.py](tests/test_pyflakes_code_lint.py): Pyflakes
+  static analysis gate.
+- [tests/test_ascii_compliance.py](tests/test_ascii_compliance.py): ASCII and
+  ISO-8859-1 compliance gate.
 - [tests/check_ascii_compliance.py](tests/check_ascii_compliance.py): Per-file
   ASCII/ISO-8859-1 checker.
+- [emwy_tools/tests/](emwy_tools/tests/): Tool-specific tests.
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the preferred test workflow.
 
@@ -102,8 +107,8 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the preferred test workflow.
 - **New export formats**: Add modules under [emwylib/exporters/](emwylib/exporters/).
 - **New import formats**: Create [emwylib/importers/](emwylib/importers/) when
   import support is implemented.
-- **Standalone tools**: Add scripts under [tools/](tools/) and document them in
-  [docs/TOOLS.md](docs/TOOLS.md).
+- **Standalone tools**: Add sub-packages under [emwy_tools/](emwy_tools/) and
+  document them in [docs/TOOLS.md](docs/TOOLS.md).
 
 ## Known gaps
 

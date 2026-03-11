@@ -231,7 +231,7 @@ class SilenceAnnotatorIntegrationTest(unittest.TestCase):
 				f"\"{source_path}\""
 			)
 			_run(cmd)
-			annotator = os.path.join(REPO_ROOT, "tools", "silence_annotator.py")
+			annotator = os.path.join(REPO_ROOT, "emwy_tools", "silence_annotator", "silence_annotator.py")
 			cmd = (
 				f"\"{sys.executable}\" \"{annotator}\" "
 				f"-i \"{source_path}\" -s 0.5 -m 0.5 -S 4 -C 1"

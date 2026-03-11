@@ -395,7 +395,7 @@ def test_silence_annotator_segments() -> None:
 		)
 		_run(cmd)
 		_write_silence_config(config_path)
-		annotator = os.path.join(REPO_ROOT, "tools", "silence_annotator.py")
+		annotator = os.path.join(REPO_ROOT, "emwy_tools", "silence_annotator", "silence_annotator.py")
 		cmd = (
 			f"\"{sys.executable}\" \"{annotator}\" "
 			f"-i \"{source_path}\" -c \"{config_path}\""

@@ -7,7 +7,13 @@ Use emwy to render video projects defined in `.emwy.yaml` files.
 Validate a sample project without rendering:
 
 ```bash
-python3 emwy_cli.py -n -y samples/gangnam.emwy.yaml
+source source_me.sh && python emwy_cli.py -n -y samples/gangnam.emwy.yaml
+```
+
+Render a sample project:
+
+```bash
+source source_me.sh && python emwy_cli.py -y samples/gangnam.emwy.yaml
 ```
 
 ## CLI
@@ -15,8 +21,8 @@ python3 emwy_cli.py -n -y samples/gangnam.emwy.yaml
 Primary entry points:
 
 ```bash
-python3 emwy_cli.py -y project.emwy.yaml
-python3 emwy_tui.py -y project.emwy.yaml
+source source_me.sh && python emwy_cli.py -y project.emwy.yaml
+source source_me.sh && python emwy_tui.py -y project.emwy.yaml
 ```
 
 Common flags (CLI):
@@ -28,28 +34,13 @@ Common flags (CLI):
 - `-k, --keep-temp`: Preserve temporary render files.
 - `-K, --no-keep-temp`: Remove temporary render files (default).
 - `-p, --dump-plan`: Print compiled playlists/stack after planning.
+- `-d, --debug`: Write debug log to `emwy_cli.log`.
 
 The TUI supports the same flags and adds `-d, --debug` to write `emwy_tui.log`.
 
-## Examples
+## Tools
 
-Render a sample project:
-
-```bash
-python3 emwy_cli.py -y samples/gangnam.emwy.yaml
-```
-
-Export MLT XML for inspection:
-
-```bash
-python3 -m emwylib.exporters.mlt -y samples/gangnam.emwy.yaml -o samples/gangnam.mlt
-```
-
-Run the Textual TUI with a dry run:
-
-```bash
-python3 emwy_tui.py -n -y samples/gangnam.emwy.yaml
-```
+Helper scripts for media preparation live in `emwy_tools/`. See [docs/TOOLS.md](docs/TOOLS.md) for details.
 
 ## Inputs and outputs
 
@@ -60,4 +51,4 @@ python3 emwy_tui.py -n -y samples/gangnam.emwy.yaml
 
 ## Known gaps
 
-- TODO: Confirm whether the `emwy` console script is supported and document it.
+- The `emwy` console script has not been confirmed as a packaged entry point.

@@ -1,10 +1,20 @@
 import os
+import subprocess
 
 import pytest
 
-
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# use git rev-parse per REPO_STYLE.md -- not derived from __file__
+REPO_ROOT = subprocess.check_output(
+	["git", "rev-parse", "--show-toplevel"],
+	text=True,
+).strip()
 SKIP_ENV = "SKIP_REPO_HYGIENE"
+
+# set PYTHONPATH so subprocesses (e.g. silence_annotator) can find shared modules
+_emwy_tools_dir = os.path.join(REPO_ROOT, "emwy_tools")
+_existing = os.environ.get("PYTHONPATH", "")
+if _emwy_tools_dir not in _existing.split(os.pathsep):
+	os.environ["PYTHONPATH"] = _emwy_tools_dir + os.pathsep + _existing if _existing else _emwy_tools_dir
 
 
 #============================================

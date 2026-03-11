@@ -15,7 +15,10 @@ import tempfile
 import pytest
 import yaml
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# local repo modules
+import git_file_utils
+
+REPO_ROOT = git_file_utils.get_repo_root()
 
 #============================================
 
@@ -132,7 +135,7 @@ def test_stabilize_building_smoke_success() -> None:
 		lines.append("")
 		with open(config_path, "w", encoding="utf-8") as handle:
 			handle.write("\n".join(lines))
-		tool_path = os.path.join(REPO_ROOT, "tools", "stabilize_building.py")
+		tool_path = os.path.join(REPO_ROOT, "emwy_tools", "stabilize_building", "stabilize_building.py")
 		proc = _run([
 			sys.executable,
 			tool_path,
@@ -169,7 +172,7 @@ def test_stabilize_building_no_config_uses_code_defaults() -> None:
 		output_path = os.path.join(temp_dir, "out.mkv")
 		default_config_path = f"{input_path}.stabilize_building.config.yaml"
 		assert not os.path.exists(default_config_path)
-		tool_path = os.path.join(REPO_ROOT, "tools", "stabilize_building.py")
+		tool_path = os.path.join(REPO_ROOT, "emwy_tools", "stabilize_building", "stabilize_building.py")
 		proc = _run([
 			sys.executable,
 			tool_path,
@@ -232,7 +235,7 @@ def test_stabilize_building_fails_on_strict_crop() -> None:
 		lines.append("")
 		with open(config_path, "w", encoding="utf-8") as handle:
 			handle.write("\n".join(lines))
-		tool_path = os.path.join(REPO_ROOT, "tools", "stabilize_building.py")
+		tool_path = os.path.join(REPO_ROOT, "emwy_tools", "stabilize_building", "stabilize_building.py")
 		proc = _run([
 			sys.executable,
 			tool_path,
@@ -300,7 +303,7 @@ def test_stabilize_building_fill_fallback_succeeds() -> None:
 		lines.append("")
 		with open(config_path, "w", encoding="utf-8") as handle:
 			handle.write("\n".join(lines))
-		tool_path = os.path.join(REPO_ROOT, "tools", "stabilize_building.py")
+		tool_path = os.path.join(REPO_ROOT, "emwy_tools", "stabilize_building", "stabilize_building.py")
 		proc = _run([
 			sys.executable,
 			tool_path,

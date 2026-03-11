@@ -1,6 +1,7 @@
 lxml
 matplotlib
 numpy
+opencv-python
 pillow
 pyflakes
 pyyaml

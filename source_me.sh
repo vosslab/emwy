@@ -6,3 +6,6 @@ export PYTHONUNBUFFERED=1
 export PYTHONDONTWRITEBYTECODE=1
 
 source ~/.bashrc
+
+# add emwy_tools/ to PYTHONPATH so shared modules are importable
+export PYTHONPATH="${PYTHONPATH}:$(git rev-parse --show-toplevel)/emwy_tools"

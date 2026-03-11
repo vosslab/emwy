@@ -5,34 +5,37 @@ power renders and exporters.
 
 ## Requirements
 
-- Python 3.8+ (3.12 recommended).
-- ffmpeg, sox, mkvmerge, and mediainfo available on PATH.
-- MLT/melt only if you plan to use MLT XML output with external tools.
+- Python 3.12.
+- System tools: `ffmpeg`, `sox`, `mkvtoolnix` (provides `mkvmerge`), `mediainfo`, and `mlt` (provides `melt`).
+- macOS with Homebrew is the primary development platform.
 
 ## Install steps
 
-- Create and activate a virtual environment:
-  ```bash
-  python3 -m venv .venv
-  source .venv/bin/activate
-  ```
-- Install Python dependencies:
-  ```bash
-  pip install -r pip_requirements.txt
-  ```
-- Install the package in editable mode if you want the `emwy` console script:
-  ```bash
-  pip install -e .
-  ```
+Clone the repo and install system dependencies with Homebrew:
+
+```bash
+brew bundle
+```
+
+Install Python dependencies:
+
+```bash
+pip install -r pip_requirements.txt
+```
+
+Optionally install the package in editable mode for the `emwy` console script:
+
+```bash
+pip install -e .
+```
 
 ## Verify install
 
 ```bash
-python3 emwy_cli.py -h
+source source_me.sh && python emwy_cli.py -h
 ```
 
 ## Known gaps
 
-- TODO: Confirm the `emwy` console script works as packaged and document its
-  preferred invocation.
-- TODO: Document supported operating systems and any platform-specific setup.
+- The `emwy` console script has not been confirmed as a packaged entry point.
+- Only macOS with Homebrew has been tested; other platforms may need manual dependency setup.
