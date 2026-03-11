@@ -2,6 +2,12 @@
 
 ## 2026-03-11
 
+### Additions and New Features
+- Created `tools/measure_seed_variability.py`: self-contained measurement tool that loads seed and diagnostics YAML files and prints a comprehensive variability report with CSV export. Measures seed coverage, start-line static phase, torso area variability (344x range in Test-1), frame movement (65% of frame width), jersey HSV variability (hue spans 94% of range), torso-vs-full-person box relationship, diagnostics bbox overestimation (~9-13x too large), and cyclical lap patterns (~40s periods). Outputs raw and smoothed CSV to `output_smoke/`.
+- Created `tools/plot_seed_variability.py`: generates 6-panel matplotlib plots per video showing raw scatter and 15s running-averaged signals for torso area, center X/Y, jersey hue, saturation/value, and tracker bbox vs seed area comparison. Saves PNG to `output_smoke/`.
+- Created [docs/SEED_VARIABILITY_FINDINGS.md](docs/SEED_VARIABILITY_FINDINGS.md): analysis of seed variability measurements across Track_Test-1 and Track_Test-3. Key findings: 344x area ratio, jersey color spans 94% of hue range (unusable), tracker overestimates size by 9-13x, ~40s lap periods from center-x. Includes parameter ranges and six recommendations for the tracker rewrite.
+- Created [docs/TRACK_RUNNER_SPEC.md](docs/TRACK_RUNNER_SPEC.md): comprehensive specification documenting how the track_runner tool (4505 lines, 11 files) actually works today, covering all modules, data flows, configuration defaults, bounding box format reference, and 11 known issues with error-prone patterns. Intended to guide a future rewrite.
+
 ### Removals and Deprecations
 - Deleted `emwy_tools/tests/test_stabilize_building.py` (4 integration tests requiring ffmpeg/vid.stab).
 - Deleted `emwy_tools/tests/test_emwy_yaml_writer.py` (5 unittest-based tests).
