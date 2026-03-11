@@ -3,6 +3,54 @@
 ## 2026-03-11
 
 ### Fixes and Maintenance
+- Added 30-second heartbeat output to `propagate_forward()` and `propagate_backward()` in `propagator.py`. When `debug=True`, prints frames completed, elapsed time, and rate every 30 seconds. Eliminates minutes of silence during optical flow propagation on large frames.
+- Added `flush=True` to all debug print statements in `solve_interval()` propagation section to ensure output appears immediately.
+- Added completion timing around the first sequential interval solve in `solve_all_intervals()`. Prints elapsed time when interval 1 finishes.
+- Fixed degenerate 0-0 intervals caused by duplicate seeds at the same frame_index. `collect_seeds()` and `collect_seeds_at_frames()` now filter out candidate frames that already have seeds, bumping collisions to the next unused frame.
+- Removed `_seeds_to_solver_format()` from `cli.py`. Seeds already contain `cx`, `cy`, `w`, `h`, `frame_index` from `_build_seed_dict()`. The converter was silently defaulting missing keys to 0 instead of failing, masking data problems.
+- Added required-field validation in `solve_all_intervals()`: seeds missing `cx`, `cy`, `w`, `h`, or `frame_index` now raise `RuntimeError` instead of silently defaulting to zero.
+- Added frame_index deduplication safety net in `solve_all_intervals()`. When multiple seeds share the same frame_index, only the latest pass is kept, with a warning printed.
+- Added degenerate interval rejection in `solve_interval()`: raises `RuntimeError` when `start_frame >= end_frame`.
+
+### Additions and New Features
+- Added frame-level progress bar for parallel interval solving in `interval_solver.py`. Uses `multiprocessing.Value` as a shared atomic counter across worker processes, polled every 0.2s. Replaces the coarse interval-level bar that appeared frozen during long intervals. Wall-clock time and throughput printed every 30 seconds.
+- Added `detect_roi()` method to `YoloDetector` in `detection.py`. Crops the frame to a region of interest around the predicted runner position before running YOLO, giving better detection resolution for small runners in large frames. Minimum crop size 320x320, default padding factor 3x. Wired into `solve_interval()` for all frames after the first.
+- Added `on_interval_complete` callback parameter to `solve_all_intervals()` for real-time notification when intervals finish. Used by CLI to track weak intervals during solving.
+- Added post-solve interactive seed collection in `cli.py`. After the solve completes, if weak intervals were found, the user is immediately prompted to add seeds at suggested frames rather than waiting for the separate refinement loop. New seeds trigger an automatic re-solve.
+- Added `frame_counter` and `debug` parameters to `solve_interval()`. Debug mode prints per-frame detection count, competitor count, identity score, and margin.
+- Replaced `tqdm` progress bars with `rich.progress` in interval solving and video encoding in track_runner. Interval-level progress in `solve_all_intervals()` and frame-level progress in `encode_cropped_video()` and `_encode_segment()` now use rich progress bars with bar, percentage, and ETA columns.
+- Added simple print-based seed counter (`seed 3/12 frame 450`) to `collect_seeds()` and `collect_seeds_at_frames()` in `seeding.py` for progress visibility during interactive seeding (avoids cv2.imshow conflict with terminal progress bars).
+- Added parallel interval solving via `concurrent.futures.ProcessPoolExecutor` in `interval_solver.py`. Each worker process creates its own `VideoReader` and YOLO detector. First interval runs sequentially (for cyclical prior detection), remaining intervals run in parallel.
+- Added parallel video encoding via `encode_cropped_video_parallel()` in `encoder.py`. Splits frame range across N workers, each with its own `VideoReader` and ffmpeg pipe. Segments concatenated with `mkvmerge`.
+- Wired up the existing `-w`/`--workers` CLI flag (previously unused). Defaults to half of CPU cores. Controls both parallel interval solving and parallel encoding.
+- Created `emwy_tools/frame_reader.py` with `FrameReader` class that wraps
+  `cv2.VideoCapture` with five seeking strategies: (1) msec seek, (2) frame index seek,
+  (3) reopen + frame index seek, (4) sequential forward read fallback,
+  (5) automatic remux to MKV via mkvmerge when all other strategies fail (fixes
+  HEVC/H.265 in QuickTime MOV containers where OpenCV cannot seek at all). Temp MKV
+  is cleaned up on close(). Module lives in shared `emwy_tools/` for use by any tool.
+- Added `save_callback` parameter to `collect_seeds()` and `collect_seeds_at_frames()`
+  for crash-safe incremental seed saving. Seeds are now written to disk after each new
+  seed is collected, so a crash mid-collection no longer loses all work.
+- Created `tests/test_seed_frame_reading.py` with 3 smoke tests: basic reads, sequential
+  fallback when seeking is broken, and backward scrub handling.
+
+### Behavior or Interface Changes
+- `collect_seeds()` and `collect_seeds_at_frames()` now accept `debug` and `save_callback`
+  parameters. The `--debug` CLI flag now enables verbose frame-reading output during
+  seeding (previously only affected encoder overlay).
+
+### Fixes and Maintenance
+- Fixed frozen parallel solve progress bar: switched from sequential `future.result()` iteration to `concurrent.futures.as_completed()` so the bar updates as each worker finishes. Used `progress.console.print()` instead of bare `print()` to avoid rich live display conflicts.
+- Added rich progress bar to the sequential solving path (previously had no interval-level progress bar in `-w 1` mode).
+- Fixed spinning pinwheel on macOS after seed collection window closes by flushing
+  the cv2 event loop with multiple `cv2.waitKey(1)` calls instead of a single one.
+- Fixed strategy 3 in frame seeking: previously reopened the capture but retried the
+  same msec-based seek that already failed; now uses frame index seek after reopen.
+- Fixed sequential fallback (strategy 4) sharing the same `cv2.VideoCapture` with
+  seek-based strategies 1-3. Failed seeks corrupted the cap's internal position, making
+  sequential reads fail immediately. Strategy 4 now uses a dedicated `self._seq_cap`
+  that is never touched by seek operations.
 - Refreshed `docs/CODE_ARCHITECTURE.md` and `docs/FILE_STRUCTURE.md` to reflect the
   track_runner v2 rewrite: added track_runner v2 module map with all 12 modules and
   their responsibilities, added track_runner data flow diagram, added `tools/` directory,

@@ -7,6 +7,7 @@ combined with patch correlation for confirmation.
 
 # Standard Library
 import math
+import time
 
 # PIP3 modules
 import cv2
@@ -459,6 +460,7 @@ def propagate_forward(
 	start_state: dict,
 	end_frame: int,
 	appearance_model: dict,
+	debug: bool = False,
 ) -> list:
 	"""Propagate a tracking state forward from start_frame to end_frame.
 
@@ -471,6 +473,7 @@ def propagate_forward(
 		start_state: Tracking state dict at start_frame.
 		end_frame: Last frame index to track to (inclusive).
 		appearance_model: Appearance model from build_appearance_model().
+		debug: If True, print a heartbeat every 30 seconds with progress.
 
 	Returns:
 		List of tracking state dicts, one per frame from start_frame to
@@ -483,6 +486,8 @@ def propagate_forward(
 		# cannot read the starting frame; return seed only
 		return states
 
+	t_prop_start = time.time()
+	last_heartbeat = t_prop_start
 	for frame_idx in range(start_frame + 1, end_frame + 1):
 		curr_frame = frames_reader.read_frame(frame_idx)
 		if curr_frame is None:
@@ -492,6 +497,17 @@ def propagate_forward(
 		states.append(new_state)
 		prev_state = new_state
 		prev_frame = curr_frame
+		# heartbeat every 30 seconds during long propagation runs
+		if debug:
+			now = time.time()
+			if now - last_heartbeat >= 30.0:
+				done = frame_idx - start_frame
+				total = end_frame - start_frame
+				elapsed = now - t_prop_start
+				rate = done / max(0.1, elapsed)
+				print(f"      propagation fwd: {done}/{total} frames "
+					f"({elapsed:.0f}s, {rate:.1f} frames/s)", flush=True)
+				last_heartbeat = now
 
 	return states
 
@@ -503,6 +519,7 @@ def propagate_backward(
 	start_state: dict,
 	end_frame: int,
 	appearance_model: dict,
+	debug: bool = False,
 ) -> list:
 	"""Propagate a tracking state backward from start_frame to end_frame.
 
@@ -516,6 +533,7 @@ def propagate_backward(
 		start_state: Tracking state dict at start_frame.
 		end_frame: Earliest frame index to track back to (inclusive).
 		appearance_model: Appearance model from build_appearance_model().
+		debug: If True, print a heartbeat every 30 seconds with progress.
 
 	Returns:
 		List of tracking state dicts from end_frame to start_frame inclusive.
@@ -528,6 +546,9 @@ def propagate_backward(
 	if prev_frame is None:
 		return reverse_states
 
+	t_prop_start = time.time()
+	last_heartbeat = t_prop_start
+	total = start_frame - end_frame
 	for frame_idx in range(start_frame - 1, end_frame - 1, -1):
 		curr_frame = frames_reader.read_frame(frame_idx)
 		if curr_frame is None:
@@ -537,6 +558,16 @@ def propagate_backward(
 		reverse_states.append(new_state)
 		prev_state = new_state
 		prev_frame = curr_frame
+		# heartbeat every 30 seconds during long propagation runs
+		if debug:
+			now = time.time()
+			if now - last_heartbeat >= 30.0:
+				done = start_frame - frame_idx
+				elapsed = now - t_prop_start
+				rate = done / max(0.1, elapsed)
+				print(f"      propagation bwd: {done}/{total} frames "
+					f"({elapsed:.0f}s, {rate:.1f} frames/s)", flush=True)
+				last_heartbeat = now
 
 	# reverse so index 0 = end_frame, last = start_frame
 	reverse_states.reverse()

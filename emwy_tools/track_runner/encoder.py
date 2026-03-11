@@ -8,10 +8,12 @@ and encoding via ffmpeg subprocess pipe.
 import os
 import shutil
 import subprocess
+import concurrent.futures
 
 # PIP3 modules
 import cv2
 import numpy
+import rich.progress
 
 # local repo modules
 import crop
@@ -326,22 +328,31 @@ def encode_cropped_video(
 		codec=codec, crf=crf,
 	)
 	frame_count = len(crop_rects)
-	for frame_idx, frame in reader:
-		# stop once we have processed all provided crop rects
-		if frame_idx >= frame_count:
-			break
-		# crop the frame using the crop module
-		crop_rect = crop_rects[frame_idx]
-		cropped = crop.apply_crop(frame, crop_rect)
-		# resize to the exact output dimensions for consistency
-		resized = cv2.resize(cropped, (crop_width, crop_height))
-		# draw debug overlay on the cropped frame when requested
-		if debug and frame_states is not None:
-			state = frame_states[frame_idx] if frame_idx < len(frame_states) else None
-			draw_debug_overlay_cropped(
-				resized, state, crop_rect, crop_width, crop_height,
-			)
-		writer.write_frame(resized)
+	# wrap reader with rich progress bar
+	with rich.progress.Progress(
+		rich.progress.TextColumn("{task.description}"),
+		rich.progress.BarColumn(),
+		rich.progress.TaskProgressColumn(),
+		rich.progress.TimeRemainingColumn(),
+	) as progress:
+		task = progress.add_task("  encoding", total=frame_count)
+		for frame_idx, frame in reader:
+			# stop once we have processed all provided crop rects
+			if frame_idx >= frame_count:
+				break
+			# crop the frame using the crop module
+			crop_rect = crop_rects[frame_idx]
+			cropped = crop.apply_crop(frame, crop_rect)
+			# resize to the exact output dimensions for consistency
+			resized = cv2.resize(cropped, (crop_width, crop_height))
+			# draw debug overlay on the cropped frame when requested
+			if debug and frame_states is not None:
+				state = frame_states[frame_idx] if frame_idx < len(frame_states) else None
+				draw_debug_overlay_cropped(
+					resized, state, crop_rect, crop_width, crop_height,
+				)
+			writer.write_frame(resized)
+			progress.update(task, advance=1)
 	writer.close()
 
 
@@ -579,3 +590,202 @@ def draw_debug_overlay_cropped(
 	bar_r = int(255 * (1.0 - conf))
 	bar_color = (0, bar_g, bar_r)
 	cv2.rectangle(frame, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), bar_color, -1)
+
+
+#============================================
+def _encode_segment(
+	video_path: str,
+	crop_rects_chunk: list,
+	output_path: str,
+	crop_width: int,
+	crop_height: int,
+	start_frame: int,
+	codec: str,
+	crf: int,
+	frame_states_chunk: list | None,
+	debug: bool,
+	worker_id: int,
+	total_workers: int,
+) -> str:
+	"""Encode one segment of the video in a worker process.
+
+	Each worker opens its own VideoReader and ffmpeg pipe. Module-level
+	function so it is picklable for ProcessPoolExecutor.
+
+	Args:
+		video_path: Path to input video file.
+		crop_rects_chunk: Crop rects for this segment's frames.
+		output_path: Output path for the segment file.
+		crop_width: Output frame width.
+		crop_height: Output frame height.
+		start_frame: First frame index for this segment.
+		codec: Video codec string.
+		crf: Constant Rate Factor.
+		frame_states_chunk: Per-frame state dicts for debug overlay, or None.
+		debug: If True, draw debug overlay.
+		worker_id: Worker index for progress bar positioning.
+		total_workers: Total number of workers for display.
+
+	Returns:
+		Path to the encoded segment file.
+	"""
+	reader = VideoReader(video_path)
+	info = reader.get_info()
+	fps = info["fps"]
+	writer = VideoWriter(
+		output_path, crop_width, crop_height, fps,
+		codec=codec, crf=crf,
+	)
+	chunk_size = len(crop_rects_chunk)
+	# rich progress bar for this worker
+	with rich.progress.Progress(
+		rich.progress.TextColumn("{task.description}"),
+		rich.progress.BarColumn(),
+		rich.progress.TaskProgressColumn(),
+		rich.progress.TimeRemainingColumn(),
+	) as progress:
+		task = progress.add_task(
+			f"  worker {worker_id + 1}/{total_workers}",
+			total=chunk_size,
+		)
+		# seek to start_frame and read sequentially
+		reader.cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+		for local_idx in range(chunk_size):
+			ret, frame = reader.cap.read()
+			if not ret:
+				break
+			# crop and resize
+			crop_rect = crop_rects_chunk[local_idx]
+			cropped = crop.apply_crop(frame, crop_rect)
+			resized = cv2.resize(cropped, (crop_width, crop_height))
+			# draw debug overlay when requested
+			if debug and frame_states_chunk is not None:
+				state = frame_states_chunk[local_idx] if local_idx < len(frame_states_chunk) else None
+				draw_debug_overlay_cropped(
+					resized, state, crop_rect, crop_width, crop_height,
+				)
+			writer.write_frame(resized)
+			progress.update(task, advance=1)
+	writer.close()
+	reader.close()
+	return output_path
+
+
+#============================================
+def encode_cropped_video_parallel(
+	video_path: str,
+	crop_rects: list,
+	output_path: str,
+	crop_width: int,
+	crop_height: int,
+	codec: str = "libx264",
+	crf: int = 18,
+	frame_states: list | None = None,
+	debug: bool = False,
+	workers: int = 4,
+) -> None:
+	"""Encode cropped video using parallel worker processes.
+
+	Splits the frame range into chunks, encodes each chunk in a separate
+	process with its own VideoReader and ffmpeg pipe, then concatenates
+	the segment files with mkvmerge.
+
+	Falls back to single-threaded encoding if workers <= 1.
+
+	Args:
+		video_path: Path to input video file.
+		crop_rects: List of (x, y, w, h) tuples, one per frame.
+		output_path: Path for the output video file.
+		crop_width: Output frame width after resize.
+		crop_height: Output frame height after resize.
+		codec: Video codec (default libx264).
+		crf: Constant Rate Factor (default 18).
+		frame_states: List of per-frame state dicts from tracker.
+		debug: If True, draw tracking overlay on cropped frames.
+		workers: Number of parallel encoding workers.
+	"""
+	# fall back to sequential if only 1 worker
+	if workers <= 1:
+		with VideoReader(video_path) as reader:
+			encode_cropped_video(
+				reader, crop_rects, output_path,
+				crop_width, crop_height,
+				codec=codec, crf=crf,
+				frame_states=frame_states, debug=debug,
+			)
+		return
+
+	frame_count = len(crop_rects)
+	# cap workers to frame count
+	actual_workers = min(workers, frame_count)
+	# compute chunk boundaries
+	chunk_size = frame_count // actual_workers
+	remainder = frame_count % actual_workers
+
+	segments = []
+	offset = 0
+	for w_idx in range(actual_workers):
+		# distribute remainder frames across first workers
+		this_chunk = chunk_size + (1 if w_idx < remainder else 0)
+		end_offset = offset + this_chunk
+		# slice crop_rects and frame_states for this chunk
+		rects_chunk = crop_rects[offset:end_offset]
+		states_chunk = None
+		if frame_states is not None:
+			states_chunk = frame_states[offset:end_offset]
+		# segment output file path
+		seg_path = f"{output_path}.seg{w_idx:03d}.mp4"
+		segments.append({
+			"path": seg_path,
+			"rects": rects_chunk,
+			"states": states_chunk,
+			"start_frame": offset,
+			"worker_id": w_idx,
+		})
+		offset = end_offset
+
+	# launch workers with ProcessPoolExecutor
+	seg_paths = []
+	with concurrent.futures.ProcessPoolExecutor(max_workers=actual_workers) as pool:
+		futures = []
+		for seg in segments:
+			future = pool.submit(
+				_encode_segment,
+				video_path,
+				seg["rects"],
+				seg["path"],
+				crop_width, crop_height,
+				seg["start_frame"],
+				codec, crf,
+				seg["states"],
+				debug,
+				seg["worker_id"],
+				actual_workers,
+			)
+			futures.append((future, seg["path"]))
+		# collect results in order
+		for future, seg_path in futures:
+			future.result()
+			seg_paths.append(seg_path)
+
+	# concatenate segments with mkvmerge
+	mkvmerge_path = shutil.which("mkvmerge")
+	if mkvmerge_path is None:
+		raise RuntimeError("mkvmerge not found in PATH for segment concatenation")
+	# build mkvmerge command: first file + subsequent with '+'
+	concat_cmd = [mkvmerge_path, "-o", output_path]
+	for idx, seg_path in enumerate(seg_paths):
+		if idx > 0:
+			concat_cmd.append("+")
+		concat_cmd.append(seg_path)
+	result = subprocess.run(concat_cmd, capture_output=True, text=True)
+	if result.returncode not in (0, 1):
+		# mkvmerge returns 1 for warnings, 2 for errors
+		raise RuntimeError(
+			f"mkvmerge concat failed (code {result.returncode}): {result.stderr}"
+		)
+
+	# clean up segment temp files
+	for seg_path in seg_paths:
+		if os.path.isfile(seg_path):
+			os.remove(seg_path)

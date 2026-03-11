@@ -213,6 +213,85 @@ class YoloDetector:
 			results.append(detection)
 		return results
 
+	#============================================
+	def detect_roi(
+		self,
+		frame: numpy.ndarray,
+		roi_center: tuple[float, float],
+		roi_size: tuple[float, float],
+		padding_factor: float = 3.0,
+	) -> list[dict]:
+		"""Detect persons in a frame region-of-interest (ROI).
+
+		Crops a region around a predicted bounding box and runs YOLO detection
+		on the crop, then transforms detections back to full-frame coordinates.
+
+		Args:
+			frame: BGR image as a numpy array (H, W, 3).
+			roi_center: (cx, cy) tuple of the predicted bbox center in pixels.
+			roi_size: (w, h) tuple of the predicted bbox size in pixels.
+			padding_factor: Expansion factor for the crop region relative to
+				the bbox size. Default 3.0 means the crop is 3x the bbox size.
+
+		Returns:
+			List of detection dicts with keys:
+				bbox: [x, y, w, h] in original frame pixels (top-left corner)
+				confidence: detection confidence score
+				class_id: always 0 (person)
+		"""
+		frame_h, frame_w = frame.shape[:2]
+		cx, cy = roi_center
+		w, h = roi_size
+
+		# Compute crop region: expand bbox by padding_factor
+		crop_w = w * padding_factor
+		crop_h = h * padding_factor
+
+		# Enforce minimum crop size of 320x320 for YOLO context
+		min_crop_size = 320.0
+		crop_w = max(crop_w, min_crop_size)
+		crop_h = max(crop_h, min_crop_size)
+
+		# Compute crop top-left corner
+		x1 = cx - crop_w / 2.0
+		y1 = cy - crop_h / 2.0
+
+		# Clamp to frame boundaries
+		x1 = max(0.0, x1)
+		y1 = max(0.0, y1)
+		x2 = x1 + crop_w
+		y2 = y1 + crop_h
+
+		# Adjust if crop exceeds frame bounds
+		if x2 > frame_w:
+			x2 = frame_w
+			x1 = max(0.0, x2 - crop_w)
+		if y2 > frame_h:
+			y2 = frame_h
+			y1 = max(0.0, y2 - crop_h)
+
+		# Convert to integer pixel coordinates
+		x1 = int(x1)
+		y1 = int(y1)
+		x2 = int(x2)
+		y2 = int(y2)
+
+		# Crop the frame using numpy slicing: [y1:y2, x1:x2]
+		crop = frame[y1:y2, x1:x2]
+
+		# Run YOLO detection on the crop
+		detections = self.detect(crop)
+
+		# Transform detections back to full-frame coordinates
+		for detection in detections:
+			bbox = detection["bbox"]
+			# bbox is [x, y, w, h] relative to crop; offset by (x1, y1)
+			bbox[0] += x1
+			bbox[1] += y1
+			detection["bbox"] = bbox
+
+		return detections
+
 
 #============================================
 def create_detector(config: dict) -> YoloDetector:

@@ -7,7 +7,9 @@ crop trajectory computation, and video encoding.
 
 # Standard Library
 import argparse
+import json
 import os
+import queue
 import shutil
 import subprocess
 import time
@@ -68,7 +70,7 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.add_argument(
 		"-w", "--workers", dest="workers", type=int, default=None,
-		help="Number of parallel detection workers.",
+		help="Number of parallel workers for solving and encoding (default: half of CPU cores).",
 	)
 	parser.add_argument(
 		"--refine", dest="refine", type=str, default=None,
@@ -92,18 +94,33 @@ def parse_args() -> argparse.Namespace:
 		"--ignore-diagnostics", dest="ignore_diagnostics", action="store_true",
 		help="Force re-seeding even where solver thinks intervals are fine.",
 	)
+	parser.add_argument(
+		"--seed-only", dest="seed_only", action="store_true",
+		help="Collect seeds (pass 1) and save, then exit before interval solving.",
+	)
+	parser.add_argument(
+		"--no-interactive-refine", dest="interactive_refine",
+		action="store_false",
+		help="Disable interactive refinement prompt after solve.",
+	)
 	parser.set_defaults(
 		write_default_config=False,
 		debug=False,
 		keep_temp=False,
 		ignore_diagnostics=False,
+		seed_only=False,
+		interactive_refine=True,
 	)
 	return parser.parse_args()
 
 
 #============================================
 def _probe_video(input_file: str) -> dict:
-	"""Probe video metadata using ffprobe.
+	"""Probe video metadata using mediainfo JSON output.
+
+	Extracts resolution, fps, frame count, and duration from the first
+	video track. Falls back to General track for frame count and duration
+	when the Video track lacks them.
 
 	Args:
 		input_file: Path to the input video file.
@@ -112,48 +129,53 @@ def _probe_video(input_file: str) -> dict:
 		Dict with keys: width, height, fps, frame_count, duration_s.
 
 	Raises:
-		RuntimeError: If ffprobe fails or cannot parse output.
+		RuntimeError: If mediainfo fails or returns no video track.
 	"""
-	ffprobe_path = shutil.which("ffprobe")
-	if ffprobe_path is None:
-		raise RuntimeError("ffprobe not found in PATH")
-	# query video stream properties
-	cmd = [
-		ffprobe_path,
-		"-v", "error",
-		"-select_streams", "v:0",
-		"-show_entries",
-		"stream=width,height,r_frame_rate,nb_frames,duration",
-		"-of", "csv=p=0",
-		input_file,
-	]
+	mediainfo_path = shutil.which("mediainfo")
+	if mediainfo_path is None:
+		raise RuntimeError("mediainfo not found in PATH")
+	cmd = [mediainfo_path, "--Output=JSON", input_file]
 	result = subprocess.run(cmd, capture_output=True, text=True)
 	if result.returncode != 0:
-		raise RuntimeError(
-			f"ffprobe failed: {result.stderr.strip()}"
-		)
-	parts = result.stdout.strip().split(",")
-	if len(parts) < 5:
-		raise RuntimeError(
-			f"ffprobe output unexpected format: {result.stdout!r}"
-		)
-	width = int(parts[0])
-	height = int(parts[1])
-	# fps may be a fraction like "30000/1001"
-	fps_parts = parts[2].split("/")
-	if len(fps_parts) == 2:
-		fps = float(fps_parts[0]) / float(fps_parts[1])
+		raise RuntimeError(f"mediainfo failed: {result.stderr.strip()}")
+	data = json.loads(result.stdout)
+	media = data.get("media")
+	if media is None:
+		raise RuntimeError(f"mediainfo returned no media for: {input_file}")
+	tracks = media.get("track", [])
+	# find the first Video track and General track
+	video_track = None
+	general_track = None
+	for track in tracks:
+		track_type = track.get("@type", "")
+		if track_type == "Video" and video_track is None:
+			video_track = track
+		elif track_type == "General" and general_track is None:
+			general_track = track
+	if video_track is None:
+		raise RuntimeError(f"no video track found in: {input_file}")
+	# extract resolution
+	width = int(video_track["Width"])
+	height = int(video_track["Height"])
+	# extract fps (mediainfo provides FrameRate as a decimal string)
+	fps = float(video_track.get("FrameRate", "0"))
+	if fps <= 0:
+		raise RuntimeError(f"invalid fps from mediainfo: {input_file}")
+	# extract frame count; fall back to General track, then duration * fps
+	frame_count_str = video_track.get("FrameCount")
+	if frame_count_str is None and general_track is not None:
+		frame_count_str = general_track.get("FrameCount")
+	duration_str = video_track.get("Duration")
+	if duration_str is None and general_track is not None:
+		duration_str = general_track.get("Duration")
+	if frame_count_str is not None:
+		frame_count = int(frame_count_str)
+		duration_s = frame_count / fps
+	elif duration_str is not None:
+		duration_s = float(duration_str)
+		frame_count = int(duration_s * fps)
 	else:
-		fps = float(fps_parts[0])
-	# nb_frames may be "N/A"; fall back to duration * fps
-	nb_frames_str = parts[3].strip()
-	duration_str = parts[4].strip()
-	if nb_frames_str.isdigit():
-		frame_count = int(nb_frames_str)
-		duration_s = frame_count / fps if fps > 0 else 0.0
-	else:
-		duration_s = float(duration_str) if duration_str not in ("N/A", "") else 0.0
-		frame_count = int(duration_s * fps) if fps > 0 else 0
+		raise RuntimeError(f"no frame count or duration from mediainfo: {input_file}")
 	info = {
 		"width": width,
 		"height": height,
@@ -190,36 +212,6 @@ def _parse_time_range(time_range_str: str | None) -> tuple | None:
 
 
 #============================================
-def _seeds_to_solver_format(seeds: list) -> list:
-	"""Convert seeding-format seeds to interval_solver format.
-
-	Seeding produces torso_box as [x, y, w, h] (top-left origin) and
-	uses 'frame' as the key. The interval solver expects cx, cy, w, h
-	(center origin) and 'frame_index'.
-
-	Args:
-		seeds: List of seed dicts from seeding module.
-
-	Returns:
-		List of seed dicts with cx, cy, w, h, frame_index keys added.
-	"""
-	converted = []
-	for seed in seeds:
-		out = dict(seed)
-		# convert torso_box [x, y, w, h] to center format
-		box = seed.get("torso_box", [0, 0, 0, 0])
-		x, y, w, h = float(box[0]), float(box[1]), float(box[2]), float(box[3])
-		out["cx"] = x + w / 2.0
-		out["cy"] = y + h / 2.0
-		out["w"] = w
-		out["h"] = h
-		# map frame -> frame_index
-		out["frame_index"] = int(seed.get("frame", 0))
-		converted.append(out)
-	return converted
-
-
-#============================================
 def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 	"""Print a human-readable quality summary from diagnostics.
 
@@ -252,8 +244,8 @@ def main() -> None:
 	if not os.path.isfile(args.input_file):
 		raise RuntimeError(f"input file not found: {args.input_file}")
 
-	# verify ffmpeg and ffprobe are available
-	for tool in ("ffprobe", "ffmpeg"):
+	# verify required external tools are available
+	for tool in ("mediainfo", "ffprobe", "ffmpeg"):
 		if shutil.which(tool) is None:
 			raise RuntimeError(f"{tool} not found in PATH")
 
@@ -308,17 +300,36 @@ def main() -> None:
 	seeds_data = state_io.load_seeds(seeds_path)
 	existing_seeds = seeds_data.get("seeds", [])
 
-	if existing_seeds:
+	if existing_seeds and not args.seed_only:
 		print(f"loaded {len(existing_seeds)} existing seeds from {seeds_path}")
 		seeds = existing_seeds
 	else:
-		# pass 1: initial seed collection
-		print("launching initial seed collection (pass 1)...")
+		# determine pass number from existing seeds
+		if existing_seeds:
+			print(f"loaded {len(existing_seeds)} existing seeds from {seeds_path}")
+			existing_passes = [s.get("pass", 1) for s in existing_seeds]
+			pass_number = max(existing_passes) + 1
+		else:
+			pass_number = 1
+		# build incremental save callback to avoid losing seeds on crash
+		def save_seeds_incrementally(seeds_list: list) -> None:
+			"""Write seeds to disk after each new seed is collected."""
+			data = {
+				state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
+				"seeds": seeds_list,
+			}
+			state_io.write_seeds(seeds_path, data)
+		# seed collection: collect new seeds (appending to any existing)
+		print(f"launching seed collection (pass {pass_number})...")
 		seeds = seeding.collect_seeds(
 			args.input_file,
 			args.seed_interval,
 			cfg,
-			pass_number=1,
+			pass_number=pass_number,
+			existing_seeds=existing_seeds if existing_seeds else None,
+			frame_count_override=video_info["frame_count"],
+			debug=args.debug,
+			save_callback=save_seeds_incrementally,
 		)
 		if not seeds:
 			raise RuntimeError("no seeds collected; cannot proceed without seeds")
@@ -330,6 +341,33 @@ def main() -> None:
 		state_io.write_seeds(seeds_path, seeds_data_out)
 		print(f"saved {len(seeds)} seeds to {seeds_path}")
 
+	# deduplicate seeds by frame_index: keep latest pass, remove older duplicates
+	seen_frames = {}
+	for seed in seeds:
+		fi = int(seed["frame_index"])
+		if fi in seen_frames:
+			existing = seen_frames[fi]
+			if int(seed.get("pass", 1)) >= int(existing.get("pass", 1)):
+				seen_frames[fi] = seed
+		else:
+			seen_frames[fi] = seed
+	if len(seen_frames) < len(seeds):
+		dropped = len(seeds) - len(seen_frames)
+		print(f"  removed {dropped} duplicate seeds from {seeds_path}")
+		seeds = sorted(seen_frames.values(), key=lambda s: int(s["frame_index"]))
+		# write cleaned seeds back to disk
+		seeds_data_out = {
+			state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
+			"seeds": seeds,
+		}
+		state_io.write_seeds(seeds_path, seeds_data_out)
+		print(f"  saved {len(seeds)} deduplicated seeds")
+
+	# early exit if --seed-only was requested
+	if args.seed_only:
+		print(f"seed-only mode: {len(seeds)} seeds saved, exiting before solve")
+		return
+
 	# validate: need at least 2 visible seeds for interval solving
 	visible_seeds = [
 		s for s in seeds if s.get("status", "visible") == "visible"
@@ -340,20 +378,48 @@ def main() -> None:
 			f"got {len(visible_seeds)} ({len(seeds)} total)"
 		)
 
-	# convert seeds to solver format (torso_box -> cx/cy, frame -> frame_index)
-	solver_seeds = _seeds_to_solver_format(seeds)
+	# seeds already contain cx, cy, w, h, frame_index from _build_seed_dict()
+	solver_seeds = seeds
 
-	# run interval solver
-	print(f"running interval solver ({len(visible_seeds)} visible seeds)...")
+	# resolve worker count (auto-detect if not specified)
+	cpu_count = os.cpu_count()
+	num_workers = args.workers
+	if num_workers is None:
+		num_workers = max(1, cpu_count // 2)
+	print(f"  workers: {num_workers} (of {cpu_count} CPUs)")
+
+	# run interval solver with weak-interval tracking callback
+	print(f"running interval solver ({len(visible_seeds)} visible seeds, {num_workers} workers)...")
+	# queue to collect weak interval results during solving
+	weak_queue = queue.Queue()
+	seeds_added_during_solve = 0
+
+	def _on_interval_complete(result: dict) -> None:
+		"""Callback fired when each interval finishes solving.
+
+		Puts weak intervals on the queue for interactive seed requesting.
+		"""
+		score = result.get("interval_score", {})
+		confidence = score.get("confidence", "low")
+		if confidence != "high":
+			weak_queue.put(result)
+
 	t_solve_start = time.time()
 	with encoder.VideoReader(args.input_file) as reader:
 		diagnostics = interval_solver.solve_all_intervals(
 			reader, solver_seeds, det, cfg,
+			num_workers=num_workers, debug=args.debug,
+			on_interval_complete=_on_interval_complete,
 		)
 	# inject fps for review module
 	diagnostics["fps"] = fps_for_diag
 	t_solve_elapsed = time.time() - t_solve_start
 	print(f"  solve complete ({t_solve_elapsed:.1f}s)")
+
+	# report weak intervals found during solve
+	weak_count_during_solve = weak_queue.qsize()
+	if weak_count_during_solve > 0:
+		print(f"  {weak_count_during_solve} weak intervals detected during solve")
 
 	# write diagnostics
 	state_io.write_solver_diagnostics(diagnostics, diag_path, fps_for_diag)
@@ -361,6 +427,153 @@ def main() -> None:
 
 	# print per-interval summary (always)
 	_print_quality_summary(diagnostics, fps_for_diag)
+
+	# prompt for immediate seed collection if weak intervals were found
+	if weak_count_during_solve > 0 and args.interactive_refine:
+		target_frames = review.generate_refinement_targets(
+			diagnostics,
+			mode="suggested",
+			seed_interval=int(args.seed_interval * fps_for_diag),
+		)
+		if target_frames:
+			# check if user wants to add seeds right away
+			prompt_msg = (
+				f"  {weak_count_during_solve} weak intervals found "
+				f"({len(target_frames)} seed targets). "
+				f"Add seeds now? [Y/n]: "
+			)
+			answer = input(prompt_msg).strip().lower()
+			if answer in ("", "y", "yes"):
+				# determine pass number
+				existing_passes = [s.get("pass", 1) for s in seeds]
+				next_pass = max(existing_passes) + 1 if existing_passes else 2
+				# build incremental save callback
+				def _save_during_solve(seeds_list: list) -> None:
+					"""Write seeds to disk during solve-time refinement."""
+					data = {
+						state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
+						"seeds": seeds_list,
+					}
+					state_io.write_seeds(seeds_path, data)
+				# collect seeds at target frames
+				print("  collecting seeds at weak intervals...")
+				seeds = seeding.collect_seeds_at_frames(
+					args.input_file,
+					target_frames,
+					cfg,
+					pass_number=next_pass,
+					mode="solve_refine",
+					existing_seeds=seeds,
+					debug=args.debug,
+					save_callback=_save_during_solve,
+				)
+				# count new seeds added
+				seeds_added_during_solve = len(seeds) - len(solver_seeds)
+				# save updated seeds
+				seeds_data_out = {
+					state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
+					"seeds": seeds,
+				}
+				state_io.write_seeds(seeds_path, seeds_data_out)
+				print(f"  saved {len(seeds)} seeds to {seeds_path}")
+				# re-solve with updated seeds
+				if seeds_added_during_solve > 0:
+					solver_seeds = seeds
+					print(
+						f"  {seeds_added_during_solve} new seeds added. "
+						f"Re-solving with updated seeds..."
+					)
+					t_resolve_start = time.time()
+					with encoder.VideoReader(args.input_file) as reader:
+						diagnostics = interval_solver.solve_all_intervals(
+							reader, solver_seeds, det, cfg,
+							num_workers=num_workers, debug=args.debug,
+						)
+					diagnostics["fps"] = fps_for_diag
+					t_resolve_elapsed = time.time() - t_resolve_start
+					print(f"  re-solve complete ({t_resolve_elapsed:.1f}s)")
+					state_io.write_solver_diagnostics(
+						diagnostics, diag_path, fps_for_diag,
+					)
+					_print_quality_summary(diagnostics, fps_for_diag)
+
+	# interactive refinement loop: prompt user to add seeds at weak spots
+	max_interactive_passes = 5
+	interactive_pass = 0
+	if args.refine is None and args.interactive_refine:
+		while interactive_pass < max_interactive_passes:
+			# check if refinement is needed
+			if not review.needs_refinement(diagnostics):
+				break
+			# generate refinement targets
+			target_frames = review.generate_refinement_targets(
+				diagnostics,
+				mode="suggested",
+				seed_interval=int(args.seed_interval * fps_for_diag),
+			)
+			if not target_frames:
+				break
+			# count weak intervals for the prompt
+			intervals = diagnostics.get("intervals", [])
+			weak_count = sum(
+				1 for iv in intervals
+				if iv.get("interval_score", {}).get("confidence", "low") != "high"
+			)
+			# prompt the user
+			prompt_msg = (
+				f"Found {weak_count} weak intervals "
+				f"({len(target_frames)} seed targets). "
+				f"Add seeds now? [Y/n]: "
+			)
+			answer = input(prompt_msg).strip().lower()
+			if answer not in ("", "y", "yes"):
+				break
+			interactive_pass += 1
+			# determine pass number
+			existing_passes = [s.get("pass", 1) for s in seeds]
+			next_pass = max(existing_passes) + 1 if existing_passes else 2
+			# build incremental save callback
+			def _save_interactive(seeds_list: list) -> None:
+				"""Write seeds to disk during interactive refinement."""
+				data = {
+					state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
+					"seeds": seeds_list,
+				}
+				state_io.write_seeds(seeds_path, data)
+			# collect seeds at target frames
+			print(f"interactive refinement pass {interactive_pass}...")
+			seeds = seeding.collect_seeds_at_frames(
+				args.input_file,
+				target_frames,
+				cfg,
+				pass_number=next_pass,
+				mode="interactive_refine",
+				existing_seeds=seeds,
+				debug=args.debug,
+				save_callback=_save_interactive,
+			)
+			# save updated seeds
+			seeds_data_out = {
+				state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
+				"seeds": seeds,
+			}
+			state_io.write_seeds(seeds_path, seeds_data_out)
+			print(f"  saved {len(seeds)} seeds to {seeds_path}")
+			# re-solve with updated seeds
+			solver_seeds = seeds
+			print("re-solving with updated seeds...")
+			t_resolve_start = time.time()
+			with encoder.VideoReader(args.input_file) as reader:
+				diagnostics = interval_solver.solve_all_intervals(
+					reader, solver_seeds, det, cfg,
+				)
+			diagnostics["fps"] = fps_for_diag
+			t_resolve_elapsed = time.time() - t_resolve_start
+			print(f"  re-solve complete ({t_resolve_elapsed:.1f}s)")
+			# write updated diagnostics
+			state_io.write_solver_diagnostics(diagnostics, diag_path, fps_for_diag)
+			# print updated quality summary
+			_print_quality_summary(diagnostics, fps_for_diag)
 
 	# refinement pass: if requested and tracking is not already perfect
 	if args.refine is not None:
@@ -389,6 +602,14 @@ def main() -> None:
 				# determine pass number from highest existing pass
 				existing_passes = [s.get("pass", 1) for s in seeds]
 				next_pass = max(existing_passes) + 1 if existing_passes else 2
+				# build incremental save callback for refinement
+				def save_refine_incrementally(seeds_list: list) -> None:
+					"""Write seeds to disk after each refinement seed."""
+					data = {
+						state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
+						"seeds": seeds_list,
+					}
+					state_io.write_seeds(seeds_path, data)
 				# run refinement seed collection
 				seeds = seeding.collect_seeds_at_frames(
 					args.input_file,
@@ -397,6 +618,8 @@ def main() -> None:
 					pass_number=next_pass,
 					mode=args.refine.split(",")[0] + "_refine",
 					existing_seeds=seeds,
+					debug=args.debug,
+					save_callback=save_refine_incrementally,
 				)
 				# save updated seeds
 				seeds_data_out = {
@@ -406,7 +629,7 @@ def main() -> None:
 				state_io.write_seeds(seeds_path, seeds_data_out)
 				print(f"  saved {len(seeds)} seeds to {seeds_path}")
 				# re-solve with updated seeds
-				solver_seeds = _seeds_to_solver_format(seeds)
+				solver_seeds = seeds
 				print("re-solving with updated seeds...")
 				t_resolve_start = time.time()
 				with encoder.VideoReader(args.input_file) as reader:
@@ -451,7 +674,8 @@ def main() -> None:
 
 	# encode cropped output video (video only, no audio)
 	temp_video = output_path + ".tmp.mp4"
-	print(f"encoding cropped video: {crop_w}x{crop_h}")
+	workers_enc_label = f" ({num_workers} workers)" if num_workers > 1 else ""
+	print(f"encoding cropped video: {crop_w}x{crop_h}{workers_enc_label}")
 	t_encode_start = time.time()
 	# build frame_states list for debug overlay (use trajectory states)
 	frame_states_for_debug = None
@@ -474,14 +698,25 @@ def main() -> None:
 				debug_state = None
 			frame_states_for_debug.append(debug_state)
 
-	with encoder.VideoReader(args.input_file) as reader:
-		encoder.encode_cropped_video(
-			reader, crop_rects, temp_video,
+	# use parallel encoding when multiple workers are available
+	if num_workers > 1:
+		encoder.encode_cropped_video_parallel(
+			args.input_file, crop_rects, temp_video,
 			crop_w, crop_h,
 			codec=video_codec, crf=crf_value,
 			frame_states=frame_states_for_debug,
 			debug=args.debug,
+			workers=num_workers,
 		)
+	else:
+		with encoder.VideoReader(args.input_file) as reader:
+			encoder.encode_cropped_video(
+				reader, crop_rects, temp_video,
+				crop_w, crop_h,
+				codec=video_codec, crf=crf_value,
+				frame_states=frame_states_for_debug,
+				debug=args.debug,
+			)
 	t_encode_elapsed = time.time() - t_encode_start
 	print(f"  encode complete ({t_encode_elapsed:.1f}s)")
 

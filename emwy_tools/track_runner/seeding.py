@@ -9,6 +9,9 @@ Seeds are returned in the v2 JSON format (no full-person estimation).
 import cv2
 import numpy
 
+# local repo modules
+import frame_reader
+
 # window title for the interactive seed selection UI
 SEED_WINDOW_TITLE = "Track Runner - Seed Selection"
 
@@ -285,7 +288,9 @@ def _interactive_draw_box(
 		# ESC or q: finish collecting seeds
 		if key == 27 or key == 113:
 			cv2.destroyWindow(SEED_WINDOW_TITLE)
-			cv2.waitKey(1)
+			# flush macOS event loop to dismiss the window
+			for _ in range(5):
+				cv2.waitKey(1)
 			return None
 		# spacebar: skip this frame
 		if key == 32:
@@ -326,6 +331,9 @@ def collect_seeds(
 	pass_number: int = 1,
 	existing_seeds: list | None = None,
 	pre_provided_seeds: list | None = None,
+	frame_count_override: int | None = None,
+	debug: bool = False,
+	save_callback: object = None,
 ) -> list:
 	"""Collect initial seed points for runner tracking (pass 1).
 
@@ -342,6 +350,11 @@ def collect_seeds(
 		pass_number: Which collection pass this is (default 1 = initial).
 		existing_seeds: Optional list of already-collected seeds to append to.
 		pre_provided_seeds: Optional list of pre-built seed dicts for testing.
+		frame_count_override: Optional frame count from ffprobe to use instead
+			of OpenCV's CAP_PROP_FRAME_COUNT (which can be inaccurate).
+		debug: Enable verbose frame-reading output.
+		save_callback: Optional callable(seeds_list) invoked after each new
+			seed is collected, for crash-safe incremental saving.
 
 	Returns:
 		List of seed dicts in v2 format (existing + newly collected).
@@ -353,32 +366,75 @@ def collect_seeds(
 	# start with a copy of any existing seeds
 	all_seeds = list(existing_seeds) if existing_seeds else []
 
-	# open the video file
+	# open the video file to get metadata
 	cap = cv2.VideoCapture(video_path)
 	if not cap.isOpened():
 		raise RuntimeError(f"cannot open video: {video_path}")
 	fps = cap.get(cv2.CAP_PROP_FPS)
-	total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+	# prefer ffprobe frame count over OpenCV (which can be inaccurate)
+	if frame_count_override is not None:
+		total_frames = frame_count_override
+	else:
+		total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+	cap.release()
 	if fps <= 0:
 		raise RuntimeError(f"invalid fps from video: {video_path}")
+	# create reliable frame reader with sequential fallback
+	reader = frame_reader.FrameReader(video_path, fps, total_frames, debug=debug)
 
-	# compute frame indices at the requested interval
+	# compute frame interval for the requested seed spacing
 	frame_interval = int(round(fps * interval_seconds))
 	if frame_interval < 1:
 		frame_interval = 1
+
+	# generate candidates at the requested interval
 	seed_frame_indices = list(range(0, total_frames, frame_interval))
+	# filter out frames that already have seeds to prevent duplicates
+	if all_seeds:
+		existing_frame_set = set(int(s["frame_index"]) for s in all_seeds)
+		original_count = len(seed_frame_indices)
+		filtered = []
+		for fi in seed_frame_indices:
+			if fi not in existing_frame_set:
+				filtered.append(fi)
+			else:
+				# bump to next unused frame so user still gets a distinct frame
+				bumped = fi + 1
+				while bumped in existing_frame_set and bumped < total_frames:
+					bumped += 1
+				if bumped < total_frames and bumped not in existing_frame_set:
+					filtered.append(bumped)
+					# mark bumped frame as used to avoid future collisions
+					existing_frame_set.add(bumped)
+		seed_frame_indices = filtered
+		skipped = original_count - len(seed_frame_indices)
+		if skipped > 0:
+			print(f"  filtered {skipped} candidates that already have seeds")
+	print(f"  total_frames={total_frames}, frame_interval={frame_interval}, "
+		f"candidates={len(seed_frame_indices)}")
+	if all_seeds:
+		print(f"  {len(all_seeds)} existing seeds, "
+			f"{len(seed_frame_indices)} candidates at {interval_seconds}s interval")
 
 	# scrub step is 0.2 seconds worth of frames
 	scrub_step = max(1, int(round(fps * 0.2)))
 
 	new_seeds = []
+	read_fail_count = 0
+	skip_count = 0
+	scrub_count = 0
+	absence_count = 0
 	list_idx = 0
 	current_frame = seed_frame_indices[0] if seed_frame_indices else 0
 	while list_idx < len(seed_frame_indices):
 		frame_idx = current_frame
-		cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-		ret, frame = cap.read()
-		if not ret:
+		# print seed counter for progress visibility
+		print(f"  seed {list_idx + 1}/{len(seed_frame_indices)}  "
+			f"frame {frame_idx}")
+		# read frame using reliable multi-strategy reader
+		frame = reader.read_frame(frame_idx)
+		if frame is None:
+			read_fail_count += 1
 			list_idx += 1
 			if list_idx < len(seed_frame_indices):
 				current_frame = seed_frame_indices[list_idx]
@@ -387,23 +443,29 @@ def collect_seeds(
 		drawn_box = _interactive_draw_box(frame)
 		if drawn_box is None:
 			# user pressed ESC/q to finish
+			print(f"  user quit at frame {frame_idx} "
+				f"({list_idx+1}/{len(seed_frame_indices)})")
 			break
 		if drawn_box == "skip":
+			skip_count += 1
 			# advance to next seed interval
 			list_idx += 1
 			if list_idx < len(seed_frame_indices):
 				current_frame = seed_frame_indices[list_idx]
 			continue
 		if drawn_box == "prev":
+			scrub_count += 1
 			# scrub backward by 0.2 seconds
 			current_frame = max(0, current_frame - scrub_step)
 			continue
 		if drawn_box == "next":
+			scrub_count += 1
 			# scrub forward by 0.2 seconds
 			current_frame = min(total_frames - 1, current_frame + scrub_step)
 			continue
 		# handle absence markers
 		if drawn_box in ("not_in_frame", "obstructed"):
+			absence_count += 1
 			seed = {
 				"frame_index": frame_idx,
 				"frame": frame_idx,
@@ -414,6 +476,9 @@ def collect_seeds(
 				"mode": "initial",
 			}
 			new_seeds.append(seed)
+			# save incrementally to avoid losing work on crash
+			if save_callback is not None:
+				save_callback(all_seeds + new_seeds)
 			list_idx += 1
 			if list_idx < len(seed_frame_indices):
 				current_frame = seed_frame_indices[list_idx]
@@ -425,13 +490,29 @@ def collect_seeds(
 			frame_idx, time_sec, norm_box, jersey_hsv, pass_number, "initial",
 		)
 		new_seeds.append(seed)
+		# save incrementally to avoid losing work on crash
+		if save_callback is not None:
+			save_callback(all_seeds + new_seeds)
 		list_idx += 1
 		if list_idx < len(seed_frame_indices):
 			current_frame = seed_frame_indices[list_idx]
 
-	cap.release()
+	reader.close()
 	cv2.destroyAllWindows()
-	cv2.waitKey(1)
+	# flush macOS event loop to dismiss the window and spinning pinwheel
+	for _ in range(5):
+		cv2.waitKey(1)
+
+	# print collection summary
+	drawn_count = len(new_seeds) - absence_count
+	print(f"  seed collection summary: "
+		f"{drawn_count} drawn, {absence_count} absent, "
+		f"{skip_count} skipped, {scrub_count} scrubs, "
+		f"{read_fail_count} read failures")
+	if list_idx >= len(seed_frame_indices):
+		print(f"  completed all {len(seed_frame_indices)} seed frames")
+	else:
+		print(f"  stopped at {list_idx+1}/{len(seed_frame_indices)} seed frames")
 
 	# append new seeds without overwriting existing
 	all_seeds.extend(new_seeds)
@@ -447,6 +528,8 @@ def collect_seeds_at_frames(
 	mode: str = "suggested_refine",
 	existing_seeds: list | None = None,
 	predictions: dict | None = None,
+	debug: bool = False,
+	save_callback: object = None,
 ) -> list:
 	"""Collect seed points at specific frame indices (refinement passes).
 
@@ -464,6 +547,9 @@ def collect_seeds_at_frames(
 		existing_seeds: Optional list of already-collected seeds to append to.
 		predictions: Optional dict mapping frame_index (int) to prediction
 			dicts with "forward"/"backward" state dicts for overlay display.
+		debug: Enable verbose frame-reading output.
+		save_callback: Optional callable(seeds_list) invoked after each new
+			seed is collected, for crash-safe incremental saving.
 
 	Returns:
 		List of seed dicts in v2 format (existing + newly collected).
@@ -474,28 +560,45 @@ def collect_seeds_at_frames(
 	# start with a copy of any existing seeds
 	all_seeds = list(existing_seeds) if existing_seeds else []
 
-	# open the video file
+	# open the video file to get metadata
 	cap = cv2.VideoCapture(video_path)
 	if not cap.isOpened():
 		raise RuntimeError(f"cannot open video: {video_path}")
 	fps = cap.get(cv2.CAP_PROP_FPS)
 	total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+	cap.release()
 	if fps <= 0:
 		raise RuntimeError(f"invalid fps from video: {video_path}")
+	# create reliable frame reader with sequential fallback
+	reader = frame_reader.FrameReader(video_path, fps, total_frames, debug=debug)
 
 	# scrub step is 0.2 seconds worth of frames
 	scrub_step = max(1, int(round(fps * 0.2)))
 
 	sorted_targets = sorted(target_frames)
+	# filter out frames that already have seeds to prevent duplicates
+	if all_seeds:
+		existing_frame_set = set(int(s["frame_index"]) for s in all_seeds)
+		original_count = len(sorted_targets)
+		sorted_targets = [fi for fi in sorted_targets if fi not in existing_frame_set]
+		skipped = original_count - len(sorted_targets)
+		if skipped > 0:
+			print(f"  filtered {skipped} target frames that already have seeds")
+	if not sorted_targets:
+		# all targets already seeded, nothing to do
+		all_seeds.extend([])
+		return all_seeds
 	new_seeds = []
 	list_idx = 0
 	current_frame = sorted_targets[0]
 
 	while list_idx < len(sorted_targets):
 		frame_idx = current_frame
-		cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-		ret, frame = cap.read()
-		if not ret:
+		# print seed counter for progress visibility
+		print(f"  seed {list_idx + 1}/{len(sorted_targets)}  "
+			f"frame {frame_idx}")
+		frame = reader.read_frame(frame_idx)
+		if frame is None:
 			list_idx += 1
 			if list_idx < len(sorted_targets):
 				current_frame = sorted_targets[list_idx]
@@ -533,6 +636,9 @@ def collect_seeds_at_frames(
 				"mode": mode,
 			}
 			new_seeds.append(seed)
+			# save incrementally to avoid losing work on crash
+			if save_callback is not None:
+				save_callback(all_seeds + new_seeds)
 			list_idx += 1
 			if list_idx < len(sorted_targets):
 				current_frame = sorted_targets[list_idx]
@@ -544,13 +650,18 @@ def collect_seeds_at_frames(
 			frame_idx, time_sec, norm_box, jersey_hsv, pass_number, mode,
 		)
 		new_seeds.append(seed)
+		# save incrementally to avoid losing work on crash
+		if save_callback is not None:
+			save_callback(all_seeds + new_seeds)
 		list_idx += 1
 		if list_idx < len(sorted_targets):
 			current_frame = sorted_targets[list_idx]
 
-	cap.release()
+	reader.close()
 	cv2.destroyAllWindows()
-	cv2.waitKey(1)
+	# flush macOS event loop to dismiss the window and spinning pinwheel
+	for _ in range(5):
+		cv2.waitKey(1)
 
 	# append new seeds without overwriting existing
 	all_seeds.extend(new_seeds)
