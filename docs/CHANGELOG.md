@@ -13,6 +13,7 @@
 - Fixed `_parse_time_range()` crashing on open-ended ranges like `200:` or `:500`. Now returns `None` for the missing endpoint instead of calling `float('')`.
 - Added `time_range` parameter to `collect_seeds()` in [emwy_tools/track_runner/seeding.py](emwy_tools/track_runner/seeding.py). Filters candidate frame indices to only those within the specified time range before presenting them to the user.
 - Updated `--time-range` help text to indicate it applies to both seed collection and refinement.
+- Changed partial mode draw box color from green to dark gold in the seeding UI. Provides visual feedback that partial mode is active when drawing the torso rectangle after pressing `p`.
 
 - Added `partial` seed status for partially obstructed runners. Press `p` in the seeding UI to enter partial mode, then draw the torso box. Partial seeds have reliable position but unreliable appearance (jersey color contaminated by obstruction).
 - Added `_apply_absence_erasure()` to `interval_solver.py`. After trajectory stitching, erases frames within 1.0s of `not_in_frame` seeds and 0.5s of `obstructed` seeds. Prevents garbage propagation data from persisting through absence zones.

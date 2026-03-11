@@ -202,6 +202,7 @@ def _draw_trajectory_preview(
 def _interactive_draw_box(
 	frame: numpy.ndarray,
 	predictions: dict | None = None,
+	box_color: tuple = (0, 255, 0),
 ) -> list | str | None:
 	"""Show a frame and let the user draw a rectangle interactively.
 
@@ -211,6 +212,7 @@ def _interactive_draw_box(
 		frame: BGR image to display.
 		predictions: Optional dict with "forward"/"backward" prediction
 			dicts (cx, cy, w, h) for overlay display during refinement.
+		box_color: BGR color tuple for the drawn rectangle (default green).
 
 	Returns:
 		Drawn box as [x, y, w, h], or "skip" if spacebar pressed,
@@ -282,7 +284,7 @@ def _interactive_draw_box(
 				show,
 				(state["x1"], state["y1"]),
 				(state["x2"], state["y2"]),
-				(0, 255, 0), 2,
+				box_color, 2,
 			)
 		cv2.imshow(SEED_WINDOW_TITLE, show)
 		key = cv2.waitKey(30) & 0xFF
@@ -507,8 +509,13 @@ def collect_seeds(
 		# handle partial mode: user marks runner as partially obstructed,
 		# then draws the torso box on the same frame
 		if drawn_box == "partial":
-			print("  partial mode: draw the runner's torso box")
-			partial_box = _interactive_draw_box(frame)
+			print("  partial mode: draw the runner's torso box (press p again to cancel)")
+			# dark gold box color to distinguish partial mode from normal green
+			partial_box = _interactive_draw_box(frame, box_color=(0, 200, 220))
+			if partial_box == "partial":
+				# second p press cancels partial mode, re-show same frame
+				print("  partial mode cancelled")
+				continue
 			if isinstance(partial_box, list):
 				# user drew a box: build seed with partial status
 				norm_box = normalize_seed_box(partial_box, config)
@@ -692,8 +699,15 @@ def collect_seeds_at_frames(
 		# handle partial mode: user marks runner as partially obstructed,
 		# then draws the torso box on the same frame
 		if drawn_box == "partial":
-			print("  partial mode: draw the runner's torso box")
-			partial_box = _interactive_draw_box(frame, predictions=frame_preds)
+			print("  partial mode: draw the runner's torso box (press p again to cancel)")
+			# dark gold box color to distinguish partial mode from normal green
+			partial_box = _interactive_draw_box(
+				frame, predictions=frame_preds, box_color=(0, 200, 220),
+			)
+			if partial_box == "partial":
+				# second p press cancels partial mode, re-show same frame
+				print("  partial mode cancelled")
+				continue
 			if isinstance(partial_box, list):
 				# user drew a box: build seed with partial status
 				norm_box = normalize_seed_box(partial_box, config)
