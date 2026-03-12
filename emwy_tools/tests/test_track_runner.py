@@ -39,7 +39,7 @@ def test_state_io_seeds_round_trip() -> None:
 		"video_file": "test.mov",
 		"seeds": [
 			{
-				"frame": 150,
+				"frame_index": 150,
 				"time_s": 5.0,
 				"torso_box": [640, 360, 40, 60],
 				"jersey_hsv": [120, 180, 200],
@@ -53,7 +53,7 @@ def test_state_io_seeds_round_trip() -> None:
 		tmp_path = tmp.name
 	state_io_mod.write_seeds(tmp_path, seeds_data)
 	loaded = state_io_mod.load_seeds(tmp_path)
-	assert loaded["seeds"][0]["frame"] == 150
+	assert loaded["seeds"][0]["frame_index"] == 150
 	assert loaded[state_io_mod.SEEDS_HEADER_KEY] == state_io_mod.SEEDS_HEADER_VALUE
 	os.unlink(tmp_path)
 
@@ -254,7 +254,7 @@ def test_scoring_classify_confidence_low_agreement() -> None:
 	confidence, reasons = scoring_mod.classify_confidence(
 		agreement=0.5, identity=0.8, margin=0.6,
 	)
-	assert confidence == "low"
+	assert confidence == "fair"
 	assert "low_agreement" in reasons
 
 
@@ -265,7 +265,7 @@ def test_scoring_classify_confidence_low_separation() -> None:
 	confidence, reasons = scoring_mod.classify_confidence(
 		agreement=0.9, identity=0.8, margin=0.3,
 	)
-	assert confidence == "low"
+	assert confidence == "good"
 	assert "low_separation" in reasons
 
 
