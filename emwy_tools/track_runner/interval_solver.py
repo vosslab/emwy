@@ -267,14 +267,16 @@ def solve_interval(
 		cy=float(seed_start["cy"]),
 		w=float(seed_start["w"]),
 		h=float(seed_start["h"]),
-		conf=float(seed_start["conf"]),
+		# None means unscored human seed, treat as full confidence
+		conf=1.0 if seed_start["conf"] is None else float(seed_start["conf"]),
 	)
 	end_state = propagator.make_seed_state(
 		cx=float(seed_end["cx"]),
 		cy=float(seed_end["cy"]),
 		w=float(seed_end["w"]),
 		h=float(seed_end["h"]),
-		conf=float(seed_end["conf"]),
+		# None means unscored human seed, treat as full confidence
+		conf=1.0 if seed_end["conf"] is None else float(seed_end["conf"]),
 	)
 
 	# propagate forward from start to end, and backward from end to start

@@ -91,8 +91,12 @@ def load_seeds(path: str) -> dict:
 			f"seeds file header mismatch in {path}: "
 			f"expected {SEEDS_HEADER_KEY}={SEEDS_HEADER_VALUE}, got {header_val}"
 		)
-	# sort seeds by frame_index so consumers always get time-ordered data
+	# backfill "conf" for seeds created before field was added
 	if "seeds" in data and isinstance(data["seeds"], list):
+		for seed in data["seeds"]:
+			if "conf" not in seed:
+				seed["conf"] = None
+		# sort seeds by frame_index so consumers always get time-ordered data
 		data["seeds"] = sorted(
 			data["seeds"],
 			key=lambda s: int(s["frame_index"]),
