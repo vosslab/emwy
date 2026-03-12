@@ -650,8 +650,8 @@ def solve_all_intervals(
 	num_workers: int = 1,
 	debug: bool = False,
 	on_interval_complete: object = None,
-	intervals_cache: dict = None,
-	on_interval_cached: object = None,
+	prior_intervals: dict = None,
+	on_interval_solved: object = None,
 ) -> dict:
 	"""Solve all seed-to-seed intervals and stitch into a full trajectory.
 
@@ -675,10 +675,10 @@ def solve_all_intervals(
 		debug: If True, show per-frame debug output and progress bars.
 		on_interval_complete: Optional callback called with each interval result
 			dict as intervals finish. Used for interactive seed requesting.
-		intervals_cache: Optional dict of fingerprint->result for skipping
+		prior_intervals: Optional dict of fingerprint->result for reusing
 			previously solved intervals. Keys are from state_io.interval_fingerprint().
-		on_interval_cached: Optional callback(fingerprint, cacheable_result)
-			called when a new interval is solved, for persisting to the cache file.
+		on_interval_solved: Optional callback(fingerprint, result) called when
+			a new interval is solved, for persisting to the solved-intervals file.
 
 	Returns:
 		Dict with keys:
@@ -764,7 +764,7 @@ def solve_all_intervals(
 	interval_results = []
 	t_start = time.time()
 
-	# build all interval pairs and compute fingerprints for caching
+	# build all interval pairs and compute fingerprints for reuse lookup
 	all_pairs = []
 	all_fingerprints = []
 	for pair_idx in range(total_intervals):
@@ -774,38 +774,38 @@ def solve_all_intervals(
 		fp = state_io.interval_fingerprint(s_start, s_end)
 		all_fingerprints.append(fp)
 
-	# separate cached hits from intervals that need solving
-	cached_results = [None] * total_intervals
-	uncached_indices = []
-	cache_hit_count = 0
-	if intervals_cache:
+	# separate prior results from intervals that need solving
+	prior_results = [None] * total_intervals
+	new_indices = []
+	reused_count = 0
+	if prior_intervals:
 		for pair_idx in range(total_intervals):
 			fp = all_fingerprints[pair_idx]
-			if fp in intervals_cache:
-				cached_results[pair_idx] = intervals_cache[fp]
-				cache_hit_count += 1
+			if fp in prior_intervals:
+				prior_results[pair_idx] = prior_intervals[fp]
+				reused_count += 1
 			else:
-				uncached_indices.append(pair_idx)
+				new_indices.append(pair_idx)
 	else:
-		uncached_indices = list(range(total_intervals))
+		new_indices = list(range(total_intervals))
 
-	if cache_hit_count > 0:
-		print(f"  {cache_hit_count}/{total_intervals} intervals loaded from cache")
-		# print cached interval results
+	if reused_count > 0:
+		print(f"  {reused_count}/{total_intervals} intervals reused from prior solve")
+		# print prior interval results
 		for pair_idx in range(total_intervals):
-			if cached_results[pair_idx] is not None:
-				result = cached_results[pair_idx]
+			if prior_results[pair_idx] is not None:
+				result = prior_results[pair_idx]
 				line = _format_interval_result(result, fps)
-				print(f"{line}  [CACHED]")
+				print(f"{line}  [PRIOR]")
 				if on_interval_complete is not None:
 					on_interval_complete(result)
 
-	# helper to persist a newly solved interval to the cache
-	def _cache_and_notify(pair_idx: int, result: dict) -> None:
-		"""Store a cacheable subset of the result and call on_interval_cached."""
-		if on_interval_cached is not None:
+	# helper to persist a newly solved interval to disk
+	def _persist_and_notify(pair_idx: int, result: dict) -> None:
+		"""Store a saveable subset of the result and call on_interval_solved."""
+		if on_interval_solved is not None:
 			# keep forward/backward tracks so refinement GUI can show FWD/BWD prediction boxes
-			cacheable = {
+			saveable = {
 				"start_frame": result["start_frame"],
 				"end_frame": result["end_frame"],
 				"fused_track": result["fused_track"],
@@ -816,22 +816,22 @@ def solve_all_intervals(
 				"competitor_margins": result["competitor_margins"],
 			}
 			fp = all_fingerprints[pair_idx]
-			on_interval_cached(fp, cacheable)
+			on_interval_solved(fp, saveable)
 
-	uncached_count = len(uncached_indices)
+	new_count = len(new_indices)
 
-	# parallel solving path: only uncached intervals dispatched to the pool
-	if num_workers > 1 and uncached_count > 1:
+	# parallel solving path: only new intervals dispatched to the pool
+	if num_workers > 1 and new_count > 1:
 		# get video_path from reader for spawning worker readers
 		video_path = reader.video_path
-		# compute total frames across uncached intervals for progress bar
+		# compute total frames across new intervals for progress bar
 		total_frames = 0
-		for ui in uncached_indices:
+		for ui in new_indices:
 			s_start, s_end = all_pairs[ui]
 			total_frames += int(s_end["frame_index"]) - int(s_start["frame_index"])
-		# cap actual workers to uncached interval count
-		actual_workers = min(num_workers, uncached_count)
-		print(f"  solving {uncached_count} intervals ({actual_workers} workers)...")
+		# cap actual workers to new interval count
+		actual_workers = min(num_workers, new_count)
+		print(f"  solving {new_count} intervals ({actual_workers} workers)...")
 		# create shared frame counter for cross-worker progress
 		frame_counter = multiprocessing.Value("i", 0)
 		# map futures to their original pair index for ordered stitching
@@ -841,7 +841,7 @@ def solve_all_intervals(
 			initializer=_init_worker,
 			initargs=(frame_counter,),
 		) as pool:
-			for w_idx, ui in enumerate(uncached_indices):
+			for w_idx, ui in enumerate(new_indices):
 				s_start, s_end = all_pairs[ui]
 				future = pool.submit(
 					_solve_interval_worker,
@@ -865,7 +865,7 @@ def solve_all_intervals(
 				)
 				last_wall_print = time.time()
 				try:
-					while done_count < uncached_count:
+					while done_count < new_count:
 						# check for newly completed futures (non-blocking)
 						for future in list(future_to_pair_idx):
 							if future.done() and future not in collected:
@@ -874,8 +874,8 @@ def solve_all_intervals(
 								result = future.result()
 								parallel_results[pair_idx] = result
 								done_count += 1
-								# persist to cache
-								_cache_and_notify(pair_idx, result)
+								# persist to disk
+								_persist_and_notify(pair_idx, result)
 								# print interval result and completion count
 								_print_interval_result_rich(result, fps, progress)
 								if on_interval_complete is not None:
@@ -890,7 +890,7 @@ def solve_all_intervals(
 									)
 								progress.console.print(
 									f"  intervals complete: "
-									f"{done_count}/{uncached_count}"
+									f"{done_count}/{new_count}"
 								)
 						# update frame-level progress from shared counter
 						current_frames = frame_counter.value
@@ -917,13 +917,13 @@ def solve_all_intervals(
 						future.cancel()
 					pool.shutdown(wait=False, cancel_futures=True)
 					raise
-		# merge cached and newly solved results in original order
+		# merge prior and newly solved results in original order
 		for pair_idx in range(total_intervals):
-			if cached_results[pair_idx] is not None:
-				interval_results.append(cached_results[pair_idx])
+			if prior_results[pair_idx] is not None:
+				interval_results.append(prior_results[pair_idx])
 			else:
 				interval_results.append(parallel_results[pair_idx])
-	elif uncached_count > 0:
+	elif new_count > 0:
 		# sequential solving path with rich progress bar
 		with rich.progress.Progress(
 			rich.progress.TextColumn("{task.description}"),
@@ -932,9 +932,9 @@ def solve_all_intervals(
 			rich.progress.TimeRemainingColumn(),
 		) as progress:
 			task = progress.add_task(
-				"  solving intervals", total=uncached_count,
+				"  solving intervals", total=new_count,
 			)
-			for ui in uncached_indices:
+			for ui in new_indices:
 				seed_start, seed_end = all_pairs[ui]
 
 				start_frame = int(seed_start["frame_index"])
@@ -949,20 +949,20 @@ def solve_all_intervals(
 					reader, seed_start, seed_end, detector, appearance_model,
 					show_progress=debug, debug=debug,
 				)
-				cached_results[ui] = result
-				# persist to cache
-				_cache_and_notify(ui, result)
+				prior_results[ui] = result
+				# persist to disk
+				_persist_and_notify(ui, result)
 				_print_interval_result_rich(result, fps, progress)
 				if on_interval_complete is not None:
 					on_interval_complete(result)
 				progress.update(task, advance=1)
 		# merge all results in original order
 		for pair_idx in range(total_intervals):
-			interval_results.append(cached_results[pair_idx])
+			interval_results.append(prior_results[pair_idx])
 	else:
-		# all intervals were cached, no solving needed
+		# all intervals reused from prior solve, no new solving needed
 		for pair_idx in range(total_intervals):
-			interval_results.append(cached_results[pair_idx])
+			interval_results.append(prior_results[pair_idx])
 
 	# stitch all intervals into full trajectory
 	trajectory = stitch_trajectories(interval_results)

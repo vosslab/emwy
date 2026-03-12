@@ -151,7 +151,7 @@ def _build_seed_dict(
 def _draw_trajectory_preview(
 	frame: numpy.ndarray,
 	predictions: dict | None,
-	alpha: float = 0.4,
+	alpha: float = 0.15,
 ) -> None:
 	"""Draw forward/backward trajectory prediction boxes on a frame in-place.
 
@@ -182,11 +182,11 @@ def _draw_trajectory_preview(
 		overlay = frame.copy()
 		cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 100, 0), -1)
 		cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
-		# draw solid border on top
-		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 100, 0), 2)
+		# draw thin border on top
+		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 100, 0), 1)
 		cv2.putText(
 			frame, "FWD",
-			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 0), 1,
+			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 100, 0), 1,
 		)
 	# backward prediction in magenta
 	bwd = predictions.get("backward")
@@ -203,11 +203,11 @@ def _draw_trajectory_preview(
 		overlay = frame.copy()
 		cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 0, 255), -1)
 		cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
-		# draw solid border on top
-		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
+		# draw thin border on top
+		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 1)
 		cv2.putText(
 			frame, "BWD",
-			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1,
+			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1,
 		)
 
 
@@ -232,6 +232,7 @@ def _interactive_draw_box(
 		or "prev"/"next" if left/right arrow pressed,
 		or "not_in_frame"/"obstructed" if n/o pressed,
 		or "partial" if p pressed,
+		or averaged FWD/BWD box as [x,y,w,h] if f pressed with sufficient overlap,
 		or None if ESC/q pressed to finish.
 	"""
 	# mutable state for the mouse callback closure
@@ -240,31 +241,86 @@ def _interactive_draw_box(
 		"x1": 0, "y1": 0,
 		"x2": 0, "y2": 0,
 		"done": False,
+		# zoom state: z key toggles 1.5x zoom centered on frame
+		"zoomed": False,
+		"zoom_cx": 0, "zoom_cy": 0,
 	}
+	# frame dimensions for zoom crop calculation
+	frame_h, frame_w = frame.shape[:2]
+	zoom_factor = 1.5
 	# draw prediction overlays on a copy before entering the loop
 	display_frame = frame.copy()
 	_draw_trajectory_preview(display_frame, predictions)
 
 	#============================================
+	def _mouse_to_frame(mx: int, my: int) -> tuple:
+		"""Map mouse coordinates back to original frame coordinates."""
+		if not state["zoomed"]:
+			return (mx, my)
+		# compute the crop region used for the zoomed view
+		crop_w = int(frame_w / zoom_factor)
+		crop_h = int(frame_h / zoom_factor)
+		crop_x1 = max(0, min(state["zoom_cx"] - crop_w // 2, frame_w - crop_w))
+		crop_y1 = max(0, min(state["zoom_cy"] - crop_h // 2, frame_h - crop_h))
+		# map display pixel to original frame pixel
+		orig_x = int(crop_x1 + mx * crop_w / frame_w)
+		orig_y = int(crop_y1 + my * crop_h / frame_h)
+		return (orig_x, orig_y)
+
+	# minimum and maximum area guardrails for drawn boxes
+	min_box_area = 10
+	max_box_area = frame_w * frame_h * 0.5
+
+	#============================================
 	def mouse_callback(event: int, x: int, y: int, flags: int, param: object) -> None:
 		"""Handle mouse events for rectangle drawing."""
 		if event == cv2.EVENT_LBUTTONDOWN:
-			# start drawing
+			# start drawing (in frame coordinates)
+			fx, fy = _mouse_to_frame(x, y)
 			state["drawing"] = True
-			state["x1"] = x
-			state["y1"] = y
-			state["x2"] = x
-			state["y2"] = y
+			state["x1"] = fx
+			state["y1"] = fy
+			state["x2"] = fx
+			state["y2"] = fy
 		elif event == cv2.EVENT_MOUSEMOVE and state["drawing"]:
-			# update preview rectangle
-			state["x2"] = x
-			state["y2"] = y
+			# update preview rectangle (in frame coordinates)
+			fx, fy = _mouse_to_frame(x, y)
+			state["x2"] = fx
+			state["y2"] = fy
 		elif event == cv2.EVENT_LBUTTONUP:
-			# finish drawing
+			# finish drawing (in frame coordinates)
+			fx, fy = _mouse_to_frame(x, y)
 			state["drawing"] = False
-			state["x2"] = x
-			state["y2"] = y
+			state["x2"] = fx
+			state["y2"] = fy
 			state["done"] = True
+
+	#============================================
+	def _apply_zoom(img: numpy.ndarray) -> numpy.ndarray:
+		"""Apply zoom crop and resize if zoom is active."""
+		if not state["zoomed"]:
+			return img
+		crop_w = int(frame_w / zoom_factor)
+		crop_h = int(frame_h / zoom_factor)
+		crop_x1 = max(0, min(state["zoom_cx"] - crop_w // 2, frame_w - crop_w))
+		crop_y1 = max(0, min(state["zoom_cy"] - crop_h // 2, frame_h - crop_h))
+		cropped = img[crop_y1:crop_y1 + crop_h, crop_x1:crop_x1 + crop_w]
+		# resize back to full display size
+		zoomed_img = cv2.resize(cropped, (frame_w, frame_h))
+		return zoomed_img
+
+	#============================================
+	def _frame_to_display(fx: int, fy: int) -> tuple:
+		"""Map frame coordinates to display coordinates for drawing."""
+		if not state["zoomed"]:
+			return (fx, fy)
+		crop_w = int(frame_w / zoom_factor)
+		crop_h = int(frame_h / zoom_factor)
+		crop_x1 = max(0, min(state["zoom_cx"] - crop_w // 2, frame_w - crop_w))
+		crop_y1 = max(0, min(state["zoom_cy"] - crop_h // 2, frame_h - crop_h))
+		dx = int((fx - crop_x1) * frame_w / crop_w)
+		dy = int((fy - crop_y1) * frame_h / crop_h)
+		return (dx, dy)
 
 	# set up the window and mouse callback
 	cv2.namedWindow(SEED_WINDOW_TITLE, cv2.WINDOW_NORMAL)
@@ -272,7 +328,17 @@ def _interactive_draw_box(
 	while True:
 		# draw instructions and current rectangle on a fresh copy
 		show = display_frame.copy()
-		# add instruction text overlays
+		# draw the rectangle preview while dragging (on full-frame coords)
+		if state["drawing"]:
+			cv2.rectangle(
+				show,
+				(state["x1"], state["y1"]),
+				(state["x2"], state["y2"]),
+				box_color, 2,
+			)
+		# apply zoom crop after drawing overlays
+		show = _apply_zoom(show)
+		# add instruction text overlays (always on display coords)
 		cv2.putText(
 			show,
 			"Draw a rectangle around the runner's upper torso",
@@ -287,17 +353,22 @@ def _interactive_draw_box(
 		)
 		cv2.putText(
 			show,
-			"n=not in frame, o=obstructed, p=partial",
+			"n=not in frame, o=obstructed, p=partial, f=FWD/BWD avg",
 			(10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
 			(0, 255, 255), 2,
 		)
-		# draw the rectangle preview while dragging
-		if state["drawing"]:
-			cv2.rectangle(
-				show,
-				(state["x1"], state["y1"]),
-				(state["x2"], state["y2"]),
-				box_color, 2,
+		cv2.putText(
+			show,
+			"z=toggle zoom",
+			(10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+			(0, 255, 255), 2,
+		)
+		# show zoom indicator when zoomed
+		if state["zoomed"]:
+			cv2.putText(
+				show, "ZOOM 1.5x",
+				(frame_w - 200, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+				(0, 255, 0), 2,
 			)
 		cv2.imshow(SEED_WINDOW_TITLE, show)
 		key = cv2.waitKey(30) & 0xFF
@@ -317,6 +388,59 @@ def _interactive_draw_box(
 		# right arrow: scrub forward
 		if key == 83 or key == 3:
 			return "next"
+		# z key: toggle zoom on/off at current mouse position
+		if key == 122:
+			if state["zoomed"]:
+				state["zoomed"] = False
+			else:
+				# zoom into the center of the current view
+				state["zoomed"] = True
+				state["zoom_cx"] = frame_w // 2
+				state["zoom_cy"] = frame_h // 2
+			continue
+		# f key: auto-accept average of FWD/BWD predictions if overlap is sufficient
+		if key == 102:
+			if predictions is None:
+				continue
+			fwd = predictions.get("forward")
+			bwd = predictions.get("backward")
+			if fwd is None or bwd is None:
+				continue
+			# compute FWD and BWD boxes in pixel coordinates
+			fwd_cx = float(fwd["cx"])
+			fwd_cy = float(fwd["cy"])
+			fwd_w = float(fwd["w"])
+			fwd_h = float(fwd["h"])
+			bwd_cx = float(bwd["cx"])
+			bwd_cy = float(bwd["cy"])
+			bwd_w = float(bwd["w"])
+			bwd_h = float(bwd["h"])
+			# compute intersection area
+			f_x1 = fwd_cx - fwd_w / 2.0
+			f_y1 = fwd_cy - fwd_h / 2.0
+			f_x2 = fwd_cx + fwd_w / 2.0
+			f_y2 = fwd_cy + fwd_h / 2.0
+			b_x1 = bwd_cx - bwd_w / 2.0
+			b_y1 = bwd_cy - bwd_h / 2.0
+			b_x2 = bwd_cx + bwd_w / 2.0
+			b_y2 = bwd_cy + bwd_h / 2.0
+			inter_w = max(0.0, min(f_x2, b_x2) - max(f_x1, b_x1))
+			inter_h = max(0.0, min(f_y2, b_y2) - max(f_y1, b_y1))
+			intersection = inter_w * inter_h
+			fwd_area = fwd_w * fwd_h
+			bwd_area = bwd_w * bwd_h
+			total = fwd_area + bwd_area
+			# check overlap ratio: intersection / (FWD + BWD)
+			if total <= 0 or intersection / total < 0.3:
+				continue
+			# compute average box and return as [x, y, w, h]
+			avg_cx = (fwd_cx + bwd_cx) / 2.0
+			avg_cy = (fwd_cy + bwd_cy) / 2.0
+			avg_w = (fwd_w + bwd_w) / 2.0
+			avg_h = (fwd_h + bwd_h) / 2.0
+			avg_x = int(avg_cx - avg_w / 2.0)
+			avg_y = int(avg_cy - avg_h / 2.0)
+			return [avg_x, avg_y, int(avg_w), int(avg_h)]
 		# n key: mark runner as not in frame
 		if key == 110:
 			return "not_in_frame"
@@ -328,15 +452,16 @@ def _interactive_draw_box(
 			return "partial"
 		# check if mouse drawing finished
 		if state["done"]:
-			# compute box from the two corner points
+			# compute box from the two corner points (already in frame coords)
 			x1 = min(state["x1"], state["x2"])
 			y1 = min(state["y1"], state["y2"])
 			x2 = max(state["x1"], state["x2"])
 			y2 = max(state["y1"], state["y2"])
 			w = x2 - x1
 			h = y2 - y1
-			# ignore tiny accidental clicks
-			if w < 5 or h < 5:
+			box_area = w * h
+			# reject boxes that are too small or too large
+			if box_area < min_box_area or box_area > max_box_area:
 				state["done"] = False
 				continue
 			return [x1, y1, w, h]

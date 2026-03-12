@@ -316,6 +316,86 @@ def generate_refinement_targets(
 
 
 #============================================
+def rank_target_frames_by_severity(
+	diagnostics: dict,
+	target_frames: list,
+	max_count: int = 0,
+) -> list:
+	"""Rank target frames by parent interval severity and return top N.
+
+	Each target frame is mapped to the interval that contains it. Frames
+	are grouped by score tier (agreement, margin), worst tiers first.
+	Within each tier, frames are spread evenly across the video for
+	spatial coverage rather than clustering at the start.
+
+	Args:
+		diagnostics: Dict with "intervals" key.
+		target_frames: List of frame numbers to rank.
+		max_count: Maximum frames to return. 0 means no limit.
+
+	Returns:
+		List of frame numbers sorted by frame order, capped to max_count.
+	"""
+	intervals = diagnostics.get("intervals", [])
+
+	# build lookup: for each target frame, find parent interval scores
+	frame_scores = {}
+	for frame in target_frames:
+		# find the interval containing this frame
+		best_score = None
+		for iv in intervals:
+			start = int(iv["start_frame"])
+			end = int(iv["end_frame"])
+			if start <= frame <= end:
+				best_score = iv.get("interval_score", {})
+				break
+		if best_score is None:
+			# frame not in any interval, assign worst possible score
+			agreement = 0.0
+			margin = 0.0
+		else:
+			agreement = float(best_score.get("agreement_score", 0.0))
+			margin = float(best_score.get("competitor_margin", 0.0))
+		# round to bin nearby scores into the same tier
+		frame_scores[frame] = (round(agreement, 2), round(margin, 2))
+
+	# group frames by score tier
+	tiers = {}
+	for frame in target_frames:
+		key = frame_scores[frame]
+		if key not in tiers:
+			tiers[key] = []
+		tiers[key].append(frame)
+
+	# sort tiers worst-first (lowest agreement, then lowest margin)
+	sorted_tier_keys = sorted(tiers.keys())
+
+	# collect frames tier by tier, subsampling within each tier
+	# for even spatial coverage when a tier exceeds remaining budget
+	selected = []
+	remaining = max_count if max_count > 0 else len(target_frames)
+	for key in sorted_tier_keys:
+		tier_frames = sorted(tiers[key])
+		if len(tier_frames) <= remaining:
+			# take all frames from this tier
+			selected.extend(tier_frames)
+			remaining -= len(tier_frames)
+		else:
+			# subsample evenly across this tier for spatial coverage
+			step = len(tier_frames) / remaining
+			for i in range(remaining):
+				idx = int(i * step)
+				selected.append(tier_frames[idx])
+			remaining = 0
+		if remaining <= 0:
+			break
+
+	# return in frame order for sequential playback
+	selected.sort()
+	return selected
+
+
+#============================================
 def format_review_summary(diagnostics: dict) -> str:
 	"""Produce a human-readable summary of all intervals with scores and suggestions.
 

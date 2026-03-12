@@ -8,7 +8,9 @@ Subcommands:
   run     Full pipeline: seed -> solve -> encode (default workflow)
   seed    Collect/add seeds, save, exit
   edit    Review/fix/delete existing seeds interactively
-  solve   Run interval solver only, no encoding
+  target  Add seeds at weak interval frames with FWD/BWD overlays
+  solve   Full re-solve: clears prior results and solves all intervals fresh
+  refine  Re-solve only changed/new intervals, reuse prior results
   encode  Encode from existing trajectory, no solving
 """
 
@@ -100,14 +102,28 @@ def parse_args() -> argparse.Namespace:
 		help="Filter seeds near weak intervals at this severity threshold.",
 	)
 
-	# -- solve mode --
-	solve_parser = subparsers.add_parser(
-		"solve", help="Run interval solver only, no encoding.",
+	# -- target mode --
+	target_parser = subparsers.add_parser(
+		"target", help="Add seeds at weak interval frames with FWD/BWD overlays.",
 	)
-	solve_parser.add_argument(
+	target_parser.add_argument(
 		"-s", "--severity", dest="severity", type=str, default=None,
 		choices=("high", "medium", "low"),
-		help="Minimum severity for quality reporting.",
+		help="Minimum severity of weak intervals to target.",
+	)
+	target_parser.add_argument(
+		"--seed-interval", dest="seed_interval", type=float, default=10.0,
+		help="Interval in seconds between seed frames (default 10).",
+	)
+
+	# -- solve mode --
+	subparsers.add_parser(
+		"solve", help="Full re-solve: clears prior results and solves all intervals fresh.",
+	)
+
+	# -- refine mode --
+	subparsers.add_parser(
+		"refine", help="Re-solve only changed/new intervals, reuse prior results.",
 	)
 
 	# -- encode mode --
@@ -364,7 +380,7 @@ def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
 		fwd_track = iv.get("forward_track")
 		bwd_track = iv.get("backward_track")
 		if fwd_track is None or bwd_track is None:
-			# cached intervals may lack per-direction tracks
+			# stored intervals may lack per-direction tracks
 			continue
 		start_frame = int(iv["start_frame"])
 		n = min(len(fwd_track), len(bwd_track))
@@ -378,28 +394,69 @@ def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
 
 
 #============================================
-def _load_interval_cache(intervals_path: str) -> tuple:
-	"""Load interval cache and build a write-through callback.
+def _load_prior_results(intervals_path: str) -> tuple:
+	"""Load previously solved intervals and build a write-through callback.
 
-	Returns the cache dict and a callback that persists new entries
-	to the cache file immediately after each interval is solved.
+	Returns the solved-intervals dict and a callback that persists new
+	entries to disk immediately after each interval is solved.
 
 	Args:
-		intervals_path: Path to the intervals cache JSON file.
+		intervals_path: Path to the solved-intervals JSON file.
 
 	Returns:
-		Tuple (intervals_cache, on_interval_cached_callback).
+		Tuple (prior_results_dict, on_interval_solved_callback).
 	"""
 	intervals_file = state_io.load_intervals(intervals_path)
-	intervals_cache = intervals_file.get("cached_intervals", {})
+	solved = intervals_file.get("solved_intervals", {})
 
-	def _on_interval_cached(fingerprint: str, result: dict) -> None:
-		"""Persist a newly solved interval to the cache file."""
-		intervals_cache[fingerprint] = result
-		intervals_file["cached_intervals"] = intervals_cache
+	def _on_interval_solved(fingerprint: str, result: dict) -> None:
+		"""Persist a newly solved interval to disk."""
+		solved[fingerprint] = result
+		intervals_file["solved_intervals"] = solved
 		state_io.write_intervals(intervals_path, intervals_file)
 
-	return (intervals_cache, _on_interval_cached)
+	return (solved, _on_interval_solved)
+
+
+#============================================
+def _invalidate_intervals_for_frames(
+	intervals_path: str,
+	changed_frames: set,
+) -> None:
+	"""Remove solved intervals that touch any of the changed seed frames.
+
+	Each fingerprint key encodes two seed frame indices separated by pipe
+	characters. An interval is invalidated if either its start or end
+	frame index appears in changed_frames.
+
+	Args:
+		intervals_path: Path to the solved-intervals JSON file.
+		changed_frames: Set of frame_index ints that were modified.
+	"""
+	intervals_file = state_io.load_intervals(intervals_path)
+	solved = intervals_file.get("solved_intervals", {})
+	if not solved:
+		return
+	# extract frame indices from each fingerprint and check for overlap
+	keys_to_remove = []
+	for fp in solved:
+		# fingerprint format: "frame|cx|cy|w|h|frame|cx|cy|w|h"
+		parts = fp.split("|")
+		# first frame index is parts[0], second is parts[5]
+		start_fi = int(parts[0])
+		end_fi = int(parts[5])
+		if start_fi in changed_frames or end_fi in changed_frames:
+			keys_to_remove.append(fp)
+	if not keys_to_remove:
+		print(f"  no solved intervals affected by {len(changed_frames)} changed seeds")
+		return
+	for key in keys_to_remove:
+		del solved[key]
+	intervals_file["solved_intervals"] = solved
+	state_io.write_intervals(intervals_path, intervals_file)
+	remaining = len(solved)
+	print(f"  invalidated {len(keys_to_remove)} solved intervals "
+		f"({remaining} remaining)")
 
 
 #============================================
@@ -552,7 +609,7 @@ def _run_solve(
 		cfg: Configuration dict.
 		seeds: List of seed dicts for solving.
 		video_info: Video metadata dict.
-		intervals_path: Path to intervals cache.
+		intervals_path: Path to solved-intervals file.
 		diag_path: Path to write diagnostics.
 		num_workers: Number of parallel workers.
 		on_interval_complete: Optional callback for each solved interval.
@@ -565,13 +622,13 @@ def _run_solve(
 	print(f"running interval solver "
 		f"({len(usable_seeds)} usable seeds, {num_workers} workers)...")
 	t_solve_start = time.time()
-	iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
+	prior_ivs, on_solved_cb = _load_prior_results(intervals_path)
 	# build solver kwargs
 	solve_kwargs = {
 		"num_workers": num_workers,
 		"debug": args.debug,
-		"intervals_cache": iv_cache,
-		"on_interval_cached": iv_cache_cb,
+		"prior_intervals": prior_ivs,
+		"on_interval_solved": on_solved_cb,
 	}
 	if on_interval_complete is not None:
 		solve_kwargs["on_interval_complete"] = on_interval_complete
@@ -654,7 +711,7 @@ def _mode_edit(
 		video_info: Video metadata dict.
 		seeds_path: Path to the seeds JSON file.
 		diag_path: Path to diagnostics JSON file.
-		intervals_path: Path to intervals cache JSON file.
+		intervals_path: Path to solved-intervals JSON file.
 	"""
 	seeds = _load_and_deduplicate_seeds(seeds_path)
 	if not seeds:
@@ -671,9 +728,7 @@ def _mode_edit(
 	seed_confidences = None
 	if os.path.isfile(diag_path):
 		diag_data = state_io.load_diagnostics(diag_path)
-		# load full in-memory diagnostics for predictions
-		# (file-based diagnostics lack per-frame tracks, so predictions
-		# will only be available if the solver was run in-memory recently)
+		# try diagnostics file first (may lack per-frame tracks)
 		if diag_data.get("intervals"):
 			predictions = _build_predictions_from_diagnostics(diag_data)
 			if predictions:
@@ -684,6 +739,18 @@ def _mode_edit(
 			)
 			if seed_confidences:
 				print(f"  computed confidence for {len(seed_confidences)} seeds")
+
+	# fallback: load predictions from solved intervals (has per-frame tracks)
+	if not predictions and os.path.isfile(intervals_path):
+		intervals_file = state_io.load_intervals(intervals_path)
+		solved_intervals = intervals_file.get("solved_intervals", {})
+		if solved_intervals:
+			intervals_list = list(solved_intervals.values())
+			predictions = _build_predictions_from_diagnostics(
+				{"intervals": intervals_list}
+			)
+			if predictions:
+				print(f"  loaded predictions for {len(predictions)} frames (from solved intervals)")
 
 	# optionally filter by severity (show only seeds near weak intervals)
 	frame_filter = None
@@ -737,12 +804,123 @@ def _mode_edit(
 	if changes > 0:
 		_save_seeds_to_disk(edited_seeds, seeds_path)
 		print(f"saved {len(edited_seeds)} seeds to {seeds_path}")
-		# clear intervals cache since seeds changed
-		if os.path.isfile(intervals_path):
-			os.remove(intervals_path)
-			print("  cleared intervals cache (seeds changed)")
+		# invalidate only solved intervals that touch changed seeds
+		changed_frames = summary.get("changed_frames", set())
+		if changed_frames and os.path.isfile(intervals_path):
+			_invalidate_intervals_for_frames(intervals_path, changed_frames)
 	else:
 		print("no changes made")
+
+
+#============================================
+def _mode_target(
+	args: argparse.Namespace,
+	cfg: dict,
+	video_info: dict,
+	seeds_path: str,
+	diag_path: str,
+	intervals_path: str,
+) -> None:
+	"""Target mode: add seeds at weak interval frames with FWD/BWD overlays.
+
+	Loads solved intervals and diagnostics, generates refinement targets
+	filtered by severity, builds FWD/BWD predictions, and launches the
+	interactive seed collection UI at those frames.
+
+	Args:
+		args: Parsed argparse namespace.
+		cfg: Configuration dict.
+		video_info: Video metadata dict.
+		seeds_path: Path to the seeds JSON file.
+		diag_path: Path to diagnostics JSON file.
+		intervals_path: Path to solved-intervals JSON file.
+	"""
+	fps = video_info["fps"]
+	# require diagnostics from a prior solve
+	if not os.path.isfile(diag_path):
+		raise RuntimeError(
+			f"no diagnostics found at {diag_path}. "
+			f"Run 'solve' or 'run' first to generate interval data."
+		)
+	diag_data = state_io.load_diagnostics(diag_path)
+	if not diag_data.get("intervals"):
+		raise RuntimeError("diagnostics file has no intervals")
+
+	# load seeds
+	seeds = _load_and_deduplicate_seeds(seeds_path)
+	if not seeds:
+		raise RuntimeError(f"no seeds found in {seeds_path}")
+	print(f"loaded {len(seeds)} seeds from {seeds_path}")
+
+	# back up seeds before modifying
+	backup_path = seeds_path + ".bak"
+	shutil.copy2(seeds_path, backup_path)
+	print(f"  backup saved to {backup_path}")
+
+	# generate refinement targets with optional severity filter
+	severity = getattr(args, "severity", None)
+	seed_interval = getattr(args, "seed_interval", 10.0)
+	target_frames = review.generate_refinement_targets(
+		diag_data,
+		mode="suggested",
+		seed_interval=int(seed_interval * fps),
+		severity=severity,
+	)
+	if not target_frames:
+		sev_label = f" at {severity}+ severity" if severity else ""
+		print(f"  no weak intervals found{sev_label}")
+		return
+
+	# rank frames by severity (worst intervals first) and cap count
+	# high ~40, medium ~80, low/none ~160
+	_severity_caps = {"high": 40, "medium": 80, "low": 160}
+	max_targets = _severity_caps.get(severity, 160)
+	if len(target_frames) > max_targets:
+		print(f"  {len(target_frames)} candidate frames, "
+			f"taking {max_targets} worst (spread evenly)")
+	target_frames = review.rank_target_frames_by_severity(
+		diag_data, target_frames, max_count=max_targets,
+	)
+
+	sev_label = f" ({severity}+ severity)" if severity else ""
+	print(f"  {len(target_frames)} target frames from weak intervals{sev_label}")
+
+	# build FWD/BWD predictions from diagnostics
+	predictions = _build_predictions_from_diagnostics(diag_data)
+	# fallback to solved intervals if diagnostics lack per-frame tracks
+	if not predictions and os.path.isfile(intervals_path):
+		intervals_file = state_io.load_intervals(intervals_path)
+		solved_intervals = intervals_file.get("solved_intervals", {})
+		if solved_intervals:
+			intervals_list = list(solved_intervals.values())
+			predictions = _build_predictions_from_diagnostics(
+				{"intervals": intervals_list}
+			)
+	if predictions:
+		print(f"  loaded predictions for {len(predictions)} frames")
+
+	# determine pass number
+	existing_passes = [s.get("pass", 1) for s in seeds]
+	next_pass = max(existing_passes) + 1 if existing_passes else 2
+
+	# collect seeds at target frames with predictions overlay
+	print(f"  collecting seeds at {len(target_frames)} weak interval frames...")
+	updated_seeds = seeding.collect_seeds_at_frames(
+		args.input_file,
+		target_frames,
+		cfg,
+		pass_number=next_pass,
+		mode="target_refine",
+		existing_seeds=seeds,
+		predictions=predictions,
+		debug=args.debug,
+		save_callback=_make_save_callback(seeds_path),
+	)
+	# save updated seeds
+	new_count = len(updated_seeds) - len(seeds)
+	_save_seeds_to_disk(updated_seeds, seeds_path)
+	print(f"saved {len(updated_seeds)} seeds to {seeds_path} "
+		f"({new_count} new)")
 
 
 #============================================
@@ -764,13 +942,56 @@ def _mode_solve(
 		video_info: Video metadata dict.
 		seeds_path: Path to the seeds JSON file.
 		diag_path: Path to diagnostics JSON file.
-		intervals_path: Path to intervals cache JSON file.
+		intervals_path: Path to solved-intervals JSON file.
 	"""
 	seeds = _load_and_deduplicate_seeds(seeds_path)
 	if not seeds:
 		raise RuntimeError(f"no seeds found in {seeds_path}")
 	print(f"loaded {len(seeds)} seeds from {seeds_path}")
 
+	# clear existing solved intervals to force full re-solve
+	if os.path.isfile(intervals_path):
+		os.remove(intervals_path)
+		print("  cleared solved intervals (full re-solve)")
+
+	num_workers = _resolve_workers(args)
+	_run_solve(
+		args, cfg, seeds, video_info,
+		intervals_path, diag_path, num_workers,
+	)
+
+
+#============================================
+def _mode_refine(
+	args: argparse.Namespace,
+	cfg: dict,
+	video_info: dict,
+	seeds_path: str,
+	diag_path: str,
+	intervals_path: str,
+) -> None:
+	"""Refine mode: re-solve only changed intervals, reuse prior results.
+
+	Requires existing solved intervals from a prior solve. Only
+	intervals whose fingerprint changed (due to edited seeds) are
+	re-solved; prior results are reused for unchanged intervals.
+
+	Args:
+		args: Parsed argparse namespace.
+		cfg: Configuration dict.
+		video_info: Video metadata dict.
+		seeds_path: Path to the seeds JSON file.
+		diag_path: Path to diagnostics JSON file.
+		intervals_path: Path to solved-intervals JSON file.
+	"""
+	seeds = _load_and_deduplicate_seeds(seeds_path)
+	if not seeds:
+		raise RuntimeError(f"no seeds found in {seeds_path}")
+	print(f"loaded {len(seeds)} seeds from {seeds_path}")
+	if not os.path.isfile(intervals_path):
+		raise RuntimeError(
+			f"no solved intervals at {intervals_path}; run 'solve' first"
+		)
 	num_workers = _resolve_workers(args)
 	_run_solve(
 		args, cfg, seeds, video_info,
@@ -917,7 +1138,7 @@ def _mode_run(
 		video_info: Video metadata dict.
 		seeds_path: Path to the seeds JSON file.
 		diag_path: Path to diagnostics JSON file.
-		intervals_path: Path to intervals cache JSON file.
+		intervals_path: Path to solved-intervals JSON file.
 	"""
 	fps = video_info["fps"]
 	time_range = _parse_time_range(args.time_range)
@@ -982,14 +1203,14 @@ def _mode_run(
 		f"({len(usable_seeds)} usable seeds, {num_workers} workers)...")
 
 	t_solve_start = time.time()
-	iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
+	prior_ivs, on_solved_cb = _load_prior_results(intervals_path)
 	with encoder.VideoReader(args.input_file) as reader:
 		diagnostics = interval_solver.solve_all_intervals(
 			reader, solver_seeds, det, cfg,
 			num_workers=num_workers, debug=args.debug,
 			on_interval_complete=_on_interval_complete,
-			intervals_cache=iv_cache,
-			on_interval_cached=iv_cache_cb,
+			prior_intervals=prior_ivs,
+			on_interval_solved=on_solved_cb,
 		)
 	diagnostics["fps"] = fps
 	t_solve_elapsed = time.time() - t_solve_start
@@ -1050,13 +1271,13 @@ def _mode_run(
 						f"Re-solving with updated seeds..."
 					)
 					t_resolve_start = time.time()
-					iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
+					prior_ivs, on_solved_cb = _load_prior_results(intervals_path)
 					with encoder.VideoReader(args.input_file) as reader:
 						diagnostics = interval_solver.solve_all_intervals(
 							reader, solver_seeds, det, cfg,
 							num_workers=num_workers, debug=args.debug,
-							intervals_cache=iv_cache,
-							on_interval_cached=iv_cache_cb,
+							prior_intervals=prior_ivs,
+							on_interval_solved=on_solved_cb,
 						)
 					diagnostics["fps"] = fps
 					t_resolve_elapsed = time.time() - t_resolve_start
@@ -1117,12 +1338,12 @@ def _mode_run(
 			solver_seeds = seeds
 			print("re-solving with updated seeds...")
 			t_resolve_start = time.time()
-			iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
+			prior_ivs, on_solved_cb = _load_prior_results(intervals_path)
 			with encoder.VideoReader(args.input_file) as reader:
 				diagnostics = interval_solver.solve_all_intervals(
 					reader, solver_seeds, det, cfg,
-					intervals_cache=iv_cache,
-					on_interval_cached=iv_cache_cb,
+					prior_intervals=prior_ivs,
+					on_interval_solved=on_solved_cb,
 				)
 			diagnostics["fps"] = fps
 			t_resolve_elapsed = time.time() - t_resolve_start
@@ -1173,12 +1394,12 @@ def _mode_run(
 				solver_seeds = seeds
 				print("re-solving with updated seeds...")
 				t_resolve_start = time.time()
-				iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
+				prior_ivs, on_solved_cb = _load_prior_results(intervals_path)
 				with encoder.VideoReader(args.input_file) as reader:
 					diagnostics = interval_solver.solve_all_intervals(
 						reader, solver_seeds, det, cfg,
-						intervals_cache=iv_cache,
-						on_interval_cached=iv_cache_cb,
+						prior_intervals=prior_ivs,
+						on_interval_solved=on_solved_cb,
 					)
 				diagnostics["fps"] = fps
 				t_resolve_elapsed = time.time() - t_resolve_start
@@ -1210,7 +1431,7 @@ def main() -> None:
 	if config_path is None:
 		config_path = config.default_config_path(args.input_file)
 
-	# paths for seeds, diagnostics, and intervals cache
+	# paths for seeds, diagnostics, and solved intervals
 	seeds_path = state_io.default_seeds_path(args.input_file)
 	diag_path = state_io.default_diagnostics_path(args.input_file)
 	intervals_path = state_io.default_intervals_path(args.input_file)
@@ -1246,8 +1467,12 @@ def main() -> None:
 		_mode_seed(args, cfg, video_info, seeds_path)
 	elif mode == "edit":
 		_mode_edit(args, cfg, video_info, seeds_path, diag_path, intervals_path)
+	elif mode == "target":
+		_mode_target(args, cfg, video_info, seeds_path, diag_path, intervals_path)
 	elif mode == "solve":
 		_mode_solve(args, cfg, video_info, seeds_path, diag_path, intervals_path)
+	elif mode == "refine":
+		_mode_refine(args, cfg, video_info, seeds_path, diag_path, intervals_path)
 	elif mode == "encode":
 		_mode_encode(args, cfg, video_info, diag_path)
 	elif mode == "run":

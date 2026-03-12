@@ -69,7 +69,7 @@ def _draw_predictions_overlay(
 	frame: numpy.ndarray,
 	predictions: dict | None,
 	frame_idx: int,
-	alpha: float = 0.4,
+	alpha: float = 0.15,
 ) -> None:
 	"""Draw forward/backward prediction boxes with transparency.
 
@@ -98,10 +98,10 @@ def _draw_predictions_overlay(
 		overlay = frame.copy()
 		cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 100, 0), -1)
 		cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
-		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 100, 0), 2)
+		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 100, 0), 1)
 		cv2.putText(
 			frame, "FWD",
-			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 0), 1,
+			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 100, 0), 1,
 		)
 	# backward prediction in magenta
 	bwd = frame_preds.get("backward")
@@ -117,10 +117,10 @@ def _draw_predictions_overlay(
 		overlay = frame.copy()
 		cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 0, 255), -1)
 		cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
-		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
+		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 1)
 		cv2.putText(
 			frame, "BWD",
-			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1,
+			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1,
 		)
 
 
@@ -370,24 +370,62 @@ def _interactive_edit_seed(
 		"x1": 0, "y1": 0,
 		"x2": 0, "y2": 0,
 		"done": False,
+		# zoom state: z key toggles 1.5x zoom centered on frame
+		"zoomed": False,
+		"zoom_cx": 0, "zoom_cy": 0,
 	}
+	# frame dimensions for zoom crop calculation
+	ed_frame_h, ed_frame_w = frame.shape[:2]
+	zoom_factor = 1.5
+	# minimum and maximum area guardrails for drawn boxes
+	min_box_area = 10
+	max_box_area = ed_frame_w * ed_frame_h * 0.5
+
+	#============================================
+	def _mouse_to_frame(mx: int, my: int) -> tuple:
+		"""Map mouse coordinates back to original frame coordinates."""
+		if not draw_state["zoomed"]:
+			return (mx, my)
+		crop_w = int(ed_frame_w / zoom_factor)
+		crop_h = int(ed_frame_h / zoom_factor)
+		crop_x1 = max(0, min(draw_state["zoom_cx"] - crop_w // 2, ed_frame_w - crop_w))
+		crop_y1 = max(0, min(draw_state["zoom_cy"] - crop_h // 2, ed_frame_h - crop_h))
+		orig_x = int(crop_x1 + mx * crop_w / ed_frame_w)
+		orig_y = int(crop_y1 + my * crop_h / ed_frame_h)
+		return (orig_x, orig_y)
+
+	#============================================
+	def _apply_zoom(img: numpy.ndarray) -> numpy.ndarray:
+		"""Apply zoom crop and resize if zoom is active."""
+		if not draw_state["zoomed"]:
+			return img
+		crop_w = int(ed_frame_w / zoom_factor)
+		crop_h = int(ed_frame_h / zoom_factor)
+		crop_x1 = max(0, min(draw_state["zoom_cx"] - crop_w // 2, ed_frame_w - crop_w))
+		crop_y1 = max(0, min(draw_state["zoom_cy"] - crop_h // 2, ed_frame_h - crop_h))
+		cropped = img[crop_y1:crop_y1 + crop_h, crop_x1:crop_x1 + crop_w]
+		zoomed_img = cv2.resize(cropped, (ed_frame_w, ed_frame_h))
+		return zoomed_img
 
 	#============================================
 	def mouse_callback(event: int, x: int, y: int, flags: int, param: object) -> None:
 		"""Handle mouse events for rectangle drawing."""
 		if event == cv2.EVENT_LBUTTONDOWN:
+			fx, fy = _mouse_to_frame(x, y)
 			draw_state["drawing"] = True
-			draw_state["x1"] = x
-			draw_state["y1"] = y
-			draw_state["x2"] = x
-			draw_state["y2"] = y
+			draw_state["x1"] = fx
+			draw_state["y1"] = fy
+			draw_state["x2"] = fx
+			draw_state["y2"] = fy
 		elif event == cv2.EVENT_MOUSEMOVE and draw_state["drawing"]:
-			draw_state["x2"] = x
-			draw_state["y2"] = y
+			fx, fy = _mouse_to_frame(x, y)
+			draw_state["x2"] = fx
+			draw_state["y2"] = fy
 		elif event == cv2.EVENT_LBUTTONUP:
+			fx, fy = _mouse_to_frame(x, y)
 			draw_state["drawing"] = False
-			draw_state["x2"] = x
-			draw_state["y2"] = y
+			draw_state["x2"] = fx
+			draw_state["y2"] = fy
 			draw_state["done"] = True
 
 	cv2.namedWindow(EDIT_WINDOW_TITLE, cv2.WINDOW_NORMAL)
@@ -395,7 +433,17 @@ def _interactive_edit_seed(
 
 	while True:
 		show = display.copy()
-		# draw status bar at the top
+		# draw the redraw rectangle preview while dragging (in frame coords)
+		if draw_state["drawing"]:
+			cv2.rectangle(
+				show,
+				(draw_state["x1"], draw_state["y1"]),
+				(draw_state["x2"], draw_state["y2"]),
+				(0, 255, 0), 2,
+			)
+		# apply zoom crop after drawing overlays on full-frame image
+		show = _apply_zoom(show)
+		# draw status bar at the top (on display coords)
 		status_text = (
 			f"Seed {seed_index + 1}/{total_seeds} | "
 			f"frame {frame_idx} | {time_s:.1f}s | {status}"
@@ -419,22 +467,21 @@ def _interactive_edit_seed(
 		)
 		cv2.putText(
 			show,
-			"n=not_in_frame, o=obstructed, p=partial, y=YOLO polish, f=FWD/BWD polish",
+			"n=not_in_frame, o=obstructed, p=partial, y=YOLO, f=FWD/BWD",
 			(10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
 			(0, 255, 255), 2,
 		)
 		cv2.putText(
 			show,
-			"ESC/q=save+exit",
+			"z=toggle zoom, ESC/q=save+exit",
 			(10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
 			(0, 255, 255), 2,
 		)
-		# draw the redraw rectangle preview while dragging
-		if draw_state["drawing"]:
-			cv2.rectangle(
-				show,
-				(draw_state["x1"], draw_state["y1"]),
-				(draw_state["x2"], draw_state["y2"]),
+		# show zoom indicator when zoomed
+		if draw_state["zoomed"]:
+			cv2.putText(
+				show, "ZOOM 1.5x",
+				(ed_frame_w - 200, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
 				(0, 255, 0), 2,
 			)
 		cv2.imshow(EDIT_WINDOW_TITLE, show)
@@ -448,6 +495,15 @@ def _interactive_edit_seed(
 		# left arrow: previous seed
 		if key == 81 or key == 2:
 			return "prev"
+		# z key: toggle zoom on/off at center of frame
+		if key == 122:
+			if draw_state["zoomed"]:
+				draw_state["zoomed"] = False
+			else:
+				draw_state["zoomed"] = True
+				draw_state["zoom_cx"] = ed_frame_w // 2
+				draw_state["zoom_cy"] = ed_frame_h // 2
+			continue
 		# d key: delete seed
 		if key == 100:
 			return "delete"
@@ -539,8 +595,9 @@ def _interactive_edit_seed(
 			y2 = max(draw_state["y1"], draw_state["y2"])
 			w = x2 - x1
 			h = y2 - y1
-			# ignore tiny accidental clicks
-			if w < 5 or h < 5:
+			box_area = w * h
+			# reject boxes that are too small or too large
+			if box_area < min_box_area or box_area > max_box_area:
 				draw_state["done"] = False
 				continue
 			return [x1, y1, w, h]
@@ -590,6 +647,7 @@ def edit_seeds(
 			summary = {
 				"reviewed": 0, "kept": 0, "redrawn": 0,
 				"deleted": 0, "status_changed": 0,
+				"changed_frames": set(),
 			}
 			return (list(seeds), summary)
 	else:
@@ -615,6 +673,8 @@ def edit_seeds(
 	status_changed = 0
 	# set of indices in work_seeds to delete at the end
 	delete_indices = set()
+	# frame indices that were modified (for selective interval invalidation)
+	changed_frames = set()
 
 	# lazy YOLO detector for bbox polish (created on first y-key press)
 	yolo_detector = [None]
@@ -663,10 +723,12 @@ def edit_seeds(
 		if result == "delete":
 			deleted += 1
 			delete_indices.add(seed_list_idx)
+			changed_frames.add(frame_idx)
 			nav_idx += 1
 			continue
 		if result in ("not_in_frame", "obstructed"):
 			status_changed += 1
+			changed_frames.add(frame_idx)
 			# change status and remove position data for absence statuses
 			work_seeds[seed_list_idx] = {
 				"frame_index": seed.get("frame_index"),
@@ -691,6 +753,7 @@ def edit_seeds(
 			if isinstance(partial_box, list):
 				status_changed += 1
 				redrawn += 1
+				changed_frames.add(frame_idx)
 				time_sec = seed.get("time_s", frame_idx / fps)
 				norm_box = seeding.normalize_seed_box(partial_box, config)
 				jersey_hsv = seeding.extract_jersey_color(frame, norm_box)
@@ -705,6 +768,7 @@ def edit_seeds(
 		if isinstance(result, tuple) and len(result) == 2 and result[0] == "bbox_polish":
 			# user accepted a YOLO or FWD/BWD polish
 			redrawn += 1
+			changed_frames.add(frame_idx)
 			polish_box = result[1]
 			time_sec = seed.get("time_s", frame_idx / fps)
 			norm_box = seeding.normalize_seed_box(polish_box, config)
@@ -719,6 +783,7 @@ def edit_seeds(
 		if isinstance(result, list):
 			# user drew a new box (redraw)
 			redrawn += 1
+			changed_frames.add(frame_idx)
 			time_sec = seed.get("time_s", frame_idx / fps)
 			norm_box = seeding.normalize_seed_box(result, config)
 			jersey_hsv = seeding.extract_jersey_color(frame, norm_box)
@@ -751,6 +816,7 @@ def edit_seeds(
 		"redrawn": redrawn,
 		"deleted": deleted,
 		"status_changed": status_changed,
+		"changed_frames": changed_frames,
 	}
 	# print edit summary
 	print(f"  edit summary: {reviewed} reviewed, {kept} kept, "

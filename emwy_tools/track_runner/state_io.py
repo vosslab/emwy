@@ -20,14 +20,15 @@ SEEDS_HEADER_VALUE = 2
 DIAGNOSTICS_HEADER_KEY = "track_runner_diagnostics"
 DIAGNOSTICS_HEADER_VALUE = 2
 
-# header key and version for intervals cache JSON files
+# header key and version for solved-intervals JSON files
 INTERVALS_HEADER_KEY = "track_runner_intervals"
 INTERVALS_HEADER_VALUE = 1
 
 # valid mode values for seed entries
 VALID_SEED_MODES = frozenset(
 	["initial", "suggested_refine", "interval_refine", "gap_refine",
-	"edit_redraw", "solve_refine", "interactive_refine", "bbox_polish"]
+	"edit_redraw", "solve_refine", "interactive_refine", "bbox_polish",
+	"target_refine"]
 )
 
 #============================================
@@ -177,13 +178,13 @@ def write_diagnostics(path: str, diagnostics_data: dict) -> None:
 #============================================
 
 def default_intervals_path(input_file: str) -> str:
-	"""Return the default intervals cache JSON file path for a given input file.
+	"""Return the default solved-intervals JSON file path for a given input file.
 
 	Args:
 		input_file: Input media file path.
 
 	Returns:
-		str: Intervals cache JSON file path.
+		str: Solved-intervals JSON file path.
 	"""
 	intervals_path = f"{input_file}.track_runner.intervals.json"
 	return intervals_path
@@ -192,12 +193,12 @@ def default_intervals_path(input_file: str) -> str:
 #============================================
 
 def load_intervals(path: str) -> dict:
-	"""Load an intervals cache JSON file and validate the header.
+	"""Load a solved-intervals JSON file and validate the header.
 
 	Returns an empty intervals structure if the file does not exist.
 
 	Args:
-		path: Path to the intervals cache JSON file.
+		path: Path to the solved-intervals JSON file.
 
 	Returns:
 		dict: Parsed intervals data with validated header, or empty structure.
@@ -207,7 +208,7 @@ def load_intervals(path: str) -> dict:
 	"""
 	# return empty structure if file does not exist
 	if not os.path.isfile(path):
-		return {INTERVALS_HEADER_KEY: INTERVALS_HEADER_VALUE, "cached_intervals": {}}
+		return {INTERVALS_HEADER_KEY: INTERVALS_HEADER_VALUE, "solved_intervals": {}}
 	with open(path, "r") as fh:
 		data = json.load(fh)
 	if not isinstance(data, dict):
@@ -225,7 +226,7 @@ def load_intervals(path: str) -> dict:
 #============================================
 
 def write_intervals(path: str, intervals_data: dict) -> None:
-	"""Write intervals cache data to a JSON file.
+	"""Write solved-intervals data to a JSON file.
 
 	Ensures the required header key is present before writing.
 
@@ -243,11 +244,11 @@ def write_intervals(path: str, intervals_data: dict) -> None:
 #============================================
 
 def interval_fingerprint(seed_start: dict, seed_end: dict) -> str:
-	"""Compute a deterministic cache key from two seed endpoint states.
+	"""Compute a deterministic lookup key from two seed endpoint states.
 
 	The fingerprint encodes frame_index and position (cx, cy, w, h rounded
 	to 2 decimal places) for both seeds. Any change in seed position or
-	frame index produces a different key, implicitly invalidating the cache.
+	frame index produces a different key, so stale results are never reused.
 
 	Args:
 		seed_start: Seed state dict at the start of the interval.
@@ -409,9 +410,9 @@ if __name__ == "__main__":
 	frame_10 = next(s for s in merged if s["frame"] == 10)
 	assert frame_10["mode"] == "initial"
 
-	# test intervals cache round-trip
+	# test solved-intervals round-trip
 	intervals_data = {
-		"cached_intervals": {
+		"solved_intervals": {
 			"100|1731.50|629.50|39.00|59.00|450|1700.00|600.00|38.00|58.00": {
 				"start_frame": 100,
 				"end_frame": 450,
@@ -424,7 +425,7 @@ if __name__ == "__main__":
 	write_intervals(tmp_path, intervals_data)
 	loaded_iv = load_intervals(tmp_path)
 	assert loaded_iv[INTERVALS_HEADER_KEY] == INTERVALS_HEADER_VALUE
-	assert len(loaded_iv["cached_intervals"]) == 1
+	assert len(loaded_iv["solved_intervals"]) == 1
 	os.unlink(tmp_path)
 
 	# test interval_fingerprint determinism
