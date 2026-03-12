@@ -325,6 +325,27 @@ def _parse_time_range(time_range_str: str | None) -> tuple | None:
 
 
 #============================================
+def _validate_diagnostics_confidence(diagnostics: dict) -> None:
+	"""Check that all intervals have confidence data.
+
+	Raises RuntimeError if any interval is missing the confidence
+	field, indicating stale diagnostics that need a fresh solve.
+
+	Args:
+		diagnostics: Dict with "intervals" key.
+	"""
+	for iv in diagnostics.get("intervals", []):
+		# confidence may be nested under interval_score (in-memory)
+		# or at top level (diagnostics file)
+		score = iv["interval_score"]
+		if "confidence" not in score and "confidence" not in iv:
+			raise RuntimeError(
+				"diagnostics missing confidence data. "
+				"Run 'solve' to regenerate."
+			)
+
+
+#============================================
 def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 	"""Print a human-readable quality summary from diagnostics.
 
@@ -334,20 +355,31 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 	"""
 	intervals = diagnostics.get("intervals", [])
 	total = len(intervals)
-	weak = sum(
-		1 for iv in intervals
-		if iv.get("interval_score", {}).get("confidence", "low") != "high"
+
+	# count by confidence tier
+	from collections import Counter
+	tier_counts = Counter(
+		iv["interval_score"].get("confidence", "low")
+		for iv in intervals
 	)
+	need_seed = tier_counts.get("low", 0) + tier_counts.get("fair", 0)
+
 	print("")
-	print(f"quality summary: {total - weak}/{total} intervals trusted")
+	print(f"quality summary: "
+		f"{tier_counts.get('high', 0)} high, "
+		f"{tier_counts.get('good', 0)} good, "
+		f"{tier_counts.get('fair', 0)} fair, "
+		f"{tier_counts.get('low', 0)} low "
+		f"({total} intervals)")
 	if review.needs_refinement(diagnostics):
-		# compute severity breakdown for weak intervals
+		print(f"  {need_seed} intervals need seeds (fair + low)")
+		# compute severity breakdown for seed-needing intervals
 		high_count = 0
 		medium_count = 0
 		low_count = 0
 		for iv in intervals:
-			score = iv.get("interval_score", {})
-			if score.get("confidence", "low") == "high":
+			score = iv["interval_score"]
+			if score.get("confidence", "low") in ("high", "good"):
 				continue
 			sev = review.classify_interval_severity(iv, fps)
 			if sev == "high":
@@ -356,12 +388,12 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 				medium_count += 1
 			else:
 				low_count += 1
-		print(f"  weakness breakdown: {high_count} high, "
-			f"{medium_count} medium, {low_count} low severity")
+		print(f"  severity breakdown: {high_count} high, "
+			f"{medium_count} medium, {low_count} low")
 		print(f"  hint: use --severity=high to focus on the "
 			f"{high_count} worst intervals")
 	else:
-		print("  all intervals trusted -- tracking quality is good")
+		print("  all intervals acceptable -- no seeds needed")
 	print("")
 
 
@@ -499,7 +531,7 @@ def _load_and_deduplicate_seeds(seeds_path: str) -> list:
 		fi = int(seed["frame_index"])
 		if fi in seen_frames:
 			existing = seen_frames[fi]
-			if int(seed.get("pass", 1)) >= int(existing.get("pass", 1)):
+			if int(seed["pass"]) >= int(existing["pass"]):
 				seen_frames[fi] = seed
 		else:
 			seen_frames[fi] = seed
@@ -563,11 +595,11 @@ def _validate_usable_seeds(seeds: list) -> tuple:
 	"""
 	usable_seeds = [
 		s for s in seeds
-		if s.get("status", "visible") in ("visible", "partial")
+		if s["status"] in ("visible", "partial")
 	]
 	visible_count = sum(
 		1 for s in usable_seeds
-		if s.get("status", "visible") == "visible"
+		if s["status"] == "visible"
 	)
 	partial_count = sum(
 		1 for s in usable_seeds if s.get("status") == "partial"
@@ -671,7 +703,7 @@ def _mode_seed(
 	# determine pass number
 	if existing_seeds:
 		print(f"loaded {len(existing_seeds)} existing seeds from {seeds_path}")
-		existing_passes = [s.get("pass", 1) for s in existing_seeds]
+		existing_passes = [s["pass"] for s in existing_seeds]
 		pass_number = max(existing_passes) + 1
 	else:
 		pass_number = 1
@@ -762,9 +794,9 @@ def _mode_edit(
 		# collect frame ranges from weak intervals at the severity threshold
 		weak_frames = set()
 		for iv in intervals:
-			score = iv.get("interval_score", iv)
+			score = iv["interval_score"]
 			confidence = score.get("confidence", "low")
-			if confidence == "high":
+			if confidence in ("high", "good"):
 				continue
 			sev = review.classify_interval_severity(iv, fps)
 			# include if severity meets threshold
@@ -776,8 +808,8 @@ def _mode_edit(
 			elif severity == "high" and sev == "high":
 				include = True
 			if include:
-				start_f = int(iv.get("start_frame", 0))
-				end_f = int(iv.get("end_frame", 0))
+				start_f = int(iv["start_frame"])
+				end_f = int(iv["end_frame"])
 				# include seeds within the weak interval range
 				for seed in seeds:
 					fi = int(seed.get("frame_index", -1))
@@ -845,6 +877,7 @@ def _mode_target(
 	diag_data = state_io.load_diagnostics(diag_path)
 	if not diag_data.get("intervals"):
 		raise RuntimeError("diagnostics file has no intervals")
+	_validate_diagnostics_confidence(diag_data)
 
 	# load seeds
 	seeds = _load_and_deduplicate_seeds(seeds_path)
@@ -871,17 +904,6 @@ def _mode_target(
 		print(f"  no weak intervals found{sev_label}")
 		return
 
-	# rank frames by severity (worst intervals first) and cap count
-	# high ~40, medium ~80, low/none ~160
-	_severity_caps = {"high": 40, "medium": 80, "low": 160}
-	max_targets = _severity_caps.get(severity, 160)
-	if len(target_frames) > max_targets:
-		print(f"  {len(target_frames)} candidate frames, "
-			f"taking {max_targets} worst (spread evenly)")
-	target_frames = review.rank_target_frames_by_severity(
-		diag_data, target_frames, max_count=max_targets,
-	)
-
 	sev_label = f" ({severity}+ severity)" if severity else ""
 	print(f"  {len(target_frames)} target frames from weak intervals{sev_label}")
 
@@ -900,7 +922,7 @@ def _mode_target(
 		print(f"  loaded predictions for {len(predictions)} frames")
 
 	# determine pass number
-	existing_passes = [s.get("pass", 1) for s in seeds]
+	existing_passes = [s["pass"] for s in seeds]
 	next_pass = max(existing_passes) + 1 if existing_passes else 2
 
 	# collect seeds at target frames with predictions overlay
@@ -1005,29 +1027,72 @@ def _mode_encode(
 	cfg: dict,
 	video_info: dict,
 	diag_path: str,
+	intervals_path: str | None = None,
 ) -> None:
 	"""Encode mode: encode cropped video from existing diagnostics.
+
+	Reconstructs the per-frame trajectory from the solved intervals
+	file, since the diagnostics file stores only interval summaries
+	(no per-frame trajectory data).
 
 	Args:
 		args: Parsed argparse namespace.
 		cfg: Configuration dict.
 		video_info: Video metadata dict.
 		diag_path: Path to diagnostics JSON file.
+		intervals_path: Path to solved-intervals JSON file.
+			If None, derived from input_file.
 	"""
 	# apply aspect override
 	if getattr(args, "aspect", None) is not None:
 		cfg.setdefault("processing", {})
 		cfg["processing"]["crop_aspect"] = args.aspect
 
-	# load diagnostics
+	# load diagnostics (for fps and interval metadata)
 	if not os.path.isfile(diag_path):
 		raise RuntimeError(
 			f"no diagnostics found at {diag_path}; run 'solve' first"
 		)
 	diag_data = state_io.load_diagnostics(diag_path)
-	trajectory = diag_data.get("trajectory", [])
+
+	# reconstruct trajectory from solved intervals
+	if intervals_path is None:
+		intervals_path = state_io.default_intervals_path(args.input_file)
+	if not os.path.isfile(intervals_path):
+		raise RuntimeError(
+			f"no solved intervals found at {intervals_path}; "
+			f"run 'solve' first"
+		)
+	intervals_file = state_io.load_intervals(intervals_path)
+	solved = intervals_file.get("solved_intervals", {})
+	if not solved:
+		raise RuntimeError(
+			"solved intervals file contains no interval data"
+		)
+	# sort interval results by start_frame for stitching
+	interval_results = sorted(
+		solved.values(), key=lambda r: int(r["start_frame"]),
+	)
+	trajectory = interval_solver.stitch_trajectories(interval_results)
+
+	# apply absence erasure from seeds (not_in_frame, obstructed)
+	seeds_path = state_io.default_seeds_path(args.input_file)
+	if os.path.isfile(seeds_path):
+		seeds_data = state_io.load_seeds(seeds_path)
+		absence_seeds = [
+			s for s in seeds_data.get("seeds", [])
+			if s.get("status", "") in ("not_in_frame", "obstructed")
+		]
+		if absence_seeds:
+			fps = float(diag_data.get("fps", video_info["fps"]))
+			trajectory = interval_solver._apply_absence_erasure(
+				trajectory, absence_seeds, fps,
+			)
+
 	if not trajectory:
-		raise RuntimeError("diagnostics contain no trajectory data")
+		raise RuntimeError(
+			"could not reconstruct trajectory from solved intervals"
+		)
 
 	num_workers = _resolve_workers(args)
 
@@ -1077,7 +1142,7 @@ def _mode_encode(
 					"cy": state["cy"],
 					"w": state["w"],
 					"h": state["h"],
-					"conf": state.get("conf", 0.5),
+					"conf": state["conf"],
 					"source": state.get("source", "propagated"),
 					"frame_index": i,
 					"bbox": (state["cx"], state["cy"], state["w"], state["h"]),
@@ -1195,7 +1260,7 @@ def _mode_run(
 		"""Callback fired when each interval finishes solving."""
 		score = result.get("interval_score", {})
 		confidence = score.get("confidence", "low")
-		if confidence != "high":
+		if confidence in ("low", "fair"):
 			weak_queue.put(result)
 
 	usable_seeds, _, _ = _validate_usable_seeds(seeds)
@@ -1246,7 +1311,7 @@ def _mode_run(
 			)
 			answer = input(prompt_msg).strip().lower()
 			if answer in ("", "y", "yes"):
-				existing_passes = [s.get("pass", 1) for s in seeds]
+				existing_passes = [s["pass"] for s in seeds]
 				next_pass = max(existing_passes) + 1 if existing_passes else 2
 				predictions = _build_predictions_from_diagnostics(diagnostics)
 				print("  collecting seeds at weak intervals...")
@@ -1306,7 +1371,8 @@ def _mode_run(
 			intervals = diagnostics.get("intervals", [])
 			weak_count = sum(
 				1 for iv in intervals
-				if iv.get("interval_score", {}).get("confidence", "low") != "high"
+				if iv["interval_score"].get("confidence", "low")
+				in ("low", "fair")
 			)
 			sev_label = f"{severity}+ severity " if severity is not None else ""
 			prompt_msg = (
@@ -1318,7 +1384,7 @@ def _mode_run(
 			if answer not in ("", "y", "yes"):
 				break
 			interactive_pass += 1
-			existing_passes = [s.get("pass", 1) for s in seeds]
+			existing_passes = [s["pass"] for s in seeds]
 			next_pass = max(existing_passes) + 1 if existing_passes else 2
 			predictions = _build_predictions_from_diagnostics(diagnostics)
 			print(f"interactive refinement pass {interactive_pass}...")
@@ -1375,7 +1441,7 @@ def _mode_run(
 				print("no refinement targets identified")
 			else:
 				print(f"  {len(target_frames)} refinement target frames")
-				existing_passes = [s.get("pass", 1) for s in seeds]
+				existing_passes = [s["pass"] for s in seeds]
 				next_pass = max(existing_passes) + 1 if existing_passes else 2
 				predictions = _build_predictions_from_diagnostics(diagnostics)
 				seeds = seeding.collect_seeds_at_frames(
@@ -1408,7 +1474,7 @@ def _mode_run(
 				_print_quality_summary(diagnostics, fps)
 
 	# encode the cropped output
-	_mode_encode(args, cfg, video_info, diag_path)
+	_mode_encode(args, cfg, video_info, diag_path, intervals_path)
 
 
 #============================================
@@ -1474,7 +1540,7 @@ def main() -> None:
 	elif mode == "refine":
 		_mode_refine(args, cfg, video_info, seeds_path, diag_path, intervals_path)
 	elif mode == "encode":
-		_mode_encode(args, cfg, video_info, diag_path)
+		_mode_encode(args, cfg, video_info, diag_path, intervals_path)
 	elif mode == "run":
 		_mode_run(args, cfg, video_info, seeds_path, diag_path, intervals_path)
 	else:

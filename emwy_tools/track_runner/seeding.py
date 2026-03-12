@@ -170,10 +170,10 @@ def _draw_trajectory_preview(
 	# forward prediction in blue
 	fwd = predictions.get("forward")
 	if fwd is not None:
-		cx = float(fwd.get("cx", 0))
-		cy = float(fwd.get("cy", 0))
-		w = float(fwd.get("w", 0))
-		h = float(fwd.get("h", 0))
+		cx = float(fwd["cx"])
+		cy = float(fwd["cy"])
+		w = float(fwd["w"])
+		h = float(fwd["h"])
 		x1 = int(cx - w / 2.0)
 		y1 = int(cy - h / 2.0)
 		x2 = int(cx + w / 2.0)
@@ -191,10 +191,10 @@ def _draw_trajectory_preview(
 	# backward prediction in magenta
 	bwd = predictions.get("backward")
 	if bwd is not None:
-		cx = float(bwd.get("cx", 0))
-		cy = float(bwd.get("cy", 0))
-		w = float(bwd.get("w", 0))
-		h = float(bwd.get("h", 0))
+		cx = float(bwd["cx"])
+		cy = float(bwd["cy"])
+		w = float(bwd["w"])
+		h = float(bwd["h"])
 		x1 = int(cx - w / 2.0)
 		y1 = int(cy - h / 2.0)
 		x2 = int(cx + w / 2.0)
@@ -216,6 +216,7 @@ def _interactive_draw_box(
 	frame: numpy.ndarray,
 	predictions: dict | None = None,
 	box_color: tuple = (0, 255, 0),
+	initial_zoom: dict | None = None,
 ) -> list | str | None:
 	"""Show a frame and let the user draw a rectangle interactively.
 
@@ -223,6 +224,8 @@ def _interactive_draw_box(
 
 	Args:
 		frame: BGR image to display.
+		initial_zoom: Optional zoom state dict with "zoom_level", "zoom_cx",
+			"zoom_cy" to restore a previous zoom level (e.g. from partial mode).
 		predictions: Optional dict with "forward"/"backward" prediction
 			dicts (cx, cy, w, h) for overlay display during refinement.
 		box_color: BGR color tuple for the drawn rectangle (default green).
@@ -241,13 +244,19 @@ def _interactive_draw_box(
 		"x1": 0, "y1": 0,
 		"x2": 0, "y2": 0,
 		"done": False,
-		# zoom state: z key toggles 1.5x zoom centered on frame
-		"zoomed": False,
+		# zoom state: z key cycles through zoom levels (0=off, 1-3=zoomed)
+		"zoom_level": 0,
 		"zoom_cx": 0, "zoom_cy": 0,
 	}
+	# restore zoom state from caller (e.g. partial mode in seed editor)
+	if initial_zoom is not None:
+		state["zoom_level"] = initial_zoom.get("zoom_level", 0)
+		state["zoom_cx"] = initial_zoom.get("zoom_cx", 0)
+		state["zoom_cy"] = initial_zoom.get("zoom_cy", 0)
 	# frame dimensions for zoom crop calculation
 	frame_h, frame_w = frame.shape[:2]
-	zoom_factor = 1.5
+	# three zoom levels: 1.5x, 2.25x, 3.375x (each 1.5x the previous)
+	_zoom_factors = [1.0, 1.5, 2.25, 3.375]
 	# draw prediction overlays on a copy before entering the loop
 	display_frame = frame.copy()
 	_draw_trajectory_preview(display_frame, predictions)
@@ -255,11 +264,12 @@ def _interactive_draw_box(
 	#============================================
 	def _mouse_to_frame(mx: int, my: int) -> tuple:
 		"""Map mouse coordinates back to original frame coordinates."""
-		if not state["zoomed"]:
+		if state["zoom_level"] == 0:
 			return (mx, my)
 		# compute the crop region used for the zoomed view
-		crop_w = int(frame_w / zoom_factor)
-		crop_h = int(frame_h / zoom_factor)
+		zf = _zoom_factors[state["zoom_level"]]
+		crop_w = int(frame_w / zf)
+		crop_h = int(frame_h / zf)
 		crop_x1 = max(0, min(state["zoom_cx"] - crop_w // 2, frame_w - crop_w))
 		crop_y1 = max(0, min(state["zoom_cy"] - crop_h // 2, frame_h - crop_h))
 		# map display pixel to original frame pixel
@@ -298,10 +308,11 @@ def _interactive_draw_box(
 	#============================================
 	def _apply_zoom(img: numpy.ndarray) -> numpy.ndarray:
 		"""Apply zoom crop and resize if zoom is active."""
-		if not state["zoomed"]:
+		if state["zoom_level"] == 0:
 			return img
-		crop_w = int(frame_w / zoom_factor)
-		crop_h = int(frame_h / zoom_factor)
+		zf = _zoom_factors[state["zoom_level"]]
+		crop_w = int(frame_w / zf)
+		crop_h = int(frame_h / zf)
 		crop_x1 = max(0, min(state["zoom_cx"] - crop_w // 2, frame_w - crop_w))
 		crop_y1 = max(0, min(state["zoom_cy"] - crop_h // 2, frame_h - crop_h))
 		cropped = img[crop_y1:crop_y1 + crop_h, crop_x1:crop_x1 + crop_w]
@@ -312,10 +323,11 @@ def _interactive_draw_box(
 	#============================================
 	def _frame_to_display(fx: int, fy: int) -> tuple:
 		"""Map frame coordinates to display coordinates for drawing."""
-		if not state["zoomed"]:
+		if state["zoom_level"] == 0:
 			return (fx, fy)
-		crop_w = int(frame_w / zoom_factor)
-		crop_h = int(frame_h / zoom_factor)
+		zf = _zoom_factors[state["zoom_level"]]
+		crop_w = int(frame_w / zf)
+		crop_h = int(frame_h / zf)
 		crop_x1 = max(0, min(state["zoom_cx"] - crop_w // 2, frame_w - crop_w))
 		crop_y1 = max(0, min(state["zoom_cy"] - crop_h // 2, frame_h - crop_h))
 		dx = int((fx - crop_x1) * frame_w / crop_w)
@@ -364,9 +376,10 @@ def _interactive_draw_box(
 			(0, 255, 255), 2,
 		)
 		# show zoom indicator when zoomed
-		if state["zoomed"]:
+		if state["zoom_level"] > 0:
+			zoom_label = f"ZOOM {_zoom_factors[state['zoom_level']]:.1f}x"
 			cv2.putText(
-				show, "ZOOM 1.5x",
+				show, zoom_label,
 				(frame_w - 200, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
 				(0, 255, 0), 2,
 			)
@@ -388,15 +401,33 @@ def _interactive_draw_box(
 		# right arrow: scrub forward
 		if key == 83 or key == 3:
 			return "next"
-		# z key: toggle zoom on/off at current mouse position
+		# z key: cycle zoom levels (off -> 1.5x -> 2.25x -> 3.4x -> off)
 		if key == 122:
-			if state["zoomed"]:
-				state["zoomed"] = False
+			next_level = state["zoom_level"] + 1
+			if next_level >= len(_zoom_factors):
+				# reset to no zoom
+				state["zoom_level"] = 0
 			else:
-				# zoom into the center of the current view
-				state["zoomed"] = True
-				state["zoom_cx"] = frame_w // 2
-				state["zoom_cy"] = frame_h // 2
+				state["zoom_level"] = next_level
+				# set center on first zoom level only
+				if next_level == 1:
+					# center on average of FWD/BWD predictions when available
+					zoom_cx = frame_w // 2
+					zoom_cy = frame_h // 2
+					if predictions is not None:
+						fwd = predictions.get("forward")
+						bwd = predictions.get("backward")
+						if fwd is not None and bwd is not None:
+							zoom_cx = int((fwd["cx"] + bwd["cx"]) / 2.0)
+							zoom_cy = int((fwd["cy"] + bwd["cy"]) / 2.0)
+						elif fwd is not None:
+							zoom_cx = int(fwd["cx"])
+							zoom_cy = int(fwd["cy"])
+						elif bwd is not None:
+							zoom_cx = int(bwd["cx"])
+							zoom_cy = int(bwd["cy"])
+					state["zoom_cx"] = zoom_cx
+					state["zoom_cy"] = zoom_cy
 			continue
 		# f key: auto-accept average of FWD/BWD predictions if overlap is sufficient
 		if key == 102:
@@ -431,7 +462,7 @@ def _interactive_draw_box(
 			bwd_area = bwd_w * bwd_h
 			total = fwd_area + bwd_area
 			# check overlap ratio: intersection / (FWD + BWD)
-			if total <= 0 or intersection / total < 0.3:
+			if total <= 0 or intersection / total < 0.1:
 				continue
 			# compute average box and return as [x, y, w, h]
 			avg_cx = (fwd_cx + bwd_cx) / 2.0

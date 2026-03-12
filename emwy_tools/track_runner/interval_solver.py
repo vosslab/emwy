@@ -85,12 +85,12 @@ def fuse_tracks(
 		fwd_cx = float(fwd["cx"])
 		fwd_cy = float(fwd["cy"])
 		fwd_h = float(fwd["h"])
-		fwd_conf = float(fwd.get("conf", 0.1))
+		fwd_conf = float(fwd["conf"])
 
 		bwd_cx = float(bwd["cx"])
 		bwd_cy = float(bwd["cy"])
 		bwd_h = float(bwd["h"])
-		bwd_conf = float(bwd.get("conf", 0.1))
+		bwd_conf = float(bwd["conf"])
 
 		# compute Dice coefficient between FWD and BWD boxes
 		fwd_box = {"cx": fwd_cx, "cy": fwd_cy, "w": float(fwd["w"]), "h": fwd_h}
@@ -267,14 +267,14 @@ def solve_interval(
 		cy=float(seed_start["cy"]),
 		w=float(seed_start["w"]),
 		h=float(seed_start["h"]),
-		conf=float(seed_start.get("conf", 1.0)),
+		conf=float(seed_start["conf"]),
 	)
 	end_state = propagator.make_seed_state(
 		cx=float(seed_end["cx"]),
 		cy=float(seed_end["cy"]),
 		w=float(seed_end["w"]),
 		h=float(seed_end["h"]),
-		conf=float(seed_end.get("conf", 1.0)),
+		conf=float(seed_end["conf"]),
 	)
 
 	# propagate forward from start to end, and backward from end to start
@@ -549,12 +549,16 @@ def _format_interval_result(result: dict, fps: float) -> str:
 	identity = score["identity_score"]
 	confidence = score["confidence"]
 	reasons = score["failure_reasons"]
-	# format label: TRUST or WEAK with reason list
-	if confidence == "high":
-		label = "[TRUST]"
+	# format label by confidence tier
+	_confidence_labels = {
+		"high": "TRUST", "good": "GOOD", "fair": "FAIR", "low": "WEAK",
+	}
+	tag = _confidence_labels.get(confidence, "WEAK")
+	if confidence in ("high", "good"):
+		label = f"[{tag}]"
 	else:
 		reason_str = ", ".join(reasons) if reasons else "low_confidence"
-		label = f"[WEAK: {reason_str}]"
+		label = f"[{tag}: {reason_str}]"
 	line = (
 		f"  interval {start_frame:5d}-{end_frame:5d} "
 		f"({duration_s:.1f}s)  "
@@ -691,7 +695,7 @@ def solve_all_intervals(
 	# filter to usable seeds (visible + partial have position data)
 	usable_seeds = [
 		s for s in seeds
-		if s.get("status", "visible") in ("visible", "partial")
+		if s["status"] in ("visible", "partial")
 	]
 
 	if len(usable_seeds) < 2:
@@ -723,13 +727,13 @@ def solve_all_intervals(
 		if fi in seen_frames:
 			existing = seen_frames[fi]
 			# keep the seed from the latest pass
-			if int(seed.get("pass", 1)) >= int(existing.get("pass", 1)):
+			if int(seed["pass"]) >= int(existing["pass"]):
 				print(f"  WARNING: duplicate seed at frame {fi}, "
-					f"keeping pass {seed.get('pass', 1)} over pass {existing.get('pass', 1)}")
+					f"keeping pass {seed['pass']} over pass {existing['pass']}")
 				seen_frames[fi] = seed
 			else:
 				print(f"  WARNING: duplicate seed at frame {fi}, "
-					f"keeping pass {existing.get('pass', 1)} over pass {seed.get('pass', 1)}")
+					f"keeping pass {existing['pass']} over pass {seed['pass']}")
 		else:
 			seen_frames[fi] = seed
 	if len(seen_frames) < len(usable_seeds_sorted):
@@ -739,7 +743,7 @@ def solve_all_intervals(
 
 	# build appearance model from the first visible seed
 	# prefer visible seeds over partial (partial has unreliable appearance)
-	visible_only = [s for s in usable_seeds_sorted if s.get("status", "visible") == "visible"]
+	visible_only = [s for s in usable_seeds_sorted if s["status"] == "visible"]
 	if visible_only:
 		first_seed = visible_only[0]
 	else:
@@ -893,7 +897,12 @@ def solve_all_intervals(
 									f"{done_count}/{new_count}"
 								)
 						# update frame-level progress from shared counter
+						# cap at 99% until all futures are collected
 						current_frames = frame_counter.value
+						if done_count < new_count:
+							current_frames = min(
+								current_frames, total_frames - 1,
+							)
 						progress.update(
 							frame_task, completed=current_frames,
 						)
@@ -917,6 +926,10 @@ def solve_all_intervals(
 						future.cancel()
 					pool.shutdown(wait=False, cancel_futures=True)
 					raise
+				# all futures collected: set progress to 100%
+				progress.update(
+					frame_task, completed=total_frames,
+				)
 		# merge prior and newly solved results in original order
 		for pair_idx in range(total_intervals):
 			if prior_results[pair_idx] is not None:

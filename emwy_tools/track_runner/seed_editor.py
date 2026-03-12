@@ -36,7 +36,7 @@ def _draw_seed_overlay(
 		color: BGR color tuple for the rectangle (default cyan).
 		alpha: Opacity for the overlay (0.0 = invisible, 1.0 = opaque).
 	"""
-	status = seed.get("status", "visible")
+	status = seed["status"]
 	if status in ("not_in_frame", "obstructed"):
 		# draw status label in the center of the frame
 		h, w = frame.shape[:2]
@@ -48,10 +48,10 @@ def _draw_seed_overlay(
 		)
 		return
 	# draw the seed box as a filled rectangle with transparency
-	cx = float(seed.get("cx", 0))
-	cy = float(seed.get("cy", 0))
-	sw = float(seed.get("w", 0))
-	sh = float(seed.get("h", 0))
+	cx = float(seed["cx"])
+	cy = float(seed["cy"])
+	sw = float(seed["w"])
+	sh = float(seed["h"])
 	x1 = int(cx - sw / 2.0)
 	y1 = int(cy - sh / 2.0)
 	x2 = int(cx + sw / 2.0)
@@ -87,10 +87,10 @@ def _draw_predictions_overlay(
 	# forward prediction in blue
 	fwd = frame_preds.get("forward")
 	if fwd is not None:
-		cx = float(fwd.get("cx", 0))
-		cy = float(fwd.get("cy", 0))
-		w = float(fwd.get("w", 0))
-		h = float(fwd.get("h", 0))
+		cx = float(fwd["cx"])
+		cy = float(fwd["cy"])
+		w = float(fwd["w"])
+		h = float(fwd["h"])
 		x1 = int(cx - w / 2.0)
 		y1 = int(cy - h / 2.0)
 		x2 = int(cx + w / 2.0)
@@ -106,10 +106,10 @@ def _draw_predictions_overlay(
 	# backward prediction in magenta
 	bwd = frame_preds.get("backward")
 	if bwd is not None:
-		cx = float(bwd.get("cx", 0))
-		cy = float(bwd.get("cy", 0))
-		w = float(bwd.get("w", 0))
-		h = float(bwd.get("h", 0))
+		cx = float(bwd["cx"])
+		cy = float(bwd["cy"])
+		w = float(bwd["w"])
+		h = float(bwd["h"])
 		x1 = int(cx - w / 2.0)
 		y1 = int(cy - h / 2.0)
 		x2 = int(cx + w / 2.0)
@@ -146,10 +146,10 @@ def _refine_box_yolo(
 		Refined seed box dict with cx, cy, w, h keys, or None if no
 		valid detection passes guardrails.
 	"""
-	cx = float(seed.get("cx", 0))
-	cy = float(seed.get("cy", 0))
-	sw = float(seed.get("w", 0))
-	sh = float(seed.get("h", 0))
+	cx = float(seed["cx"])
+	cy = float(seed["cy"])
+	sw = float(seed["w"])
+	sh = float(seed["h"])
 	seed_area = sw * sh
 	if seed_area <= 0:
 		return None
@@ -252,10 +252,10 @@ def _refine_box_consensus(
 	frame_preds = predictions.get(frame_idx)
 	if frame_preds is None:
 		return None
-	cx = float(seed.get("cx", 0))
-	cy = float(seed.get("cy", 0))
-	sw = float(seed.get("w", 0))
-	sh = float(seed.get("h", 0))
+	cx = float(seed["cx"])
+	cy = float(seed["cy"])
+	sw = float(seed["w"])
+	sh = float(seed["h"])
 	fwd = frame_preds.get("forward")
 	bwd = frame_preds.get("backward")
 	if fwd is not None and bwd is not None:
@@ -351,8 +351,8 @@ def _interactive_edit_seed(
 	"""
 	# prepare display frame with overlays
 	display = frame.copy()
-	frame_idx = int(seed.get("frame_index", 0))
-	status = seed.get("status", "visible")
+	frame_idx = int(seed["frame_index"])
+	status = seed["status"]
 	time_s = seed.get("time_s", frame_idx / 30.0)
 
 	# draw prediction overlays first (behind seed box)
@@ -370,13 +370,14 @@ def _interactive_edit_seed(
 		"x1": 0, "y1": 0,
 		"x2": 0, "y2": 0,
 		"done": False,
-		# zoom state: z key toggles 1.5x zoom centered on frame
-		"zoomed": False,
+		# zoom state: z key cycles through zoom levels (0=off, 1-3=zoomed)
+		"zoom_level": 0,
 		"zoom_cx": 0, "zoom_cy": 0,
 	}
 	# frame dimensions for zoom crop calculation
 	ed_frame_h, ed_frame_w = frame.shape[:2]
-	zoom_factor = 1.5
+	# three zoom levels: 1.5x, 2.25x, 3.375x (each 1.5x the previous)
+	_zoom_factors = [1.0, 1.5, 2.25, 3.375]
 	# minimum and maximum area guardrails for drawn boxes
 	min_box_area = 10
 	max_box_area = ed_frame_w * ed_frame_h * 0.5
@@ -384,10 +385,11 @@ def _interactive_edit_seed(
 	#============================================
 	def _mouse_to_frame(mx: int, my: int) -> tuple:
 		"""Map mouse coordinates back to original frame coordinates."""
-		if not draw_state["zoomed"]:
+		if draw_state["zoom_level"] == 0:
 			return (mx, my)
-		crop_w = int(ed_frame_w / zoom_factor)
-		crop_h = int(ed_frame_h / zoom_factor)
+		zf = _zoom_factors[draw_state["zoom_level"]]
+		crop_w = int(ed_frame_w / zf)
+		crop_h = int(ed_frame_h / zf)
 		crop_x1 = max(0, min(draw_state["zoom_cx"] - crop_w // 2, ed_frame_w - crop_w))
 		crop_y1 = max(0, min(draw_state["zoom_cy"] - crop_h // 2, ed_frame_h - crop_h))
 		orig_x = int(crop_x1 + mx * crop_w / ed_frame_w)
@@ -397,10 +399,11 @@ def _interactive_edit_seed(
 	#============================================
 	def _apply_zoom(img: numpy.ndarray) -> numpy.ndarray:
 		"""Apply zoom crop and resize if zoom is active."""
-		if not draw_state["zoomed"]:
+		if draw_state["zoom_level"] == 0:
 			return img
-		crop_w = int(ed_frame_w / zoom_factor)
-		crop_h = int(ed_frame_h / zoom_factor)
+		zf = _zoom_factors[draw_state["zoom_level"]]
+		crop_w = int(ed_frame_w / zf)
+		crop_h = int(ed_frame_h / zf)
 		crop_x1 = max(0, min(draw_state["zoom_cx"] - crop_w // 2, ed_frame_w - crop_w))
 		crop_y1 = max(0, min(draw_state["zoom_cy"] - crop_h // 2, ed_frame_h - crop_h))
 		cropped = img[crop_y1:crop_y1 + crop_h, crop_x1:crop_x1 + crop_w]
@@ -478,9 +481,10 @@ def _interactive_edit_seed(
 			(0, 255, 255), 2,
 		)
 		# show zoom indicator when zoomed
-		if draw_state["zoomed"]:
+		if draw_state["zoom_level"] > 0:
+			zoom_label = f"ZOOM {_zoom_factors[draw_state['zoom_level']]:.1f}x"
 			cv2.putText(
-				show, "ZOOM 1.5x",
+				show, zoom_label,
 				(ed_frame_w - 200, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
 				(0, 255, 0), 2,
 			)
@@ -495,14 +499,33 @@ def _interactive_edit_seed(
 		# left arrow: previous seed
 		if key == 81 or key == 2:
 			return "prev"
-		# z key: toggle zoom on/off at center of frame
+		# z key: cycle zoom levels (off -> 1.5x -> 2.25x -> 3.4x -> off)
 		if key == 122:
-			if draw_state["zoomed"]:
-				draw_state["zoomed"] = False
+			next_level = draw_state["zoom_level"] + 1
+			if next_level >= len(_zoom_factors):
+				# reset to no zoom
+				draw_state["zoom_level"] = 0
 			else:
-				draw_state["zoomed"] = True
-				draw_state["zoom_cx"] = ed_frame_w // 2
-				draw_state["zoom_cy"] = ed_frame_h // 2
+				draw_state["zoom_level"] = next_level
+				# set center on first zoom level only
+				if next_level == 1:
+					# center on average of FWD/BWD predictions when available
+					zoom_cx = ed_frame_w // 2
+					zoom_cy = ed_frame_h // 2
+					if predictions is not None:
+						fwd = predictions.get("forward")
+						bwd = predictions.get("backward")
+						if fwd is not None and bwd is not None:
+							zoom_cx = int((fwd["cx"] + bwd["cx"]) / 2.0)
+							zoom_cy = int((fwd["cy"] + bwd["cy"]) / 2.0)
+						elif fwd is not None:
+							zoom_cx = int(fwd["cx"])
+							zoom_cy = int(fwd["cy"])
+						elif bwd is not None:
+							zoom_cx = int(bwd["cx"])
+							zoom_cy = int(bwd["cy"])
+					draw_state["zoom_cx"] = zoom_cx
+					draw_state["zoom_cy"] = zoom_cy
 			continue
 		# d key: delete seed
 		if key == 100:
@@ -513,9 +536,15 @@ def _interactive_edit_seed(
 		# o key: change status to obstructed
 		if key == 111:
 			return "obstructed"
-		# p key: change status to partial
+		# p key: change status to partial (preserve zoom state)
 		if key == 112:
-			return "partial"
+			# return zoom state so caller can pass it to the draw box
+			zoom_info = {
+				"zoom_level": draw_state["zoom_level"],
+				"zoom_cx": draw_state["zoom_cx"],
+				"zoom_cy": draw_state["zoom_cy"],
+			}
+			return ("partial", zoom_info)
 		# y key: YOLO-based bbox polish with preview
 		if key == 121:
 			if status in ("not_in_frame", "obstructed"):
@@ -640,7 +669,7 @@ def edit_seeds(
 	if frame_filter is not None:
 		filtered_indices = [
 			i for i, s in enumerate(work_seeds)
-			if int(s.get("frame_index", -1)) in frame_filter
+			if int(s["frame_index"]) in frame_filter
 		]
 		if not filtered_indices:
 			print("  no seeds match the frame filter")
@@ -686,7 +715,7 @@ def edit_seeds(
 	while 0 <= nav_idx < len(filtered_indices):
 		seed_list_idx = filtered_indices[nav_idx]
 		seed = work_seeds[seed_list_idx]
-		frame_idx = int(seed.get("frame_index", 0))
+		frame_idx = int(seed["frame_index"])
 
 		# read the frame
 		frame = reader.read_frame(frame_idx)
@@ -735,17 +764,19 @@ def edit_seeds(
 				"frame": seed.get("frame"),
 				"time_s": seed.get("time_s"),
 				"status": result,
-				"pass": seed.get("pass", 1),
+				"pass": seed["pass"],
 				"source": "human",
 				"mode": "edit_redraw",
 			}
 			nav_idx += 1
 			continue
-		if result == "partial":
+		if isinstance(result, tuple) and len(result) == 2 and result[0] == "partial":
 			# partial mode: re-show frame for redraw with gold box color
+			# preserve zoom state from the editor
+			zoom_info = result[1]
 			print("  partial mode: draw the runner's torso box (press p to cancel)")
 			partial_box = seeding._interactive_draw_box(
-				frame, box_color=(0, 200, 220),
+				frame, box_color=(0, 200, 220), initial_zoom=zoom_info,
 			)
 			if partial_box == "partial":
 				print("  partial mode cancelled")
@@ -759,7 +790,7 @@ def edit_seeds(
 				jersey_hsv = seeding.extract_jersey_color(frame, norm_box)
 				new_seed = seeding._build_seed_dict(
 					frame_idx, time_sec, norm_box, jersey_hsv,
-					seed.get("pass", 1), "edit_redraw",
+					seed["pass"], "edit_redraw",
 				)
 				new_seed["status"] = "partial"
 				work_seeds[seed_list_idx] = new_seed
@@ -775,7 +806,7 @@ def edit_seeds(
 			jersey_hsv = seeding.extract_jersey_color(frame, norm_box)
 			new_seed = seeding._build_seed_dict(
 				frame_idx, time_sec, norm_box, jersey_hsv,
-				seed.get("pass", 1), "bbox_polish",
+				seed["pass"], "bbox_polish",
 			)
 			work_seeds[seed_list_idx] = new_seed
 			nav_idx += 1
@@ -789,7 +820,7 @@ def edit_seeds(
 			jersey_hsv = seeding.extract_jersey_color(frame, norm_box)
 			new_seed = seeding._build_seed_dict(
 				frame_idx, time_sec, norm_box, jersey_hsv,
-				seed.get("pass", 1), "edit_redraw",
+				seed["pass"], "edit_redraw",
 			)
 			work_seeds[seed_list_idx] = new_seed
 			nav_idx += 1

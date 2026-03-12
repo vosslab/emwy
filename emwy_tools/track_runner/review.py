@@ -113,23 +113,30 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 	Returns:
 		"high", "medium", or "low" severity string.
 	"""
-	score = interval.get("interval_score", {})
+	score = interval["interval_score"]
 	agreement = float(score.get("agreement_score", 0.0))
 	margin = float(score.get("competitor_margin", 0.0))
 	failure_reasons = score.get("failure_reasons", [])
 
 	# score-based classification
-	if agreement < 0.5 or margin < 0.2 or "likely_identity_swap" in failure_reasons:
+	# agreement < 0.2 means FWD/BWD strongly disagree -- high severity
+	# agreement ~0.5 is already pretty good alignment
+	if agreement < 0.2 or "likely_identity_swap" in failure_reasons:
 		severity = "high"
-	elif agreement < 0.8 and margin >= 0.2:
+	elif margin < 0.2 and agreement < 0.4:
+		# low margin combined with poor agreement -- high severity
+		severity = "high"
+	elif agreement < 0.4:
+		severity = "medium"
+	elif margin < 0.2:
+		# low margin but decent agreement (nearby competitor, tracking correct)
 		severity = "medium"
 	else:
-		# borderline: high agreement but low separation
 		severity = "low"
 
 	# duration-based promotion: intervals longer than threshold promote one level
-	start_frame = int(interval.get("start_frame", 0))
-	end_frame = int(interval.get("end_frame", 0))
+	start_frame = int(interval["start_frame"])
+	end_frame = int(interval["end_frame"])
 	duration_s = (end_frame - start_frame) / max(1.0, fps)
 	if duration_s > _DURATION_PROMOTE_THRESHOLD_S:
 		if severity == "low":
@@ -144,7 +151,7 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 def identify_weak_spans(diagnostics: dict) -> list:
 	"""Walk interval results and return seed suggestions for weak intervals.
 
-	For each interval whose confidence is not "high", generates one or more
+	For each interval whose confidence is "low" or "fair", generates one or more
 	seed suggestions with a specific frame, time, reason, and competitor summary.
 
 	Args:
@@ -163,12 +170,12 @@ def identify_weak_spans(diagnostics: dict) -> list:
 	for interval in intervals:
 		start_frame = int(interval["start_frame"])
 		end_frame = int(interval["end_frame"])
-		score = interval.get("interval_score", {})
+		score = interval["interval_score"]
 		confidence = score.get("confidence", "low")
 		failure_reasons = score.get("failure_reasons", [])
 
-		# only suggest seeds for non-high-confidence intervals
-		if confidence == "high":
+		# only suggest seeds for low/fair confidence intervals
+		if confidence in ("high", "good"):
 			continue
 
 		if failure_reasons:
@@ -247,8 +254,8 @@ def generate_refinement_targets(
 	excluded_intervals = set()
 	if severity is not None:
 		for idx, iv in enumerate(intervals):
-			score = iv.get("interval_score", {})
-			if score.get("confidence", "low") == "high":
+			score = iv["interval_score"]
+			if score.get("confidence", "low") in ("high", "good"):
 				continue
 			iv_severity = classify_interval_severity(iv, fps)
 			if _SEVERITY_RANK.get(iv_severity, 0) < min_rank:
@@ -347,7 +354,7 @@ def rank_target_frames_by_severity(
 			start = int(iv["start_frame"])
 			end = int(iv["end_frame"])
 			if start <= frame <= end:
-				best_score = iv.get("interval_score", {})
+				best_score = iv["interval_score"]
 				break
 		if best_score is None:
 			# frame not in any interval, assign worst possible score
@@ -414,18 +421,31 @@ def format_review_summary(diagnostics: dict) -> str:
 	lines.append("=== Track Runner Review Summary ===")
 	lines.append(f"Intervals: {len(intervals)}")
 
-	weak_count = sum(
-		1 for iv in intervals
-		if iv.get("interval_score", {}).get("confidence", "low") != "high"
+	# count intervals by confidence tier
+	from collections import Counter
+	tier_counts = Counter(
+		iv["interval_score"].get("confidence", "low")
+		for iv in intervals
 	)
-	lines.append(f"Weak intervals: {weak_count} / {len(intervals)}")
+	need_seed = tier_counts.get("low", 0) + tier_counts.get("fair", 0)
+	lines.append(
+		f"Confidence tiers: "
+		f"{tier_counts.get('high', 0)} high, "
+		f"{tier_counts.get('good', 0)} good, "
+		f"{tier_counts.get('fair', 0)} fair, "
+		f"{tier_counts.get('low', 0)} low"
+	)
+	lines.append(f"Need seeds: {need_seed} / {len(intervals)}")
 	lines.append("")
 
+	_confidence_labels = {
+		"high": "TRUST", "good": "GOOD", "fair": "FAIR", "low": "WEAK",
+	}
 	for iv in intervals:
 		start_frame = int(iv["start_frame"])
 		end_frame = int(iv["end_frame"])
 		duration_s = (end_frame - start_frame) / max(1.0, fps)
-		score = iv.get("interval_score", {})
+		score = iv["interval_score"]
 		confidence = score.get("confidence", "low")
 		agree = float(score.get("agreement_score", 0.0))
 		identity = float(score.get("identity_score", 0.0))
@@ -433,11 +453,12 @@ def format_review_summary(diagnostics: dict) -> str:
 		reasons = score.get("failure_reasons", [])
 
 		# format verdict label
-		if confidence == "high":
-			verdict = "[TRUST]"
+		tag = _confidence_labels.get(confidence, "WEAK")
+		if confidence in ("high", "good"):
+			verdict = f"[{tag}]"
 		else:
 			reason_str = ", ".join(reasons) if reasons else "low_confidence"
-			verdict = f"[WEAK: {reason_str}]"
+			verdict = f"[{tag}: {reason_str}]"
 
 		line = (
 			f"  interval {start_frame:5d}-{end_frame:5d} "
@@ -467,7 +488,10 @@ def format_review_summary(diagnostics: dict) -> str:
 
 #============================================
 def needs_refinement(diagnostics: dict) -> bool:
-	"""Return True if any interval has confidence that is not 'high'.
+	"""Return True if any interval has low or fair confidence.
+
+	Only low and fair tiers need additional seeds. High and good
+	are considered acceptable.
 
 	Args:
 		diagnostics: Dict from interval_solver.solve_all_intervals().
@@ -477,9 +501,9 @@ def needs_refinement(diagnostics: dict) -> bool:
 	"""
 	intervals = diagnostics.get("intervals", [])
 	for iv in intervals:
-		score = iv.get("interval_score", {})
+		score = iv["interval_score"]
 		confidence = score.get("confidence", "low")
-		if confidence != "high":
+		if confidence in ("low", "fair"):
 			return True
 	return False
 
@@ -503,7 +527,7 @@ _test_diag = {
 			"start_frame": 300,
 			"end_frame": 600,
 			"interval_score": {
-				"confidence": "low",
+				"confidence": "fair",
 				"failure_reasons": ["low_agreement"],
 				"agreement_score": 0.3,
 				"identity_score": 0.8,
@@ -521,10 +545,30 @@ assert _suggestions[0]["reason"] == "low_agreement"
 _targets = generate_refinement_targets(_test_diag, mode="suggested")
 assert len(_targets) == 1
 
-# severity classification: low agreement -> high severity
+# severity classification: agreement=0.3 is medium severity
 _sev = classify_interval_severity(_test_diag["intervals"][1], 30.0)
-assert _sev == "high"
+assert _sev == "medium"
 
-# severity filtering: high-only should still include the weak interval
-_targets_high = generate_refinement_targets(_test_diag, mode="suggested", severity="high")
-assert len(_targets_high) == 1
+# severity filtering: medium+ should include the fair interval
+_targets_med = generate_refinement_targets(_test_diag, mode="suggested", severity="medium")
+assert len(_targets_med) == 1
+
+# "good" confidence should NOT generate seed suggestions
+_test_diag_good = {
+	"fps": 30.0,
+	"intervals": [
+		{
+			"start_frame": 0,
+			"end_frame": 300,
+			"interval_score": {
+				"confidence": "good",
+				"failure_reasons": ["low_separation"],
+				"agreement_score": 0.7,
+				"identity_score": 0.8,
+				"competitor_margin": 0.3,
+			},
+		},
+	],
+}
+assert needs_refinement(_test_diag_good) is False
+assert identify_weak_spans(_test_diag_good) == []

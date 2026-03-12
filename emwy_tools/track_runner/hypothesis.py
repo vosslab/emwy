@@ -362,7 +362,7 @@ def _propagate_competitor_simple(
 		"cy": cy + dy,
 		"w": w,
 		"h": h,
-		"conf": float(comp_state.get("conf", 0.5)) * 0.95,
+		"conf": float(comp_state["conf"]) * 0.95,
 		"source": "propagated",
 		"identity_score": float(comp_state.get("identity_score", 0.5)),
 		"competitor_margin": 0.0,

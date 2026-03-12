@@ -95,7 +95,7 @@ def load_seeds(path: str) -> dict:
 	if "seeds" in data and isinstance(data["seeds"], list):
 		data["seeds"] = sorted(
 			data["seeds"],
-			key=lambda s: int(s.get("frame_index", s.get("frame", 0))),
+			key=lambda s: int(s["frame_index"]),
 		)
 	return data
 
@@ -117,7 +117,7 @@ def write_seeds(path: str, seeds_data: dict) -> None:
 	if "seeds" in seeds_data and isinstance(seeds_data["seeds"], list):
 		seeds_data["seeds"] = sorted(
 			seeds_data["seeds"],
-			key=lambda s: int(s.get("frame_index", s.get("frame", 0))),
+			key=lambda s: int(s["frame_index"]),
 		)
 	with open(path, "w") as fh:
 		json.dump(seeds_data, fh, indent=2)
@@ -317,7 +317,7 @@ def write_solver_diagnostics(
 	# build a JSON-safe summary (do not write full per-frame trajectory)
 	intervals_summary = []
 	for iv in diagnostics.get("intervals", []):
-		score = iv.get("interval_score", {})
+		score = iv["interval_score"]
 		entry = {
 			"start_frame": iv["start_frame"],
 			"end_frame": iv["end_frame"],

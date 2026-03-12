@@ -148,12 +148,15 @@ def classify_confidence(
 ) -> tuple:
 	"""Classify overall confidence from agreement, identity, and competitor margin.
 
-	Decision grid:
-		- High agreement (>0.8) + High separation (>0.5) -> "high"
-		- High agreement (>0.8) + Low separation         -> "low", ["low_separation"]
-		- Low agreement                                   -> "low", ["low_agreement"]
-		- Strong competitor (margin < 0.2)                -> adds "likely_identity_swap"
-		- Weak appearance (identity < 0.4)                -> adds "weak_appearance"
+	Four-tier decision grid:
+		- agreement > 0.5 + margin > 0.5 -> "high"   (trusted)
+		- agreement > 0.5 + margin > 0.2 -> "good"   (acceptable)
+		- agreement > 0.2 + margin > 0.1 -> "fair"   (borderline)
+		- everything else                 -> "low"    (needs seed)
+
+	Additional failure reasons are appended regardless of tier:
+		- margin < 0.2                    -> "likely_identity_swap"
+		- identity < 0.4                  -> "weak_appearance"
 
 	Args:
 		agreement: Float [0, 1], forward/backward agreement score.
@@ -165,24 +168,25 @@ def classify_confidence(
 	"""
 	failure_reasons = []
 
-	# Determine base confidence from agreement and separation
-	high_agreement = agreement > 0.8
-	high_separation = margin > 0.5
-	strong_competitor = margin < 0.2
-
-	if high_agreement and high_separation:
+	# four-tier classification
+	if agreement > 0.5 and margin > 0.5:
 		confidence = "high"
-	elif high_agreement and not high_separation:
-		confidence = "low"
+	elif agreement > 0.5 and margin > 0.2:
+		confidence = "good"
 		failure_reasons.append("low_separation")
+	elif agreement > 0.2 and margin > 0.1:
+		confidence = "fair"
+		if agreement <= 0.5:
+			failure_reasons.append("low_agreement")
+		if margin <= 0.2:
+			failure_reasons.append("low_separation")
 	else:
-		# Low agreement regardless of separation
 		confidence = "low"
 		failure_reasons.append("low_agreement")
-		if strong_competitor:
-			failure_reasons.append("likely_identity_swap")
 
-	# Additional reason for weak appearance regardless of confidence level
+	# additional reasons
+	if margin < 0.2:
+		failure_reasons.append("likely_identity_swap")
 	if identity < 0.4:
 		failure_reasons.append("weak_appearance")
 
@@ -271,12 +275,12 @@ def compute_seed_confidences(
 	"""
 	confidences = {}
 	for seed in seeds:
-		fi = int(seed.get("frame_index", seed.get("frame", 0)))
+		fi = int(seed["frame_index"])
 		# find intervals adjacent to this seed frame
 		adjacent = []
 		for iv in intervals:
-			start_f = int(iv.get("start_frame", 0))
-			end_f = int(iv.get("end_frame", 0))
+			start_f = int(iv["start_frame"])
+			end_f = int(iv["end_frame"])
 			if start_f == fi or end_f == fi:
 				adjacent.append(iv)
 		if not adjacent:

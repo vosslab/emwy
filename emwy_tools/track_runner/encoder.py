@@ -516,7 +516,7 @@ def draw_debug_overlay_cropped(
 
 	# extract v2 state fields
 	source = state.get("source", "")
-	conf = state.get("conf", 0.0)
+	conf = state["conf"]
 	cx = state.get("cx")
 	cy = state.get("cy")
 	w = state.get("w")

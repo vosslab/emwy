@@ -328,7 +328,7 @@ def _track_one_frame(
 	prev_cx = float(prev_state["cx"])
 	prev_cy = float(prev_state["cy"])
 	prev_w = float(prev_state["w"])
-	prev_conf = float(prev_state.get("conf", 1.0))
+	prev_conf = float(prev_state["conf"])
 	is_stationary = bool(prev_state.get("stationary_lock", False))
 
 	# if stationary lock is active, hold position, decay confidence gently
