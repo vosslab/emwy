@@ -10,6 +10,7 @@ import cv2
 import numpy
 
 # local repo modules
+import detection
 import frame_reader
 import seeding
 
@@ -124,12 +125,207 @@ def _draw_predictions_overlay(
 
 
 #============================================
+def _refine_box_yolo(
+	frame: numpy.ndarray,
+	seed: dict,
+	config: dict,
+	detector: object,
+) -> dict | None:
+	"""Refine a seed box using YOLO detection in the local region.
+
+	Runs YOLO on an ROI around the seed center and picks the best
+	detection that passes guardrails (center shift, area change, Dice).
+
+	Args:
+		frame: BGR image of the seed's frame.
+		seed: Seed dict with cx, cy, w, h keys.
+		config: Configuration dict.
+		detector: YoloDetector instance.
+
+	Returns:
+		Refined seed box dict with cx, cy, w, h keys, or None if no
+		valid detection passes guardrails.
+	"""
+	cx = float(seed.get("cx", 0))
+	cy = float(seed.get("cy", 0))
+	sw = float(seed.get("w", 0))
+	sh = float(seed.get("h", 0))
+	seed_area = sw * sh
+	if seed_area <= 0:
+		return None
+	# run YOLO on the ROI around the seed center
+	detections = detector.detect_roi(
+		frame, (cx, cy), (sw, sh),
+	)
+	if not detections:
+		return None
+	# evaluate each detection against guardrails
+	best_score = -1.0
+	best_det_box = None
+	for det in detections:
+		bbox = det["bbox"]
+		# convert top-left [x,y,w,h] to center format
+		det_cx = bbox[0] + bbox[2] / 2.0
+		det_cy = bbox[1] + bbox[3] / 2.0
+		det_w = float(bbox[2])
+		det_h = float(bbox[3])
+		det_area = det_w * det_h
+		# guardrail: center shift must be < 20% of seed box height
+		center_dist = numpy.sqrt((det_cx - cx) ** 2 + (det_cy - cy) ** 2)
+		if center_dist > 0.2 * sh:
+			continue
+		# guardrail: area change must be < 30% of seed box area
+		if abs(det_area - seed_area) > 0.3 * seed_area:
+			continue
+		# guardrail: Dice overlap must be >= 0.5
+		# compute Dice coefficient inline
+		a_x1 = cx - sw / 2.0
+		a_y1 = cy - sh / 2.0
+		a_x2 = cx + sw / 2.0
+		a_y2 = cy + sh / 2.0
+		b_x1 = det_cx - det_w / 2.0
+		b_y1 = det_cy - det_h / 2.0
+		b_x2 = det_cx + det_w / 2.0
+		b_y2 = det_cy + det_h / 2.0
+		inter_w = max(0.0, min(a_x2, b_x2) - max(a_x1, b_x1))
+		inter_h = max(0.0, min(a_y2, b_y2) - max(a_y1, b_y1))
+		intersection = inter_w * inter_h
+		total = seed_area + det_area
+		dice = 2.0 * intersection / total if total > 0 else 0.0
+		if dice < 0.5:
+			continue
+		# score: confidence * dice
+		conf = float(det.get("confidence", 0.5))
+		combined = conf * dice
+		if combined > best_score:
+			best_score = combined
+			best_det_box = {"cx": det_cx, "cy": det_cy, "w": det_w, "h": det_h}
+	if best_det_box is None:
+		return None
+	# blend: 70% seed + 30% detection
+	refined = {
+		"cx": 0.7 * cx + 0.3 * best_det_box["cx"],
+		"cy": 0.7 * cy + 0.3 * best_det_box["cy"],
+		"w": 0.7 * sw + 0.3 * best_det_box["w"],
+		"h": 0.7 * sh + 0.3 * best_det_box["h"],
+	}
+	# normalize via seeding utility
+	box_list = [
+		int(refined["cx"] - refined["w"] / 2.0),
+		int(refined["cy"] - refined["h"] / 2.0),
+		int(refined["w"]),
+		int(refined["h"]),
+	]
+	norm = seeding.normalize_seed_box(box_list, config)
+	result = {
+		"cx": norm[0] + norm[2] / 2.0,
+		"cy": norm[1] + norm[3] / 2.0,
+		"w": float(norm[2]),
+		"h": float(norm[3]),
+	}
+	return result
+
+
+#============================================
+def _refine_box_consensus(
+	seed: dict,
+	predictions: dict | None,
+	frame_idx: int,
+) -> dict | None:
+	"""Refine a seed box using forward/backward prediction consensus.
+
+	Blends the seed with available FWD and BWD predictions at the
+	same frame index.
+
+	Args:
+		seed: Seed dict with cx, cy, w, h keys.
+		predictions: Dict mapping frame_index to prediction dicts with
+			'forward' and 'backward' keys.
+		frame_idx: Frame index to look up predictions for.
+
+	Returns:
+		Refined box dict with cx, cy, w, h keys, or None if no
+		predictions are available.
+	"""
+	if predictions is None:
+		return None
+	frame_preds = predictions.get(frame_idx)
+	if frame_preds is None:
+		return None
+	cx = float(seed.get("cx", 0))
+	cy = float(seed.get("cy", 0))
+	sw = float(seed.get("w", 0))
+	sh = float(seed.get("h", 0))
+	fwd = frame_preds.get("forward")
+	bwd = frame_preds.get("backward")
+	if fwd is not None and bwd is not None:
+		# both available: 60% seed + 20% fwd + 20% bwd
+		refined = {
+			"cx": 0.6 * cx + 0.2 * float(fwd["cx"]) + 0.2 * float(bwd["cx"]),
+			"cy": 0.6 * cy + 0.2 * float(fwd["cy"]) + 0.2 * float(bwd["cy"]),
+			"w": 0.6 * sw + 0.2 * float(fwd["w"]) + 0.2 * float(bwd["w"]),
+			"h": 0.6 * sh + 0.2 * float(fwd["h"]) + 0.2 * float(bwd["h"]),
+		}
+	elif fwd is not None:
+		# only forward: 70% seed + 30% fwd
+		refined = {
+			"cx": 0.7 * cx + 0.3 * float(fwd["cx"]),
+			"cy": 0.7 * cy + 0.3 * float(fwd["cy"]),
+			"w": 0.7 * sw + 0.3 * float(fwd["w"]),
+			"h": 0.7 * sh + 0.3 * float(fwd["h"]),
+		}
+	elif bwd is not None:
+		# only backward: 70% seed + 30% bwd
+		refined = {
+			"cx": 0.7 * cx + 0.3 * float(bwd["cx"]),
+			"cy": 0.7 * cy + 0.3 * float(bwd["cy"]),
+			"w": 0.7 * sw + 0.3 * float(bwd["w"]),
+			"h": 0.7 * sh + 0.3 * float(bwd["h"]),
+		}
+	else:
+		return None
+	return refined
+
+
+#============================================
+def _draw_preview_box(
+	frame: numpy.ndarray,
+	box: dict,
+	color: tuple = (0, 255, 0),
+	alpha: float = 0.4,
+) -> None:
+	"""Draw a preview bounding box on a frame with transparency.
+
+	Args:
+		frame: BGR image to draw on (modified in place).
+		box: Dict with cx, cy, w, h keys.
+		color: BGR color tuple (default green).
+		alpha: Opacity for the overlay.
+	"""
+	cx = float(box["cx"])
+	cy = float(box["cy"])
+	bw = float(box["w"])
+	bh = float(box["h"])
+	x1 = int(cx - bw / 2.0)
+	y1 = int(cy - bh / 2.0)
+	x2 = int(cx + bw / 2.0)
+	y2 = int(cy + bh / 2.0)
+	overlay = frame.copy()
+	cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+	cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
+	cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+
+#============================================
 def _interactive_edit_seed(
 	frame: numpy.ndarray,
 	seed: dict,
 	seed_index: int,
 	total_seeds: int,
 	predictions: dict | None = None,
+	seed_confidence: dict | None = None,
+	config: dict | None = None,
+	detector: object | None = None,
 ) -> str | list | None:
 	"""Core UI loop for editing one seed.
 
@@ -161,8 +357,12 @@ def _interactive_edit_seed(
 
 	# draw prediction overlays first (behind seed box)
 	_draw_predictions_overlay(display, predictions, frame_idx)
-	# draw the current seed box in cyan
-	_draw_seed_overlay(display, seed, color=(255, 255, 0))
+	# choose color based on seed status: gold for partial, cyan for visible
+	if status == "partial":
+		seed_color = (0, 200, 220)
+	else:
+		seed_color = (255, 255, 0)
+	_draw_seed_overlay(display, seed, color=seed_color)
 
 	# mutable state for mouse drawing (redraw mode)
 	draw_state = {
@@ -200,6 +400,11 @@ def _interactive_edit_seed(
 			f"Seed {seed_index + 1}/{total_seeds} | "
 			f"frame {frame_idx} | {time_s:.1f}s | {status}"
 		)
+		# append confidence score if available
+		if seed_confidence is not None:
+			conf_score = seed_confidence.get("score", 0.0)
+			conf_label = seed_confidence.get("label", "unknown")
+			status_text += f" | conf: {conf_score:.2f} ({conf_label})"
 		cv2.putText(
 			show, status_text,
 			(10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
@@ -214,8 +419,14 @@ def _interactive_edit_seed(
 		)
 		cv2.putText(
 			show,
-			"n=not_in_frame, o=obstructed, p=partial, ESC/q=save+exit",
+			"n=not_in_frame, o=obstructed, p=partial, y=YOLO polish, f=FWD/BWD polish",
 			(10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+			(0, 255, 255), 2,
+		)
+		cv2.putText(
+			show,
+			"ESC/q=save+exit",
+			(10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
 			(0, 255, 255), 2,
 		)
 		# draw the redraw rectangle preview while dragging
@@ -249,6 +460,77 @@ def _interactive_edit_seed(
 		# p key: change status to partial
 		if key == 112:
 			return "partial"
+		# y key: YOLO-based bbox polish with preview
+		if key == 121:
+			if status in ("not_in_frame", "obstructed"):
+				continue
+			# lazily create YOLO detector on first y-key press
+			if isinstance(detector, list) and detector[0] is None:
+				print("  loading YOLO detector for bbox polish...")
+				detector[0] = detection.create_detector(config or {})
+			# resolve detector from lazy list or direct reference
+			det = detector[0] if isinstance(detector, list) else detector
+			if det is None:
+				continue
+			refined = _refine_box_yolo(frame, seed, config or {}, det)
+			if refined is None:
+				# flash "no refinement available" briefly
+				tmp = display.copy()
+				cv2.putText(
+					tmp, "No YOLO refinement available",
+					(10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+					(0, 0, 255), 2,
+				)
+				cv2.imshow(EDIT_WINDOW_TITLE, tmp)
+				cv2.waitKey(800)
+				continue
+			# show preview: green refined box alongside original
+			preview = display.copy()
+			_draw_preview_box(preview, refined, color=(0, 255, 0))
+			cv2.putText(
+				preview, "YOLO polish: SPACE=accept, other=reject",
+				(10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+				(0, 255, 0), 2,
+			)
+			cv2.imshow(EDIT_WINDOW_TITLE, preview)
+			accept_key = cv2.waitKey(0) & 0xFF
+			if accept_key == 32:
+				# return as polish tuple for caller to set bbox_polish mode
+				rx = int(refined["cx"] - refined["w"] / 2.0)
+				ry = int(refined["cy"] - refined["h"] / 2.0)
+				return ("bbox_polish", [rx, ry, int(refined["w"]), int(refined["h"])])
+			continue
+		# f key: FWD/BWD consensus bbox polish with preview
+		if key == 102:
+			if status in ("not_in_frame", "obstructed"):
+				continue
+			refined = _refine_box_consensus(seed, predictions, frame_idx)
+			if refined is None:
+				# flash "no refinement available" briefly
+				tmp = display.copy()
+				cv2.putText(
+					tmp, "No FWD/BWD predictions available",
+					(10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+					(0, 0, 255), 2,
+				)
+				cv2.imshow(EDIT_WINDOW_TITLE, tmp)
+				cv2.waitKey(800)
+				continue
+			# show preview: green refined box alongside original
+			preview = display.copy()
+			_draw_preview_box(preview, refined, color=(0, 255, 0))
+			cv2.putText(
+				preview, "FWD/BWD polish: SPACE=accept, other=reject",
+				(10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+				(0, 255, 0), 2,
+			)
+			cv2.imshow(EDIT_WINDOW_TITLE, preview)
+			accept_key = cv2.waitKey(0) & 0xFF
+			if accept_key == 32:
+				rx = int(refined["cx"] - refined["w"] / 2.0)
+				ry = int(refined["cy"] - refined["h"] / 2.0)
+				return ("bbox_polish", [rx, ry, int(refined["w"]), int(refined["h"])])
+			continue
 		# check if mouse drawing finished (redraw)
 		if draw_state["done"]:
 			x1 = min(draw_state["x1"], draw_state["x2"])
@@ -271,6 +553,7 @@ def edit_seeds(
 	config: dict,
 	predictions: dict | None = None,
 	frame_filter: set | None = None,
+	seed_confidences: dict | None = None,
 	debug: bool = False,
 ) -> tuple:
 	"""Main loop for reviewing and editing seeds interactively.
@@ -285,6 +568,8 @@ def edit_seeds(
 		predictions: Optional dict mapping frame_index to prediction dicts.
 		frame_filter: Optional set of frame indices to show (filters to only
 			seeds at these frames). If None, shows all seeds.
+		seed_confidences: Optional dict mapping frame_index to confidence
+			dicts with 'score' and 'label' keys.
 		debug: Enable verbose output.
 
 	Returns:
@@ -331,6 +616,9 @@ def edit_seeds(
 	# set of indices in work_seeds to delete at the end
 	delete_indices = set()
 
+	# lazy YOLO detector for bbox polish (created on first y-key press)
+	yolo_detector = [None]
+
 	print(f"  editing {len(filtered_indices)} seeds "
 		f"(of {len(work_seeds)} total)")
 
@@ -347,10 +635,18 @@ def edit_seeds(
 			nav_idx += 1
 			continue
 
+		# look up confidence for this seed's frame
+		frame_confidence = None
+		if seed_confidences is not None:
+			frame_confidence = seed_confidences.get(frame_idx)
+
 		reviewed += 1
 		result = _interactive_edit_seed(
 			frame, seed, nav_idx, len(filtered_indices),
 			predictions=predictions,
+			seed_confidence=frame_confidence,
+			config=config,
+			detector=yolo_detector,
 		)
 
 		if result is None:
@@ -404,6 +700,20 @@ def edit_seeds(
 				)
 				new_seed["status"] = "partial"
 				work_seeds[seed_list_idx] = new_seed
+			nav_idx += 1
+			continue
+		if isinstance(result, tuple) and len(result) == 2 and result[0] == "bbox_polish":
+			# user accepted a YOLO or FWD/BWD polish
+			redrawn += 1
+			polish_box = result[1]
+			time_sec = seed.get("time_s", frame_idx / fps)
+			norm_box = seeding.normalize_seed_box(polish_box, config)
+			jersey_hsv = seeding.extract_jersey_color(frame, norm_box)
+			new_seed = seeding._build_seed_dict(
+				frame_idx, time_sec, norm_box, jersey_hsv,
+				seed.get("pass", 1), "bbox_polish",
+			)
+			work_seeds[seed_list_idx] = new_seed
 			nav_idx += 1
 			continue
 		if isinstance(result, list):

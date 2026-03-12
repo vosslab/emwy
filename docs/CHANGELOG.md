@@ -3,6 +3,16 @@
 ## 2026-03-11
 
 ### Additions and New Features
+- Added seed confidence scores to the seed editor UI. `compute_seed_confidences()` in [emwy_tools/track_runner/scoring.py](emwy_tools/track_runner/scoring.py) computes a composite score from adjacent interval agreement, competitor margin, and identity metrics. Confidence (high/medium/low/unknown) is displayed in the editor status bar when diagnostics are available.
+- Added YOLO-based bbox polish (`y` key) and FWD/BWD consensus polish (`f` key) to the seed editor in [emwy_tools/track_runner/seed_editor.py](emwy_tools/track_runner/seed_editor.py). Both show a green preview box; press SPACE to accept or any other key to reject. YOLO polish runs detection in a local ROI with guardrails (center shift < 20%, area change < 30%, Dice >= 0.5) and blends 70% seed + 30% detection. FWD/BWD consensus blends seed with forward/backward predictions (60/20/20 or 70/30 weights). YOLO detector is lazily loaded on first `y` press.
+- Added `bbox_polish` to `VALID_SEED_MODES` in [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py) to distinguish polished seeds from manual redraws.
+- Added `_refine_box_yolo()`, `_refine_box_consensus()`, and `_draw_preview_box()` helper functions to [emwy_tools/track_runner/seed_editor.py](emwy_tools/track_runner/seed_editor.py).
+
+### Behavior or Interface Changes
+- Partial seeds now display gold/dark-gold boxes instead of cyan in the seed editor. Uses `(0, 200, 220)` BGR color matching the partial-mode draw color in [emwy_tools/track_runner/seeding.py](emwy_tools/track_runner/seeding.py).
+- Seeds are now sorted by `frame_index` on both read and write in [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py). `load_seeds()` sorts after validation and `write_seeds()` sorts before serialization, ensuring time-ordered navigation in the editor and human-readable JSON output.
+
+### Previous additions and new features
 - Added `seed_editor.py` module to [emwy_tools/track_runner/seed_editor.py](emwy_tools/track_runner/seed_editor.py). Interactive UI for reviewing, fixing, deleting, and redrawing existing seeds. Supports keep, delete, status change (not_in_frame, obstructed, partial), and mouse-drag redraw. Shows existing seed box in cyan, FWD/BWD prediction overlays, and status bar with seed index and frame info.
 - Refactored [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py) from flat argparse flags to subcommand architecture using `argparse.add_subparsers()`. Five modes: `run` (full pipeline, default), `seed` (collect and save), `edit` (review/fix seeds), `solve` (interval solver only), `encode` (encode from trajectory). Shared args (`-i`, `-c`, `-d`, `-w`, `--time-range`) on the parent parser; mode-specific args on each subparser.
 - Split monolithic `main()` into `_mode_seed()`, `_mode_edit()`, `_mode_solve()`, `_mode_encode()`, and `_mode_run()` dispatch functions in [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py). Common setup (config, probe, paths) stays in `main()`.
@@ -17,6 +27,10 @@
 - Added `default_intervals_path()`, `load_intervals()`, `write_intervals()`, and `interval_fingerprint()` to [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py) following the existing seeds/diagnostics pattern.
 - Added `intervals_cache` and `on_interval_cached` parameters to `solve_all_intervals()` in [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py). Cache hits skip both parallel worker dispatch and sequential solving. Uncached intervals are persisted to the cache file immediately after solving.
 - Added `_load_interval_cache()` helper to [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py) to load cache and build a write-through callback. Wired into all 4 `solve_all_intervals()` call sites.
+
+### Behavior or Interface Changes
+- Replaced center-distance + scale-difference agreement metric with Dice coefficient (`2 * intersection / (area_a + area_b)`) in [emwy_tools/track_runner/scoring.py](emwy_tools/track_runner/scoring.py). The old metric assigned low confidence to close-up runners because absolute pixel errors scaled with box size. Dice naturally handles scale -- two large boxes with 80% overlap score well regardless of absolute size.
+- Updated `fuse_tracks()` in [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py) to use Dice-based agreement (`AGREE_DICE_THRESHOLD = 0.3`) instead of separate center and scale thresholds (`AGREE_CENTER_FRACTION`, `AGREE_SCALE_FRACTION`). Merged confidence is now scaled by Dice overlap quality.
 
 ### Fixes and Maintenance
 - Fixed `crop_aspect` config setting being ignored. `create_crop_controller()` in [emwy_tools/track_runner/crop.py](emwy_tools/track_runner/crop.py) was reading from the nonexistent `config['settings']['crop']` path instead of `config['processing']`, causing it to always fall back to `1:1` square crops regardless of the user's config.

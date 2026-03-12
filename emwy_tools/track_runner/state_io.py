@@ -27,7 +27,7 @@ INTERVALS_HEADER_VALUE = 1
 # valid mode values for seed entries
 VALID_SEED_MODES = frozenset(
 	["initial", "suggested_refine", "interval_refine", "gap_refine",
-	"edit_redraw", "solve_refine", "interactive_refine"]
+	"edit_redraw", "solve_refine", "interactive_refine", "bbox_polish"]
 )
 
 #============================================
@@ -90,6 +90,12 @@ def load_seeds(path: str) -> dict:
 			f"seeds file header mismatch in {path}: "
 			f"expected {SEEDS_HEADER_KEY}={SEEDS_HEADER_VALUE}, got {header_val}"
 		)
+	# sort seeds by frame_index so consumers always get time-ordered data
+	if "seeds" in data and isinstance(data["seeds"], list):
+		data["seeds"] = sorted(
+			data["seeds"],
+			key=lambda s: int(s.get("frame_index", s.get("frame", 0))),
+		)
 	return data
 
 
@@ -106,6 +112,12 @@ def write_seeds(path: str, seeds_data: dict) -> None:
 	"""
 	# ensure header version is set correctly before writing
 	seeds_data[SEEDS_HEADER_KEY] = SEEDS_HEADER_VALUE
+	# sort seeds by frame_index for human-readable output
+	if "seeds" in seeds_data and isinstance(seeds_data["seeds"], list):
+		seeds_data["seeds"] = sorted(
+			seeds_data["seeds"],
+			key=lambda s: int(s.get("frame_index", s.get("frame", 0))),
+		)
 	with open(path, "w") as fh:
 		json.dump(seeds_data, fh, indent=2)
 	return

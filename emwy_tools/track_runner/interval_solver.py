@@ -6,7 +6,6 @@ stitches results into a full trajectory.
 """
 
 # Standard Library
-import math
 import time
 import multiprocessing
 import concurrent.futures
@@ -42,11 +41,9 @@ def _init_worker(shared_counter: multiprocessing.Value) -> None:
 
 
 #============================================
-# Agreement tolerance: forward/backward centers within this fraction
-# of torso height are considered "agreeing"
-AGREE_CENTER_FRACTION = 0.3
-# Scale agreement tolerance: height ratio difference
-AGREE_SCALE_FRACTION = 0.15
+# Agreement tolerance: Dice coefficient threshold for FWD/BWD agreement.
+# Any overlap is meaningful for this method, so a low threshold is used.
+AGREE_DICE_THRESHOLD = 0.3
 # Minimum number of frames for cyclical prior detection
 # retained for potential future bbox area refinement
 CYCLICAL_MIN_FRAMES = 900   # ~30s at 30fps
@@ -95,21 +92,13 @@ def fuse_tracks(
 		bwd_h = float(bwd["h"])
 		bwd_conf = float(bwd.get("conf", 0.1))
 
-		# use mean height as tolerance reference
-		mean_h = max(1.0, (fwd_h + bwd_h) / 2.0)
+		# compute Dice coefficient between FWD and BWD boxes
+		fwd_box = {"cx": fwd_cx, "cy": fwd_cy, "w": float(fwd["w"]), "h": fwd_h}
+		bwd_box = {"cx": bwd_cx, "cy": bwd_cy, "w": float(bwd["w"]), "h": bwd_h}
+		dice = scoring._compute_dice_coefficient(fwd_box, bwd_box)
 
-		# center distance normalized by mean height
-		center_dist = math.sqrt(
-			(fwd_cx - bwd_cx) ** 2 + (fwd_cy - bwd_cy) ** 2
-		) / mean_h
-
-		# scale difference as fraction of mean
-		scale_diff = abs(fwd_h - bwd_h) / mean_h
-
-		agree = (
-			center_dist <= AGREE_CENTER_FRACTION
-			and scale_diff <= AGREE_SCALE_FRACTION
-		)
+		# any meaningful overlap counts as agreement
+		agree = dice >= AGREE_DICE_THRESHOLD
 
 		if agree:
 			# confidence-weighted average: stronger track pulls position more
@@ -124,7 +113,8 @@ def fuse_tracks(
 			merged_cy = w_fwd * fwd_cy + w_bwd * bwd_cy
 			merged_w = w_fwd * fwd["w"] + w_bwd * bwd["w"]
 			merged_h = w_fwd * fwd_h + w_bwd * bwd_h
-			merged_conf = max(fwd_conf, bwd_conf)
+			# scale confidence by overlap quality
+			merged_conf = dice * max(fwd_conf, bwd_conf)
 
 			state = {
 				"cx": merged_cx,

@@ -1,6 +1,4 @@
-# Byte-compiled / optimized / DLL files
-*.py[cod]
-
+TRACK_VIDEOS/
 
 #ignore movie files
 *.mkv

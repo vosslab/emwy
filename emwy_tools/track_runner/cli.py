@@ -27,6 +27,7 @@ import state_io
 import detection
 import encoder
 import seeding
+import scoring
 import seed_editor
 import interval_solver
 import review
@@ -665,8 +666,9 @@ def _mode_edit(
 	shutil.copy2(seeds_path, backup_path)
 	print(f"  backup saved to {backup_path}")
 
-	# build predictions from diagnostics if available
+	# build predictions and seed confidences from diagnostics if available
 	predictions = None
+	seed_confidences = None
 	if os.path.isfile(diag_path):
 		diag_data = state_io.load_diagnostics(diag_path)
 		# load full in-memory diagnostics for predictions
@@ -676,6 +678,12 @@ def _mode_edit(
 			predictions = _build_predictions_from_diagnostics(diag_data)
 			if predictions:
 				print(f"  loaded predictions for {len(predictions)} frames")
+			# compute seed confidence scores from interval diagnostics
+			seed_confidences = scoring.compute_seed_confidences(
+				seeds, diag_data.get("intervals", []),
+			)
+			if seed_confidences:
+				print(f"  computed confidence for {len(seed_confidences)} seeds")
 
 	# optionally filter by severity (show only seeds near weak intervals)
 	frame_filter = None
@@ -720,6 +728,7 @@ def _mode_edit(
 		args.input_file, seeds, cfg,
 		predictions=predictions,
 		frame_filter=frame_filter,
+		seed_confidences=seed_confidences,
 		debug=args.debug,
 	)
 
