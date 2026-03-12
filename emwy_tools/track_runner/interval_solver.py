@@ -814,11 +814,13 @@ def solve_all_intervals(
 	def _cache_and_notify(pair_idx: int, result: dict) -> None:
 		"""Store a cacheable subset of the result and call on_interval_cached."""
 		if on_interval_cached is not None:
-			# strip forward_track and backward_track to cut cache size ~50%
+			# keep forward/backward tracks so refinement GUI can show FWD/BWD prediction boxes
 			cacheable = {
 				"start_frame": result["start_frame"],
 				"end_frame": result["end_frame"],
 				"fused_track": result["fused_track"],
+				"forward_track": result["forward_track"],
+				"backward_track": result["backward_track"],
 				"interval_score": result["interval_score"],
 				"identity_scores": result["identity_scores"],
 				"competitor_margins": result["competitor_margins"],

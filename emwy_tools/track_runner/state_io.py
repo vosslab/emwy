@@ -26,7 +26,8 @@ INTERVALS_HEADER_VALUE = 1
 
 # valid mode values for seed entries
 VALID_SEED_MODES = frozenset(
-	["initial", "suggested_refine", "interval_refine", "gap_refine"]
+	["initial", "suggested_refine", "interval_refine", "gap_refine",
+	"edit_redraw", "solve_refine", "interactive_refine"]
 )
 
 #============================================

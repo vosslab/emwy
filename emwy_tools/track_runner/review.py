@@ -91,6 +91,55 @@ def _reason_to_suggestion(
 	return suggestion
 
 
+# Severity tier ordering for comparisons
+_SEVERITY_RANK = {"high": 2, "medium": 1, "low": 0}
+
+# Duration threshold (seconds) for promoting severity one level
+_DURATION_PROMOTE_THRESHOLD_S = 10.0
+
+
+#============================================
+def classify_interval_severity(interval: dict, fps: float) -> str:
+	"""Classify an interval's weakness severity as high, medium, or low.
+
+	Uses both tracking quality scores and interval duration. Longer weak
+	intervals are more damaging to the output video, so duration promotes
+	severity upward.
+
+	Args:
+		interval: Interval dict with interval_score sub-dict, start_frame, end_frame.
+		fps: Video frame rate for duration calculation.
+
+	Returns:
+		"high", "medium", or "low" severity string.
+	"""
+	score = interval.get("interval_score", {})
+	agreement = float(score.get("agreement_score", 0.0))
+	margin = float(score.get("competitor_margin", 0.0))
+	failure_reasons = score.get("failure_reasons", [])
+
+	# score-based classification
+	if agreement < 0.5 or margin < 0.2 or "likely_identity_swap" in failure_reasons:
+		severity = "high"
+	elif agreement < 0.8 and margin >= 0.2:
+		severity = "medium"
+	else:
+		# borderline: high agreement but low separation
+		severity = "low"
+
+	# duration-based promotion: intervals longer than threshold promote one level
+	start_frame = int(interval.get("start_frame", 0))
+	end_frame = int(interval.get("end_frame", 0))
+	duration_s = (end_frame - start_frame) / max(1.0, fps)
+	if duration_s > _DURATION_PROMOTE_THRESHOLD_S:
+		if severity == "low":
+			severity = "medium"
+		elif severity == "medium":
+			severity = "high"
+
+	return severity
+
+
 #============================================
 def identify_weak_spans(diagnostics: dict) -> list:
 	"""Walk interval results and return seed suggestions for weak intervals.
@@ -161,6 +210,7 @@ def generate_refinement_targets(
 	seed_interval: int = 300,
 	gap_threshold: int = 600,
 	time_range: tuple | None = None,
+	severity: str | None = None,
 ) -> list:
 	"""Generate frame numbers where new seeds should be placed.
 
@@ -168,6 +218,10 @@ def generate_refinement_targets(
 	- "suggested": frames from weak span analysis
 	- "interval": evenly spaced frames at seed_interval spacing
 	- "gap": frames where existing seed spacing exceeds gap_threshold
+
+	When severity is set, only intervals at or above the given severity
+	tier are included. Hierarchy: "high" shows only high-severity;
+	"medium" shows high + medium; "low" (or None) shows all.
 
 	Args:
 		diagnostics: Dict from interval_solver.solve_all_intervals().
@@ -178,12 +232,27 @@ def generate_refinement_targets(
 			in "gap" mode.
 		time_range: Optional (start_s, end_s) tuple to restrict scope.
 			None means no restriction.
+		severity: Optional minimum severity tier ("high", "medium", or "low").
+			None means include all weak intervals.
 
 	Returns:
 		Sorted, deduplicated list of frame numbers (ints).
 	"""
 	fps = float(diagnostics.get("fps", 30.0))
 	intervals = diagnostics.get("intervals", [])
+
+	# build a set of interval frame ranges that pass severity filter
+	# so we can exclude suggestions from intervals below threshold
+	min_rank = _SEVERITY_RANK.get(severity, 0) if severity is not None else 0
+	excluded_intervals = set()
+	if severity is not None:
+		for idx, iv in enumerate(intervals):
+			score = iv.get("interval_score", {})
+			if score.get("confidence", "low") == "high":
+				continue
+			iv_severity = classify_interval_severity(iv, fps)
+			if _SEVERITY_RANK.get(iv_severity, 0) < min_rank:
+				excluded_intervals.add(idx)
 
 	# determine frame range limits from time_range
 	range_start = None
@@ -200,14 +269,22 @@ def generate_refinement_targets(
 			return False
 		return True
 
+	def _frame_in_excluded_interval(frame: int) -> bool:
+		"""Return True if frame falls within an excluded interval."""
+		for idx in excluded_intervals:
+			iv = intervals[idx]
+			if int(iv["start_frame"]) <= frame <= int(iv["end_frame"]):
+				return True
+		return False
+
 	active_modes = [m.strip() for m in mode.split(",")]
 	target_set = set()
 
 	if "suggested" in active_modes:
-		# use weak span suggestions
+		# use weak span suggestions, filtered by severity
 		suggestions = identify_weak_spans(diagnostics)
 		for s in suggestions:
-			if _in_range(s["frame"]):
+			if _in_range(s["frame"]) and not _frame_in_excluded_interval(s["frame"]):
 				target_set.add(s["frame"])
 
 	if "interval" in active_modes:
@@ -223,7 +300,9 @@ def generate_refinement_targets(
 
 	if "gap" in active_modes:
 		# suggest frame at midpoint of any seed pair separated by more than threshold
-		for interval in intervals:
+		for idx, interval in enumerate(intervals):
+			if idx in excluded_intervals:
+				continue
 			start_frame = int(interval["start_frame"])
 			end_frame = int(interval["end_frame"])
 			gap = end_frame - start_frame
@@ -361,3 +440,11 @@ assert _suggestions[0]["reason"] == "low_agreement"
 
 _targets = generate_refinement_targets(_test_diag, mode="suggested")
 assert len(_targets) == 1
+
+# severity classification: low agreement -> high severity
+_sev = classify_interval_severity(_test_diag["intervals"][1], 30.0)
+assert _sev == "high"
+
+# severity filtering: high-only should still include the weak interval
+_targets_high = generate_refinement_targets(_test_diag, mode="suggested", severity="high")
+assert len(_targets_high) == 1

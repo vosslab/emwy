@@ -3,6 +3,13 @@
 
 Multi-pass orchestration: seed collection, interval solving, refinement,
 crop trajectory computation, and video encoding.
+
+Subcommands:
+  run     Full pipeline: seed -> solve -> encode (default workflow)
+  seed    Collect/add seeds, save, exit
+  edit    Review/fix/delete existing seeds interactively
+  solve   Run interval solver only, no encoding
+  encode  Encode from existing trajectory, no solving
 """
 
 # Standard Library
@@ -20,6 +27,7 @@ import state_io
 import detection
 import encoder
 import seeding
+import seed_editor
 import interval_solver
 import review
 import crop
@@ -27,92 +35,173 @@ import crop
 
 #============================================
 def parse_args() -> argparse.Namespace:
-	"""Parse command-line arguments for track_runner v2.
+	"""Parse command-line arguments with subcommands for track_runner v2.
 
 	Returns:
-		Parsed argparse.Namespace.
+		Parsed argparse.Namespace with a 'mode' attribute.
 	"""
 	parser = argparse.ArgumentParser(
-		description="track_runner v2: multi-pass runner tracking and crop tool."
+		description="track_runner v2: multi-pass runner tracking and crop tool.",
 	)
+	# shared args on parent parser
 	parser.add_argument(
 		"-i", "--input", dest="input_file", required=True,
 		help="Input video file path.",
-	)
-	parser.add_argument(
-		"-o", "--output", dest="output_file", default=None,
-		help="Output video file path (auto-generated if not provided).",
 	)
 	parser.add_argument(
 		"-c", "--config", dest="config_file", default=None,
 		help="Config YAML file path.",
 	)
 	parser.add_argument(
-		"--write-default-config", dest="write_default_config",
-		action="store_true",
-		help="Write the default config for this input and exit.",
-	)
-	parser.add_argument(
-		"--seed-interval", dest="seed_interval", type=float, default=10.0,
-		help="Interval in seconds between seed frames (default 10).",
-	)
-	parser.add_argument(
-		"--aspect", dest="aspect", type=str, default=None,
-		help="Override crop aspect ratio (e.g. '1:1', '16:9').",
-	)
-	parser.add_argument(
 		"-d", "--debug", dest="debug", action="store_true",
 		help="Enable debug video output with tracking overlays.",
 	)
 	parser.add_argument(
-		"--keep-temp", dest="keep_temp", action="store_true",
-		help="Keep temporary files after encoding.",
-	)
-	parser.add_argument(
 		"-w", "--workers", dest="workers", type=int, default=None,
-		help="Number of parallel workers for solving and encoding (default: half of CPU cores).",
-	)
-	parser.add_argument(
-		"--refine", dest="refine", type=str, default=None,
-		help=(
-			"Refinement mode(s): 'suggested', 'interval', 'gap', or comma-separated "
-			"combination. Run after initial solve to add seeds and re-solve."
-		),
-	)
-	parser.add_argument(
-		"--gap-threshold", dest="gap_threshold", type=float, default=8.0,
-		help="Gap threshold in seconds for 'gap' refinement mode (default 8.0).",
+		help="Number of parallel workers (default: half of CPU cores).",
 	)
 	parser.add_argument(
 		"--time-range", dest="time_range", type=str, default=None,
 		help=(
-			"Limit seed collection and refinement to time range in seconds. "
-			"Format: 'START:END', 'START:' (to end), or ':END' (from start). "
+			"Limit operations to time range in seconds. "
+			"Format: 'START:END', 'START:', or ':END'. "
 			"Examples: '30:120', '200:'."
 		),
 	)
 	parser.add_argument(
-		"--ignore-diagnostics", dest="ignore_diagnostics", action="store_true",
-		help="Force re-seeding even where solver thinks intervals are fine.",
-	)
-	parser.add_argument(
-		"--seed-only", dest="seed_only", action="store_true",
-		help="Collect seeds (pass 1) and save, then exit before interval solving.",
-	)
-	parser.add_argument(
-		"--no-interactive-refine", dest="interactive_refine",
-		action="store_false",
-		help="Disable interactive refinement prompt after solve.",
+		"--write-default-config", dest="write_default_config",
+		action="store_true",
+		help="Write the default config for this input and exit.",
 	)
 	parser.set_defaults(
 		write_default_config=False,
 		debug=False,
+	)
+
+	subparsers = parser.add_subparsers(dest="mode")
+
+	# -- seed mode --
+	seed_parser = subparsers.add_parser(
+		"seed", help="Collect seeds, save, and exit.",
+	)
+	seed_parser.add_argument(
+		"--seed-interval", dest="seed_interval", type=float, default=10.0,
+		help="Interval in seconds between seed frames (default 10).",
+	)
+
+	# -- edit mode --
+	edit_parser = subparsers.add_parser(
+		"edit", help="Review/fix/delete existing seeds interactively.",
+	)
+	edit_parser.add_argument(
+		"-s", "--severity", dest="severity", type=str, default=None,
+		choices=("high", "medium", "low"),
+		help="Filter seeds near weak intervals at this severity threshold.",
+	)
+
+	# -- solve mode --
+	solve_parser = subparsers.add_parser(
+		"solve", help="Run interval solver only, no encoding.",
+	)
+	solve_parser.add_argument(
+		"-s", "--severity", dest="severity", type=str, default=None,
+		choices=("high", "medium", "low"),
+		help="Minimum severity for quality reporting.",
+	)
+
+	# -- encode mode --
+	encode_parser = subparsers.add_parser(
+		"encode", help="Encode cropped video from existing trajectory.",
+	)
+	encode_parser.add_argument(
+		"-o", "--output", dest="output_file", default=None,
+		help="Output video file path (auto-generated if not provided).",
+	)
+	encode_parser.add_argument(
+		"--aspect", dest="aspect", type=str, default=None,
+		help="Override crop aspect ratio (e.g. '1:1', '16:9').",
+	)
+	encode_parser.add_argument(
+		"--keep-temp", dest="keep_temp", action="store_true",
+		help="Keep temporary files after encoding.",
+	)
+
+	# -- run mode (full pipeline) --
+	run_parser = subparsers.add_parser(
+		"run", help="Full pipeline: seed -> solve -> encode.",
+	)
+	run_parser.add_argument(
+		"-o", "--output", dest="output_file", default=None,
+		help="Output video file path (auto-generated if not provided).",
+	)
+	run_parser.add_argument(
+		"--seed-interval", dest="seed_interval", type=float, default=10.0,
+		help="Interval in seconds between seed frames (default 10).",
+	)
+	run_parser.add_argument(
+		"--aspect", dest="aspect", type=str, default=None,
+		help="Override crop aspect ratio (e.g. '1:1', '16:9').",
+	)
+	run_parser.add_argument(
+		"--keep-temp", dest="keep_temp", action="store_true",
+		help="Keep temporary files after encoding.",
+	)
+	run_parser.add_argument(
+		"--refine", dest="refine", type=str, default=None,
+		help=(
+			"Refinement mode(s): 'suggested', 'interval', 'gap', or "
+			"comma-separated combination."
+		),
+	)
+	run_parser.add_argument(
+		"--gap-threshold", dest="gap_threshold", type=float, default=8.0,
+		help="Gap threshold in seconds for 'gap' refinement (default 8.0).",
+	)
+	run_parser.add_argument(
+		"--ignore-diagnostics", dest="ignore_diagnostics",
+		action="store_true",
+		help="Force re-seeding even where solver thinks intervals are fine.",
+	)
+	run_parser.add_argument(
+		"-s", "--severity", dest="severity", type=str, default=None,
+		choices=("high", "medium", "low"),
+		help="Minimum severity of weak intervals to refine.",
+	)
+	run_parser.add_argument(
+		"--no-interactive-refine", dest="interactive_refine",
+		action="store_false",
+		help="Disable interactive refinement prompt after solve.",
+	)
+	run_parser.set_defaults(
 		keep_temp=False,
 		ignore_diagnostics=False,
-		seed_only=False,
 		interactive_refine=True,
 	)
-	return parser.parse_args()
+
+	args = parser.parse_args()
+	# default to 'run' mode when no subcommand is given
+	if args.mode is None:
+		args.mode = "run"
+		# set run-mode defaults that would normally come from subparser
+		if not hasattr(args, "output_file"):
+			args.output_file = None
+		if not hasattr(args, "seed_interval"):
+			args.seed_interval = 10.0
+		if not hasattr(args, "aspect"):
+			args.aspect = None
+		if not hasattr(args, "keep_temp"):
+			args.keep_temp = False
+		if not hasattr(args, "refine"):
+			args.refine = None
+		if not hasattr(args, "gap_threshold"):
+			args.gap_threshold = 8.0
+		if not hasattr(args, "ignore_diagnostics"):
+			args.ignore_diagnostics = False
+		if not hasattr(args, "severity"):
+			args.severity = None
+		if not hasattr(args, "interactive_refine"):
+			args.interactive_refine = True
+	return args
 
 
 #============================================
@@ -235,10 +324,56 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 	print("")
 	print(f"quality summary: {total - weak}/{total} intervals trusted")
 	if review.needs_refinement(diagnostics):
-		print("  some intervals need refinement -- run with --refine=suggested")
+		# compute severity breakdown for weak intervals
+		high_count = 0
+		medium_count = 0
+		low_count = 0
+		for iv in intervals:
+			score = iv.get("interval_score", {})
+			if score.get("confidence", "low") == "high":
+				continue
+			sev = review.classify_interval_severity(iv, fps)
+			if sev == "high":
+				high_count += 1
+			elif sev == "medium":
+				medium_count += 1
+			else:
+				low_count += 1
+		print(f"  weakness breakdown: {high_count} high, "
+			f"{medium_count} medium, {low_count} low severity")
+		print(f"  hint: use --severity=high to focus on the "
+			f"{high_count} worst intervals")
 	else:
 		print("  all intervals trusted -- tracking quality is good")
 	print("")
+
+
+#============================================
+def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
+	"""Build frame-indexed forward/backward prediction dict from solved intervals.
+
+	Args:
+		diagnostics: Dict from solve_all_intervals() with in-memory interval data.
+
+	Returns:
+		Dict mapping frame_index (int) to {"forward": {cx,cy,w,h}, "backward": {cx,cy,w,h}}.
+	"""
+	predictions = {}
+	for iv in diagnostics.get("intervals", []):
+		fwd_track = iv.get("forward_track")
+		bwd_track = iv.get("backward_track")
+		if fwd_track is None or bwd_track is None:
+			# cached intervals may lack per-direction tracks
+			continue
+		start_frame = int(iv["start_frame"])
+		n = min(len(fwd_track), len(bwd_track))
+		for i in range(n):
+			frame_idx = start_frame + i
+			predictions[frame_idx] = {
+				"forward": fwd_track[i],
+				"backward": bwd_track[i],
+			}
+	return predictions
 
 
 #============================================
@@ -267,118 +402,40 @@ def _load_interval_cache(intervals_path: str) -> tuple:
 
 
 #============================================
-def main() -> None:
-	"""Main entry point for the track_runner v2 CLI."""
-	t_total_start = time.time()
-	args = parse_args()
+def _resolve_workers(args: argparse.Namespace) -> int:
+	"""Resolve worker count from args or auto-detect.
 
-	# validate input file exists
-	if not os.path.isfile(args.input_file):
-		raise RuntimeError(f"input file not found: {args.input_file}")
+	Args:
+		args: Parsed argparse namespace.
 
-	# verify required external tools are available
-	for tool in ("mediainfo", "ffprobe", "ffmpeg"):
-		if shutil.which(tool) is None:
-			raise RuntimeError(f"{tool} not found in PATH")
+	Returns:
+		Number of workers to use.
+	"""
+	cpu_count = os.cpu_count()
+	num_workers = getattr(args, "workers", None)
+	if num_workers is None:
+		num_workers = max(1, cpu_count // 2)
+	print(f"  workers: {num_workers} (of {cpu_count} CPUs)")
+	return num_workers
 
-	# resolve config path
-	config_path = args.config_file
-	if config_path is None:
-		config_path = config.default_config_path(args.input_file)
 
-	# paths for seeds, diagnostics, and intervals cache (derived from input file)
-	seeds_path = state_io.default_seeds_path(args.input_file)
-	diag_path = state_io.default_diagnostics_path(args.input_file)
-	intervals_path = state_io.default_intervals_path(args.input_file)
+#============================================
+def _load_and_deduplicate_seeds(seeds_path: str) -> list:
+	"""Load seeds from disk and deduplicate by frame_index.
 
-	# handle --write-default-config: write and exit
-	if args.write_default_config:
-		cfg = config.default_config()
-		config.write_config(config_path, cfg)
-		print(f"wrote default config: {config_path}")
-		return
+	Keeps latest pass when duplicates exist at the same frame.
 
-	# load or create config
-	if os.path.isfile(config_path):
-		cfg = config.load_config(config_path)
-	else:
-		cfg = config.default_config()
-		config.write_config(config_path, cfg)
-		print(f"wrote default config: {config_path}")
+	Args:
+		seeds_path: Path to the seeds JSON file.
 
-	config.validate_config(cfg)
-
-	# apply CLI aspect override into config
-	if args.aspect is not None:
-		cfg.setdefault("processing", {})
-		cfg["processing"]["crop_aspect"] = args.aspect
-
-	# probe video metadata
-	print(f"probing video: {args.input_file}")
-	video_info = _probe_video(args.input_file)
-	fps = video_info["fps"]
-	print(f"  resolution: {video_info['width']}x{video_info['height']}")
-	print(f"  fps:        {fps:.4f}")
-	print(f"  frames:     {video_info['frame_count']}")
-	print(f"  duration:   {video_info['duration_s']:.2f}s")
-
-	# store fps in diagnostics dict for later use by review module
-	fps_for_diag = fps
-
-	# parse optional time range (applies to both seed collection and refinement)
-	time_range = _parse_time_range(args.time_range)
-
-	# initialize YOLO detector
-	print("initializing YOLO detector...")
-	det = detection.create_detector(cfg)
-
-	# load saved seeds (or start fresh)
+	Returns:
+		Deduplicated list of seed dicts sorted by frame_index.
+	"""
 	seeds_data = state_io.load_seeds(seeds_path)
-	existing_seeds = seeds_data.get("seeds", [])
-
-	if existing_seeds and not args.seed_only:
-		print(f"loaded {len(existing_seeds)} existing seeds from {seeds_path}")
-		seeds = existing_seeds
-	else:
-		# determine pass number from existing seeds
-		if existing_seeds:
-			print(f"loaded {len(existing_seeds)} existing seeds from {seeds_path}")
-			existing_passes = [s.get("pass", 1) for s in existing_seeds]
-			pass_number = max(existing_passes) + 1
-		else:
-			pass_number = 1
-		# build incremental save callback to avoid losing seeds on crash
-		def save_seeds_incrementally(seeds_list: list) -> None:
-			"""Write seeds to disk after each new seed is collected."""
-			data = {
-				state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
-				"seeds": seeds_list,
-			}
-			state_io.write_seeds(seeds_path, data)
-		# seed collection: collect new seeds (appending to any existing)
-		print(f"launching seed collection (pass {pass_number})...")
-		seeds = seeding.collect_seeds(
-			args.input_file,
-			args.seed_interval,
-			cfg,
-			pass_number=pass_number,
-			existing_seeds=existing_seeds if existing_seeds else None,
-			frame_count_override=video_info["frame_count"],
-			debug=args.debug,
-			save_callback=save_seeds_incrementally,
-			time_range=time_range,
-		)
-		if not seeds:
-			raise RuntimeError("no seeds collected; cannot proceed without seeds")
-		# save seeds to JSON
-		seeds_data_out = {
-			state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
-			"seeds": seeds,
-		}
-		state_io.write_seeds(seeds_path, seeds_data_out)
-		print(f"saved {len(seeds)} seeds to {seeds_path}")
-
-	# deduplicate seeds by frame_index: keep latest pass, remove older duplicates
+	seeds = seeds_data.get("seeds", [])
+	if not seeds:
+		return seeds
+	# deduplicate: keep latest pass per frame
 	seen_frames = {}
 	for seed in seeds:
 		fi = int(seed["frame_index"])
@@ -390,7 +447,7 @@ def main() -> None:
 			seen_frames[fi] = seed
 	if len(seen_frames) < len(seeds):
 		dropped = len(seeds) - len(seen_frames)
-		print(f"  removed {dropped} duplicate seeds from {seeds_path}")
+		print(f"  removed {dropped} duplicate seeds")
 		seeds = sorted(seen_frames.values(), key=lambda s: int(s["frame_index"]))
 		# write cleaned seeds back to disk
 		seeds_data_out = {
@@ -399,315 +456,359 @@ def main() -> None:
 		}
 		state_io.write_seeds(seeds_path, seeds_data_out)
 		print(f"  saved {len(seeds)} deduplicated seeds")
+	return seeds
 
-	# early exit if --seed-only was requested
-	if args.seed_only:
-		print(f"seed-only mode: {len(seeds)} seeds saved, exiting before solve")
-		return
 
-	# validate: need at least 2 usable seeds (visible + partial) for interval solving
+#============================================
+def _save_seeds_to_disk(seeds: list, seeds_path: str) -> None:
+	"""Write seeds list to disk with proper header.
+
+	Args:
+		seeds: List of seed dicts.
+		seeds_path: Output file path.
+	"""
+	seeds_data = {
+		state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
+		"seeds": seeds,
+	}
+	state_io.write_seeds(seeds_path, seeds_data)
+
+
+#============================================
+def _make_save_callback(seeds_path: str) -> object:
+	"""Build an incremental save callback for crash-safe seed saving.
+
+	Args:
+		seeds_path: Path to the seeds JSON file.
+
+	Returns:
+		Callable that accepts a seeds list and writes it to disk.
+	"""
+	def _save(seeds_list: list) -> None:
+		"""Write seeds to disk after each new seed is collected."""
+		_save_seeds_to_disk(seeds_list, seeds_path)
+	return _save
+
+
+#============================================
+def _validate_usable_seeds(seeds: list) -> tuple:
+	"""Validate that enough usable seeds exist for solving.
+
+	Args:
+		seeds: List of seed dicts.
+
+	Returns:
+		Tuple of (usable_seeds, visible_count, partial_count).
+
+	Raises:
+		RuntimeError: If fewer than 2 usable seeds exist.
+	"""
 	usable_seeds = [
 		s for s in seeds
 		if s.get("status", "visible") in ("visible", "partial")
 	]
-	visible_count = sum(1 for s in usable_seeds if s.get("status", "visible") == "visible")
-	partial_count = sum(1 for s in usable_seeds if s.get("status") == "partial")
+	visible_count = sum(
+		1 for s in usable_seeds
+		if s.get("status", "visible") == "visible"
+	)
+	partial_count = sum(
+		1 for s in usable_seeds if s.get("status") == "partial"
+	)
 	if len(usable_seeds) < 2:
 		raise RuntimeError(
 			f"need at least 2 usable seeds (visible or partial); "
 			f"got {len(usable_seeds)} ({len(seeds)} total)"
 		)
-
 	# log absence seed counts if any exist
-	not_in_frame_count = sum(1 for s in seeds if s.get("status") == "not_in_frame")
-	obstructed_count = sum(1 for s in seeds if s.get("status") == "obstructed")
+	not_in_frame_count = sum(
+		1 for s in seeds if s.get("status") == "not_in_frame"
+	)
+	obstructed_count = sum(
+		1 for s in seeds if s.get("status") == "obstructed"
+	)
 	if not_in_frame_count > 0 or obstructed_count > 0 or partial_count > 0:
 		print(f"  seed status breakdown: "
 			f"{visible_count} visible, {partial_count} partial, "
 			f"{not_in_frame_count} not_in_frame, {obstructed_count} obstructed")
+	return (usable_seeds, visible_count, partial_count)
 
-	# seeds already contain cx, cy, w, h, frame_index from _build_seed_dict()
-	solver_seeds = seeds
 
-	# resolve worker count (auto-detect if not specified)
-	cpu_count = os.cpu_count()
-	num_workers = args.workers
-	if num_workers is None:
-		num_workers = max(1, cpu_count // 2)
-	print(f"  workers: {num_workers} (of {cpu_count} CPUs)")
+#============================================
+def _run_solve(
+	args: argparse.Namespace,
+	cfg: dict,
+	seeds: list,
+	video_info: dict,
+	intervals_path: str,
+	diag_path: str,
+	num_workers: int,
+	on_interval_complete: object = None,
+) -> dict:
+	"""Run the interval solver and write diagnostics.
 
-	# run interval solver with weak-interval tracking callback
-	print(f"running interval solver ({len(usable_seeds)} usable seeds, {num_workers} workers)...")
-	# queue to collect weak interval results during solving
-	weak_queue = queue.Queue()
-	seeds_added_during_solve = 0
+	Args:
+		args: Parsed argparse namespace.
+		cfg: Configuration dict.
+		seeds: List of seed dicts for solving.
+		video_info: Video metadata dict.
+		intervals_path: Path to intervals cache.
+		diag_path: Path to write diagnostics.
+		num_workers: Number of parallel workers.
+		on_interval_complete: Optional callback for each solved interval.
 
-	def _on_interval_complete(result: dict) -> None:
-		"""Callback fired when each interval finishes solving.
-
-		Puts weak intervals on the queue for interactive seed requesting.
-		"""
-		score = result.get("interval_score", {})
-		confidence = score.get("confidence", "low")
-		if confidence != "high":
-			weak_queue.put(result)
-
+	Returns:
+		Diagnostics dict from solve_all_intervals().
+	"""
+	fps = video_info["fps"]
+	usable_seeds, _, _ = _validate_usable_seeds(seeds)
+	print(f"running interval solver "
+		f"({len(usable_seeds)} usable seeds, {num_workers} workers)...")
 	t_solve_start = time.time()
 	iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
+	# build solver kwargs
+	solve_kwargs = {
+		"num_workers": num_workers,
+		"debug": args.debug,
+		"intervals_cache": iv_cache,
+		"on_interval_cached": iv_cache_cb,
+	}
+	if on_interval_complete is not None:
+		solve_kwargs["on_interval_complete"] = on_interval_complete
 	with encoder.VideoReader(args.input_file) as reader:
 		diagnostics = interval_solver.solve_all_intervals(
-			reader, solver_seeds, det, cfg,
-			num_workers=num_workers, debug=args.debug,
-			on_interval_complete=_on_interval_complete,
-			intervals_cache=iv_cache,
-			on_interval_cached=iv_cache_cb,
+			reader, seeds,
+			detection.create_detector(cfg),
+			cfg, **solve_kwargs,
 		)
-	# inject fps for review module
-	diagnostics["fps"] = fps_for_diag
+	diagnostics["fps"] = fps
 	t_solve_elapsed = time.time() - t_solve_start
 	print(f"  solve complete ({t_solve_elapsed:.1f}s)")
-
-	# report weak intervals found during solve
-	weak_count_during_solve = weak_queue.qsize()
-	if weak_count_during_solve > 0:
-		print(f"  {weak_count_during_solve} weak intervals detected during solve")
-
-	# write diagnostics
-	state_io.write_solver_diagnostics(diagnostics, diag_path, fps_for_diag)
+	# write diagnostics to disk
+	state_io.write_solver_diagnostics(diagnostics, diag_path, fps)
 	print(f"  diagnostics written to {diag_path}")
+	_print_quality_summary(diagnostics, fps)
+	return diagnostics
 
-	# print per-interval summary (always)
-	_print_quality_summary(diagnostics, fps_for_diag)
 
-	# prompt for immediate seed collection if weak intervals were found
-	if weak_count_during_solve > 0 and args.interactive_refine:
-		target_frames = review.generate_refinement_targets(
-			diagnostics,
-			mode="suggested",
-			seed_interval=int(args.seed_interval * fps_for_diag),
-		)
-		if target_frames:
-			# check if user wants to add seeds right away
-			prompt_msg = (
-				f"  {weak_count_during_solve} weak intervals found "
-				f"({len(target_frames)} seed targets). "
-				f"Add seeds now? [Y/n]: "
-			)
-			answer = input(prompt_msg).strip().lower()
-			if answer in ("", "y", "yes"):
-				# determine pass number
-				existing_passes = [s.get("pass", 1) for s in seeds]
-				next_pass = max(existing_passes) + 1 if existing_passes else 2
-				# build incremental save callback
-				def _save_during_solve(seeds_list: list) -> None:
-					"""Write seeds to disk during solve-time refinement."""
-					data = {
-						state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
-						"seeds": seeds_list,
-					}
-					state_io.write_seeds(seeds_path, data)
-				# collect seeds at target frames
-				print("  collecting seeds at weak intervals...")
-				seeds = seeding.collect_seeds_at_frames(
-					args.input_file,
-					target_frames,
-					cfg,
-					pass_number=next_pass,
-					mode="solve_refine",
-					existing_seeds=seeds,
-					debug=args.debug,
-					save_callback=_save_during_solve,
-				)
-				# count new seeds added
-				seeds_added_during_solve = len(seeds) - len(solver_seeds)
-				# save updated seeds
-				seeds_data_out = {
-					state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
-					"seeds": seeds,
-				}
-				state_io.write_seeds(seeds_path, seeds_data_out)
-				print(f"  saved {len(seeds)} seeds to {seeds_path}")
-				# re-solve with updated seeds
-				if seeds_added_during_solve > 0:
-					solver_seeds = seeds
-					print(
-						f"  {seeds_added_during_solve} new seeds added. "
-						f"Re-solving with updated seeds..."
-					)
-					t_resolve_start = time.time()
-					iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
-					with encoder.VideoReader(args.input_file) as reader:
-						diagnostics = interval_solver.solve_all_intervals(
-							reader, solver_seeds, det, cfg,
-							num_workers=num_workers, debug=args.debug,
-							intervals_cache=iv_cache,
-							on_interval_cached=iv_cache_cb,
-						)
-					diagnostics["fps"] = fps_for_diag
-					t_resolve_elapsed = time.time() - t_resolve_start
-					print(f"  re-solve complete ({t_resolve_elapsed:.1f}s)")
-					state_io.write_solver_diagnostics(
-						diagnostics, diag_path, fps_for_diag,
-					)
-					_print_quality_summary(diagnostics, fps_for_diag)
+#============================================
+def _mode_seed(
+	args: argparse.Namespace,
+	cfg: dict,
+	video_info: dict,
+	seeds_path: str,
+) -> None:
+	"""Seed collection mode: collect seeds and save.
 
-	# interactive refinement loop: prompt user to add seeds at weak spots
-	max_interactive_passes = 5
-	interactive_pass = 0
-	if args.refine is None and args.interactive_refine:
-		while interactive_pass < max_interactive_passes:
-			# check if refinement is needed
-			if not review.needs_refinement(diagnostics):
-				break
-			# generate refinement targets
-			target_frames = review.generate_refinement_targets(
-				diagnostics,
-				mode="suggested",
-				seed_interval=int(args.seed_interval * fps_for_diag),
-			)
-			if not target_frames:
-				break
-			# count weak intervals for the prompt
-			intervals = diagnostics.get("intervals", [])
-			weak_count = sum(
-				1 for iv in intervals
-				if iv.get("interval_score", {}).get("confidence", "low") != "high"
-			)
-			# prompt the user
-			prompt_msg = (
-				f"Found {weak_count} weak intervals "
-				f"({len(target_frames)} seed targets). "
-				f"Add seeds now? [Y/n]: "
-			)
-			answer = input(prompt_msg).strip().lower()
-			if answer not in ("", "y", "yes"):
-				break
-			interactive_pass += 1
-			# determine pass number
-			existing_passes = [s.get("pass", 1) for s in seeds]
-			next_pass = max(existing_passes) + 1 if existing_passes else 2
-			# build incremental save callback
-			def _save_interactive(seeds_list: list) -> None:
-				"""Write seeds to disk during interactive refinement."""
-				data = {
-					state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
-					"seeds": seeds_list,
-				}
-				state_io.write_seeds(seeds_path, data)
-			# collect seeds at target frames
-			print(f"interactive refinement pass {interactive_pass}...")
-			seeds = seeding.collect_seeds_at_frames(
-				args.input_file,
-				target_frames,
-				cfg,
-				pass_number=next_pass,
-				mode="interactive_refine",
-				existing_seeds=seeds,
-				debug=args.debug,
-				save_callback=_save_interactive,
-			)
-			# save updated seeds
-			seeds_data_out = {
-				state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
-				"seeds": seeds,
-			}
-			state_io.write_seeds(seeds_path, seeds_data_out)
-			print(f"  saved {len(seeds)} seeds to {seeds_path}")
-			# re-solve with updated seeds
-			solver_seeds = seeds
-			print("re-solving with updated seeds...")
-			t_resolve_start = time.time()
-			iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
-			with encoder.VideoReader(args.input_file) as reader:
-				diagnostics = interval_solver.solve_all_intervals(
-					reader, solver_seeds, det, cfg,
-					intervals_cache=iv_cache,
-					on_interval_cached=iv_cache_cb,
-				)
-			diagnostics["fps"] = fps_for_diag
-			t_resolve_elapsed = time.time() - t_resolve_start
-			print(f"  re-solve complete ({t_resolve_elapsed:.1f}s)")
-			# write updated diagnostics
-			state_io.write_solver_diagnostics(diagnostics, diag_path, fps_for_diag)
-			# print updated quality summary
-			_print_quality_summary(diagnostics, fps_for_diag)
+	Args:
+		args: Parsed argparse namespace.
+		cfg: Configuration dict.
+		video_info: Video metadata dict.
+		seeds_path: Path to the seeds JSON file.
+	"""
+	# parse optional time range
+	time_range = _parse_time_range(args.time_range)
+	# load existing seeds
+	seeds_data = state_io.load_seeds(seeds_path)
+	existing_seeds = seeds_data.get("seeds", [])
+	# determine pass number
+	if existing_seeds:
+		print(f"loaded {len(existing_seeds)} existing seeds from {seeds_path}")
+		existing_passes = [s.get("pass", 1) for s in existing_seeds]
+		pass_number = max(existing_passes) + 1
+	else:
+		pass_number = 1
+	# seed collection
+	print(f"launching seed collection (pass {pass_number})...")
+	seeds = seeding.collect_seeds(
+		args.input_file,
+		args.seed_interval,
+		cfg,
+		pass_number=pass_number,
+		existing_seeds=existing_seeds if existing_seeds else None,
+		frame_count_override=video_info["frame_count"],
+		debug=args.debug,
+		save_callback=_make_save_callback(seeds_path),
+		time_range=time_range,
+	)
+	if not seeds:
+		raise RuntimeError("no seeds collected")
+	_save_seeds_to_disk(seeds, seeds_path)
+	print(f"saved {len(seeds)} seeds to {seeds_path}")
 
-	# refinement pass: if requested and tracking is not already perfect
-	if args.refine is not None:
-		should_refine = (
-			args.ignore_diagnostics or review.needs_refinement(diagnostics)
-		)
-		if not should_refine:
-			print("all intervals trusted -- skipping refinement")
+
+#============================================
+def _mode_edit(
+	args: argparse.Namespace,
+	cfg: dict,
+	video_info: dict,
+	seeds_path: str,
+	diag_path: str,
+	intervals_path: str,
+) -> None:
+	"""Seed editor mode: review/fix/delete existing seeds interactively.
+
+	Args:
+		args: Parsed argparse namespace.
+		cfg: Configuration dict.
+		video_info: Video metadata dict.
+		seeds_path: Path to the seeds JSON file.
+		diag_path: Path to diagnostics JSON file.
+		intervals_path: Path to intervals cache JSON file.
+	"""
+	seeds = _load_and_deduplicate_seeds(seeds_path)
+	if not seeds:
+		raise RuntimeError(f"no seeds to edit in {seeds_path}")
+	print(f"loaded {len(seeds)} seeds from {seeds_path}")
+
+	# back up seeds file before editing
+	backup_path = seeds_path + ".bak"
+	shutil.copy2(seeds_path, backup_path)
+	print(f"  backup saved to {backup_path}")
+
+	# build predictions from diagnostics if available
+	predictions = None
+	if os.path.isfile(diag_path):
+		diag_data = state_io.load_diagnostics(diag_path)
+		# load full in-memory diagnostics for predictions
+		# (file-based diagnostics lack per-frame tracks, so predictions
+		# will only be available if the solver was run in-memory recently)
+		if diag_data.get("intervals"):
+			predictions = _build_predictions_from_diagnostics(diag_data)
+			if predictions:
+				print(f"  loaded predictions for {len(predictions)} frames")
+
+	# optionally filter by severity (show only seeds near weak intervals)
+	frame_filter = None
+	severity = getattr(args, "severity", None)
+	if severity is not None and os.path.isfile(diag_path):
+		fps = video_info["fps"]
+		diag_data = state_io.load_diagnostics(diag_path)
+		intervals = diag_data.get("intervals", [])
+		# collect frame ranges from weak intervals at the severity threshold
+		weak_frames = set()
+		for iv in intervals:
+			score = iv.get("interval_score", iv)
+			confidence = score.get("confidence", "low")
+			if confidence == "high":
+				continue
+			sev = review.classify_interval_severity(iv, fps)
+			# include if severity meets threshold
+			include = False
+			if severity == "low":
+				include = True
+			elif severity == "medium" and sev in ("medium", "high"):
+				include = True
+			elif severity == "high" and sev == "high":
+				include = True
+			if include:
+				start_f = int(iv.get("start_frame", 0))
+				end_f = int(iv.get("end_frame", 0))
+				# include seeds within the weak interval range
+				for seed in seeds:
+					fi = int(seed.get("frame_index", -1))
+					if start_f <= fi <= end_f:
+						weak_frames.add(fi)
+		if weak_frames:
+			frame_filter = weak_frames
+			print(f"  severity filter: {len(weak_frames)} seeds near "
+				f"{severity}+ severity intervals")
 		else:
-			print(f"refinement mode: {args.refine}")
-			gap_threshold_frames = int(args.gap_threshold * fps_for_diag)
-			# compute seed targets using review module
-			target_frames = review.generate_refinement_targets(
-				diagnostics,
-				mode=args.refine,
-				seed_interval=int(args.seed_interval * fps_for_diag),
-				gap_threshold=gap_threshold_frames,
-				time_range=time_range,
-			)
-			if not target_frames:
-				print("no refinement targets identified")
-			else:
-				print(f"  {len(target_frames)} refinement target frames")
-				# determine pass number from highest existing pass
-				existing_passes = [s.get("pass", 1) for s in seeds]
-				next_pass = max(existing_passes) + 1 if existing_passes else 2
-				# build incremental save callback for refinement
-				def save_refine_incrementally(seeds_list: list) -> None:
-					"""Write seeds to disk after each refinement seed."""
-					data = {
-						state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
-						"seeds": seeds_list,
-					}
-					state_io.write_seeds(seeds_path, data)
-				# run refinement seed collection
-				seeds = seeding.collect_seeds_at_frames(
-					args.input_file,
-					target_frames,
-					cfg,
-					pass_number=next_pass,
-					mode=args.refine.split(",")[0] + "_refine",
-					existing_seeds=seeds,
-					debug=args.debug,
-					save_callback=save_refine_incrementally,
-				)
-				# save updated seeds
-				seeds_data_out = {
-					state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
-					"seeds": seeds,
-				}
-				state_io.write_seeds(seeds_path, seeds_data_out)
-				print(f"  saved {len(seeds)} seeds to {seeds_path}")
-				# re-solve with updated seeds
-				solver_seeds = seeds
-				print("re-solving with updated seeds...")
-				t_resolve_start = time.time()
-				iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
-				with encoder.VideoReader(args.input_file) as reader:
-					diagnostics = interval_solver.solve_all_intervals(
-						reader, solver_seeds, det, cfg,
-						intervals_cache=iv_cache,
-						on_interval_cached=iv_cache_cb,
-					)
-				diagnostics["fps"] = fps_for_diag
-				t_resolve_elapsed = time.time() - t_resolve_start
-				print(f"  re-solve complete ({t_resolve_elapsed:.1f}s)")
-				state_io.write_solver_diagnostics(diagnostics, diag_path, fps_for_diag)
-				_print_quality_summary(diagnostics, fps_for_diag)
+			print(f"  no seeds match severity={severity} filter, showing all")
 
-	# compute crop trajectory from final solved trajectory
+	# run the editor
+	edited_seeds, summary = seed_editor.edit_seeds(
+		args.input_file, seeds, cfg,
+		predictions=predictions,
+		frame_filter=frame_filter,
+		debug=args.debug,
+	)
+
+	# save if changes were made
+	changes = summary["redrawn"] + summary["deleted"] + summary["status_changed"]
+	if changes > 0:
+		_save_seeds_to_disk(edited_seeds, seeds_path)
+		print(f"saved {len(edited_seeds)} seeds to {seeds_path}")
+		# clear intervals cache since seeds changed
+		if os.path.isfile(intervals_path):
+			os.remove(intervals_path)
+			print("  cleared intervals cache (seeds changed)")
+	else:
+		print("no changes made")
+
+
+#============================================
+def _mode_solve(
+	args: argparse.Namespace,
+	cfg: dict,
+	video_info: dict,
+	seeds_path: str,
+	diag_path: str,
+	intervals_path: str,
+) -> None:
+	"""Solve mode: run interval solver, write diagnostics, exit.
+
+	Non-interactive: solves, writes diagnostics, prints quality summary.
+
+	Args:
+		args: Parsed argparse namespace.
+		cfg: Configuration dict.
+		video_info: Video metadata dict.
+		seeds_path: Path to the seeds JSON file.
+		diag_path: Path to diagnostics JSON file.
+		intervals_path: Path to intervals cache JSON file.
+	"""
+	seeds = _load_and_deduplicate_seeds(seeds_path)
+	if not seeds:
+		raise RuntimeError(f"no seeds found in {seeds_path}")
+	print(f"loaded {len(seeds)} seeds from {seeds_path}")
+
+	num_workers = _resolve_workers(args)
+	_run_solve(
+		args, cfg, seeds, video_info,
+		intervals_path, diag_path, num_workers,
+	)
+
+
+#============================================
+def _mode_encode(
+	args: argparse.Namespace,
+	cfg: dict,
+	video_info: dict,
+	diag_path: str,
+) -> None:
+	"""Encode mode: encode cropped video from existing diagnostics.
+
+	Args:
+		args: Parsed argparse namespace.
+		cfg: Configuration dict.
+		video_info: Video metadata dict.
+		diag_path: Path to diagnostics JSON file.
+	"""
+	# apply aspect override
+	if getattr(args, "aspect", None) is not None:
+		cfg.setdefault("processing", {})
+		cfg["processing"]["crop_aspect"] = args.aspect
+
+	# load diagnostics
+	if not os.path.isfile(diag_path):
+		raise RuntimeError(
+			f"no diagnostics found at {diag_path}; run 'solve' first"
+		)
+	diag_data = state_io.load_diagnostics(diag_path)
+	trajectory = diag_data.get("trajectory", [])
+	if not trajectory:
+		raise RuntimeError("diagnostics contain no trajectory data")
+
+	num_workers = _resolve_workers(args)
+
+	# compute crop trajectory
 	print("computing crop trajectory...")
-	trajectory = diagnostics.get("trajectory", [])
 	crop_rects = crop.trajectory_to_crop_rects(trajectory, video_info, cfg)
 
 	# resolve output path
-	if args.output_file is not None:
-		output_path = args.output_file
+	output_file = getattr(args, "output_file", None)
+	if output_file is not None:
+		output_path = output_file
 	else:
 		stem, ext = os.path.splitext(args.input_file)
 		output_path = f"{stem}_tracked{ext}"
@@ -718,7 +819,6 @@ def main() -> None:
 		crop_w = first_crop[2]
 		crop_h = first_crop[3]
 	else:
-		# fallback: square crop at half height
 		crop_h = video_info["height"] // 2
 		crop_w = crop_h
 	# ensure even dimensions for codec compatibility
@@ -730,24 +830,24 @@ def main() -> None:
 	video_codec = proc_cfg.get("video_codec", "libx264")
 	crf_value = int(proc_cfg.get("crf", 18))
 
-	# encode cropped output video (video only, no audio)
+	# encode
 	temp_video = output_path + ".tmp.mp4"
 	workers_enc_label = f" ({num_workers} workers)" if num_workers > 1 else ""
 	print(f"encoding cropped video: {crop_w}x{crop_h}{workers_enc_label}")
 	t_encode_start = time.time()
-	# build frame_states list for debug overlay (use trajectory states)
+
+	# build frame_states for debug overlay
 	frame_states_for_debug = None
 	if args.debug:
 		frame_states_for_debug = []
 		for i, state in enumerate(trajectory):
 			if state is not None:
-				# convert to encoder-compatible format
 				debug_state = {
 					"cx": state["cx"],
 					"cy": state["cy"],
 					"w": state["w"],
 					"h": state["h"],
-					"confidence": state.get("conf", 0.5),
+					"conf": state.get("conf", 0.5),
 					"source": state.get("source", "propagated"),
 					"frame_index": i,
 					"bbox": (state["cx"], state["cy"], state["w"], state["h"]),
@@ -756,7 +856,6 @@ def main() -> None:
 				debug_state = None
 			frame_states_for_debug.append(debug_state)
 
-	# use parallel encoding when multiple workers are available
 	if num_workers > 1:
 		encoder.encode_cropped_video_parallel(
 			args.input_file, crop_rects, temp_video,
@@ -778,20 +877,377 @@ def main() -> None:
 	t_encode_elapsed = time.time() - t_encode_start
 	print(f"  encode complete ({t_encode_elapsed:.1f}s)")
 
-	# mux audio from original input
+	# mux audio
 	print("muxing audio...")
 	t_mux_start = time.time()
 	encoder.copy_audio(args.input_file, temp_video, output_path)
 	t_mux_elapsed = time.time() - t_mux_start
 	print(f"  mux complete ({t_mux_elapsed:.1f}s)")
 
-	# clean up temp file unless --keep-temp
-	if not args.keep_temp and os.path.isfile(temp_video) and os.path.isfile(output_path):
+	# clean up temp file
+	keep_temp = getattr(args, "keep_temp", False)
+	if not keep_temp and os.path.isfile(temp_video) and os.path.isfile(output_path):
 		os.remove(temp_video)
+	print(f"\noutput: {output_path}")
+
+
+#============================================
+def _mode_run(
+	args: argparse.Namespace,
+	cfg: dict,
+	video_info: dict,
+	seeds_path: str,
+	diag_path: str,
+	intervals_path: str,
+) -> None:
+	"""Full pipeline mode: seed -> solve -> refine -> encode.
+
+	Args:
+		args: Parsed argparse namespace.
+		cfg: Configuration dict.
+		video_info: Video metadata dict.
+		seeds_path: Path to the seeds JSON file.
+		diag_path: Path to diagnostics JSON file.
+		intervals_path: Path to intervals cache JSON file.
+	"""
+	fps = video_info["fps"]
+	time_range = _parse_time_range(args.time_range)
+
+	# apply aspect override
+	if getattr(args, "aspect", None) is not None:
+		cfg.setdefault("processing", {})
+		cfg["processing"]["crop_aspect"] = args.aspect
+
+	# initialize YOLO detector
+	print("initializing YOLO detector...")
+	det = detection.create_detector(cfg)
+
+	# load saved seeds (or start fresh)
+	seeds_data = state_io.load_seeds(seeds_path)
+	existing_seeds = seeds_data.get("seeds", [])
+
+	if existing_seeds:
+		print(f"loaded {len(existing_seeds)} existing seeds from {seeds_path}")
+		seeds = existing_seeds
+	else:
+		# seed collection pass
+		pass_number = 1
+		seed_interval = getattr(args, "seed_interval", 10.0)
+		print(f"launching seed collection (pass {pass_number})...")
+		seeds = seeding.collect_seeds(
+			args.input_file,
+			seed_interval,
+			cfg,
+			pass_number=pass_number,
+			existing_seeds=None,
+			frame_count_override=video_info["frame_count"],
+			debug=args.debug,
+			save_callback=_make_save_callback(seeds_path),
+			time_range=time_range,
+		)
+		if not seeds:
+			raise RuntimeError("no seeds collected; cannot proceed without seeds")
+		_save_seeds_to_disk(seeds, seeds_path)
+		print(f"saved {len(seeds)} seeds to {seeds_path}")
+
+	# deduplicate seeds
+	seeds = _load_and_deduplicate_seeds(seeds_path)
+	_validate_usable_seeds(seeds)
+	solver_seeds = seeds
+
+	num_workers = _resolve_workers(args)
+
+	# run interval solver with weak-interval tracking
+	weak_queue = queue.Queue()
+	seeds_added_during_solve = 0
+
+	def _on_interval_complete(result: dict) -> None:
+		"""Callback fired when each interval finishes solving."""
+		score = result.get("interval_score", {})
+		confidence = score.get("confidence", "low")
+		if confidence != "high":
+			weak_queue.put(result)
+
+	usable_seeds, _, _ = _validate_usable_seeds(seeds)
+	print(f"running interval solver "
+		f"({len(usable_seeds)} usable seeds, {num_workers} workers)...")
+
+	t_solve_start = time.time()
+	iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
+	with encoder.VideoReader(args.input_file) as reader:
+		diagnostics = interval_solver.solve_all_intervals(
+			reader, solver_seeds, det, cfg,
+			num_workers=num_workers, debug=args.debug,
+			on_interval_complete=_on_interval_complete,
+			intervals_cache=iv_cache,
+			on_interval_cached=iv_cache_cb,
+		)
+	diagnostics["fps"] = fps
+	t_solve_elapsed = time.time() - t_solve_start
+	print(f"  solve complete ({t_solve_elapsed:.1f}s)")
+
+	# report weak intervals
+	weak_count_during_solve = weak_queue.qsize()
+	if weak_count_during_solve > 0:
+		print(f"  {weak_count_during_solve} weak intervals detected during solve")
+
+	state_io.write_solver_diagnostics(diagnostics, diag_path, fps)
+	print(f"  diagnostics written to {diag_path}")
+	_print_quality_summary(diagnostics, fps)
+
+	# prompt for immediate seed collection if weak intervals were found
+	seed_interval = getattr(args, "seed_interval", 10.0)
+	severity = getattr(args, "severity", None)
+	interactive_refine = getattr(args, "interactive_refine", True)
+
+	if weak_count_during_solve > 0 and interactive_refine:
+		target_frames = review.generate_refinement_targets(
+			diagnostics,
+			mode="suggested",
+			seed_interval=int(seed_interval * fps),
+			severity=severity,
+		)
+		if target_frames:
+			sev_label = f"{severity}+ severity " if severity is not None else ""
+			prompt_msg = (
+				f"  {weak_count_during_solve} weak intervals found "
+				f"({len(target_frames)} {sev_label}seed targets). "
+				f"Add seeds now? [Y/n]: "
+			)
+			answer = input(prompt_msg).strip().lower()
+			if answer in ("", "y", "yes"):
+				existing_passes = [s.get("pass", 1) for s in seeds]
+				next_pass = max(existing_passes) + 1 if existing_passes else 2
+				predictions = _build_predictions_from_diagnostics(diagnostics)
+				print("  collecting seeds at weak intervals...")
+				seeds = seeding.collect_seeds_at_frames(
+					args.input_file,
+					target_frames,
+					cfg,
+					pass_number=next_pass,
+					mode="solve_refine",
+					existing_seeds=seeds,
+					predictions=predictions,
+					debug=args.debug,
+					save_callback=_make_save_callback(seeds_path),
+				)
+				seeds_added_during_solve = len(seeds) - len(solver_seeds)
+				_save_seeds_to_disk(seeds, seeds_path)
+				print(f"  saved {len(seeds)} seeds to {seeds_path}")
+				if seeds_added_during_solve > 0:
+					solver_seeds = seeds
+					print(
+						f"  {seeds_added_during_solve} new seeds added. "
+						f"Re-solving with updated seeds..."
+					)
+					t_resolve_start = time.time()
+					iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
+					with encoder.VideoReader(args.input_file) as reader:
+						diagnostics = interval_solver.solve_all_intervals(
+							reader, solver_seeds, det, cfg,
+							num_workers=num_workers, debug=args.debug,
+							intervals_cache=iv_cache,
+							on_interval_cached=iv_cache_cb,
+						)
+					diagnostics["fps"] = fps
+					t_resolve_elapsed = time.time() - t_resolve_start
+					print(f"  re-solve complete ({t_resolve_elapsed:.1f}s)")
+					state_io.write_solver_diagnostics(
+						diagnostics, diag_path, fps,
+					)
+					_print_quality_summary(diagnostics, fps)
+
+	# interactive refinement loop
+	max_interactive_passes = 5
+	interactive_pass = 0
+	refine_arg = getattr(args, "refine", None)
+	if refine_arg is None and interactive_refine:
+		while interactive_pass < max_interactive_passes:
+			if not review.needs_refinement(diagnostics):
+				break
+			target_frames = review.generate_refinement_targets(
+				diagnostics,
+				mode="suggested",
+				seed_interval=int(seed_interval * fps),
+				severity=severity,
+			)
+			if not target_frames:
+				break
+			intervals = diagnostics.get("intervals", [])
+			weak_count = sum(
+				1 for iv in intervals
+				if iv.get("interval_score", {}).get("confidence", "low") != "high"
+			)
+			sev_label = f"{severity}+ severity " if severity is not None else ""
+			prompt_msg = (
+				f"Found {weak_count} weak intervals "
+				f"({len(target_frames)} {sev_label}seed targets). "
+				f"Add seeds now? [Y/n]: "
+			)
+			answer = input(prompt_msg).strip().lower()
+			if answer not in ("", "y", "yes"):
+				break
+			interactive_pass += 1
+			existing_passes = [s.get("pass", 1) for s in seeds]
+			next_pass = max(existing_passes) + 1 if existing_passes else 2
+			predictions = _build_predictions_from_diagnostics(diagnostics)
+			print(f"interactive refinement pass {interactive_pass}...")
+			seeds = seeding.collect_seeds_at_frames(
+				args.input_file,
+				target_frames,
+				cfg,
+				pass_number=next_pass,
+				mode="interactive_refine",
+				existing_seeds=seeds,
+				predictions=predictions,
+				debug=args.debug,
+				save_callback=_make_save_callback(seeds_path),
+			)
+			_save_seeds_to_disk(seeds, seeds_path)
+			print(f"  saved {len(seeds)} seeds to {seeds_path}")
+			solver_seeds = seeds
+			print("re-solving with updated seeds...")
+			t_resolve_start = time.time()
+			iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
+			with encoder.VideoReader(args.input_file) as reader:
+				diagnostics = interval_solver.solve_all_intervals(
+					reader, solver_seeds, det, cfg,
+					intervals_cache=iv_cache,
+					on_interval_cached=iv_cache_cb,
+				)
+			diagnostics["fps"] = fps
+			t_resolve_elapsed = time.time() - t_resolve_start
+			print(f"  re-solve complete ({t_resolve_elapsed:.1f}s)")
+			state_io.write_solver_diagnostics(diagnostics, diag_path, fps)
+			_print_quality_summary(diagnostics, fps)
+
+	# explicit refinement pass
+	if refine_arg is not None:
+		ignore_diag = getattr(args, "ignore_diagnostics", False)
+		should_refine = (
+			ignore_diag or review.needs_refinement(diagnostics)
+		)
+		if not should_refine:
+			print("all intervals trusted -- skipping refinement")
+		else:
+			print(f"refinement mode: {refine_arg}")
+			gap_threshold = getattr(args, "gap_threshold", 8.0)
+			gap_threshold_frames = int(gap_threshold * fps)
+			target_frames = review.generate_refinement_targets(
+				diagnostics,
+				mode=refine_arg,
+				seed_interval=int(seed_interval * fps),
+				gap_threshold=gap_threshold_frames,
+				time_range=time_range,
+				severity=severity,
+			)
+			if not target_frames:
+				print("no refinement targets identified")
+			else:
+				print(f"  {len(target_frames)} refinement target frames")
+				existing_passes = [s.get("pass", 1) for s in seeds]
+				next_pass = max(existing_passes) + 1 if existing_passes else 2
+				predictions = _build_predictions_from_diagnostics(diagnostics)
+				seeds = seeding.collect_seeds_at_frames(
+					args.input_file,
+					target_frames,
+					cfg,
+					pass_number=next_pass,
+					mode=refine_arg.split(",")[0] + "_refine",
+					existing_seeds=seeds,
+					predictions=predictions,
+					debug=args.debug,
+					save_callback=_make_save_callback(seeds_path),
+				)
+				_save_seeds_to_disk(seeds, seeds_path)
+				print(f"  saved {len(seeds)} seeds to {seeds_path}")
+				solver_seeds = seeds
+				print("re-solving with updated seeds...")
+				t_resolve_start = time.time()
+				iv_cache, iv_cache_cb = _load_interval_cache(intervals_path)
+				with encoder.VideoReader(args.input_file) as reader:
+					diagnostics = interval_solver.solve_all_intervals(
+						reader, solver_seeds, det, cfg,
+						intervals_cache=iv_cache,
+						on_interval_cached=iv_cache_cb,
+					)
+				diagnostics["fps"] = fps
+				t_resolve_elapsed = time.time() - t_resolve_start
+				print(f"  re-solve complete ({t_resolve_elapsed:.1f}s)")
+				state_io.write_solver_diagnostics(diagnostics, diag_path, fps)
+				_print_quality_summary(diagnostics, fps)
+
+	# encode the cropped output
+	_mode_encode(args, cfg, video_info, diag_path)
+
+
+#============================================
+def main() -> None:
+	"""Main entry point for the track_runner v2 CLI."""
+	t_total_start = time.time()
+	args = parse_args()
+
+	# validate input file exists
+	if not os.path.isfile(args.input_file):
+		raise RuntimeError(f"input file not found: {args.input_file}")
+
+	# verify required external tools are available
+	for tool in ("mediainfo", "ffprobe", "ffmpeg"):
+		if shutil.which(tool) is None:
+			raise RuntimeError(f"{tool} not found in PATH")
+
+	# resolve config path
+	config_path = args.config_file
+	if config_path is None:
+		config_path = config.default_config_path(args.input_file)
+
+	# paths for seeds, diagnostics, and intervals cache
+	seeds_path = state_io.default_seeds_path(args.input_file)
+	diag_path = state_io.default_diagnostics_path(args.input_file)
+	intervals_path = state_io.default_intervals_path(args.input_file)
+
+	# handle --write-default-config: write and exit
+	if args.write_default_config:
+		cfg = config.default_config()
+		config.write_config(config_path, cfg)
+		print(f"wrote default config: {config_path}")
+		return
+
+	# load or create config
+	if os.path.isfile(config_path):
+		cfg = config.load_config(config_path)
+	else:
+		cfg = config.default_config()
+		config.write_config(config_path, cfg)
+		print(f"wrote default config: {config_path}")
+	config.validate_config(cfg)
+
+	# probe video metadata
+	print(f"probing video: {args.input_file}")
+	video_info = _probe_video(args.input_file)
+	fps = video_info["fps"]
+	print(f"  resolution: {video_info['width']}x{video_info['height']}")
+	print(f"  fps:        {fps:.4f}")
+	print(f"  frames:     {video_info['frame_count']}")
+	print(f"  duration:   {video_info['duration_s']:.2f}s")
+
+	# dispatch to mode function
+	mode = args.mode
+	if mode == "seed":
+		_mode_seed(args, cfg, video_info, seeds_path)
+	elif mode == "edit":
+		_mode_edit(args, cfg, video_info, seeds_path, diag_path, intervals_path)
+	elif mode == "solve":
+		_mode_solve(args, cfg, video_info, seeds_path, diag_path, intervals_path)
+	elif mode == "encode":
+		_mode_encode(args, cfg, video_info, diag_path)
+	elif mode == "run":
+		_mode_run(args, cfg, video_info, seeds_path, diag_path, intervals_path)
+	else:
+		raise RuntimeError(f"unknown mode: {mode}")
 
 	# print total elapsed time
 	t_total_elapsed = time.time() - t_total_start
-	print(f"\noutput: {output_path}")
 	print(f"total time: {t_total_elapsed:.1f}s")
 
 

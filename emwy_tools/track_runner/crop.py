@@ -294,35 +294,36 @@ def create_crop_controller(
 ) -> CropController:
 	"""Factory to create a CropController from a config dictionary.
 
-	Reads crop settings from config['settings']['crop'] and returns
+	Reads crop settings from config['processing'] and returns
 	a configured CropController instance.
 
 	Args:
-		config: Project configuration dictionary with a 'settings.crop' section.
+		config: Project configuration dictionary with a 'processing' section.
 		frame_width: Width of the source video frame.
 		frame_height: Height of the source video frame.
 
 	Returns:
 		Configured CropController instance.
-	"""
-	# extract crop settings with defaults
-	settings = config.get("settings", {})
-	crop_cfg = settings.get("crop", {})
 
-	# parse aspect ratio string, default to 1:1
-	aspect_str = crop_cfg.get("aspect", "1:1")
+	Raises:
+		KeyError: If config is missing 'processing' or required keys.
+	"""
+	# require the processing section and crop_aspect key
+	processing = config["processing"]
+	aspect_str = processing["crop_aspect"]
 	aspect_ratio = parse_aspect_ratio(aspect_str)
 
-	# read numeric parameters with defaults
-	target_fill_ratio = float(crop_cfg.get("target_fill_ratio", 0.30))
-	smoothing_attack = float(crop_cfg.get("smoothing_attack", 0.15))
-	smoothing_release = float(crop_cfg.get("smoothing_release", 0.05))
-	max_crop_velocity = float(crop_cfg.get("max_crop_velocity", 30.0))
-	min_crop_size = int(crop_cfg.get("min_crop_size", 200))
-	far_fill_ratio = float(crop_cfg.get("far_fill_ratio", 0.50))
-	far_threshold_px = int(crop_cfg.get("far_threshold_px", 120))
-	very_far_fill_ratio = float(crop_cfg.get("very_far_fill_ratio", 0.65))
-	very_far_threshold_px = int(crop_cfg.get("very_far_threshold_px", 60))
+	# crop_fill_ratio is in the default config schema, require it
+	target_fill_ratio = float(processing["crop_fill_ratio"])
+	# tuning parameters with sensible defaults
+	smoothing_attack = float(processing.get("crop_smoothing_attack", 0.15))
+	smoothing_release = float(processing.get("crop_smoothing_release", 0.05))
+	max_crop_velocity = float(processing.get("crop_max_velocity", 30.0))
+	min_crop_size = int(processing.get("crop_min_size", 200))
+	far_fill_ratio = float(processing.get("crop_far_fill_ratio", 0.50))
+	far_threshold_px = int(processing.get("crop_far_threshold_px", 120))
+	very_far_fill_ratio = float(processing.get("crop_very_far_fill_ratio", 0.65))
+	very_far_threshold_px = int(processing.get("crop_very_far_threshold_px", 60))
 
 	controller = CropController(
 		frame_width=frame_width,

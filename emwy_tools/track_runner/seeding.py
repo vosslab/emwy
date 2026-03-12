@@ -151,16 +151,19 @@ def _build_seed_dict(
 def _draw_trajectory_preview(
 	frame: numpy.ndarray,
 	predictions: dict | None,
+	alpha: float = 0.4,
 ) -> None:
 	"""Draw forward/backward trajectory prediction boxes on a frame in-place.
 
 	Shows the interval_solver predictions as reference for the user when
-	refining seeds in later passes.
+	refining seeds in later passes. Boxes are drawn with transparency so
+	the underlying frame content remains visible.
 
 	Args:
 		frame: BGR image to draw on (modified in place).
 		predictions: Optional dict with "forward" and/or "backward" state dicts,
 			each containing cx, cy, w, h keys.
+		alpha: Opacity for the overlay rectangles (0.0=invisible, 1.0=opaque).
 	"""
 	if predictions is None:
 		return
@@ -175,6 +178,11 @@ def _draw_trajectory_preview(
 		y1 = int(cy - h / 2.0)
 		x2 = int(cx + w / 2.0)
 		y2 = int(cy + h / 2.0)
+		# draw semi-transparent filled rectangle
+		overlay = frame.copy()
+		cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 100, 0), -1)
+		cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
+		# draw solid border on top
 		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 100, 0), 2)
 		cv2.putText(
 			frame, "FWD",
@@ -191,6 +199,11 @@ def _draw_trajectory_preview(
 		y1 = int(cy - h / 2.0)
 		x2 = int(cx + w / 2.0)
 		y2 = int(cy + h / 2.0)
+		# draw semi-transparent filled rectangle
+		overlay = frame.copy()
+		cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 0, 255), -1)
+		cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
+		# draw solid border on top
 		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
 		cv2.putText(
 			frame, "BWD",
