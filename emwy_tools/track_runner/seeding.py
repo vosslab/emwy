@@ -8,13 +8,20 @@ Seeds are returned in the v2 JSON format (no full-person estimation).
 # PIP3 modules
 import cv2
 import numpy
+from PySide6.QtWidgets import QApplication
 
 # local repo modules
 import frame_reader
+import ui.workspace as workspace_module
+import ui.seed_controller as seed_controller_module
+import ui.target_controller as target_controller_module
 
-# window title for the interactive seed selection UI
+AnnotationWindow = workspace_module.AnnotationWindow
+SeedController = seed_controller_module.SeedController
+TargetController = target_controller_module.TargetController
+
+# window title for the legacy interactive seed selection UI
 SEED_WINDOW_TITLE = "Track Runner - Seed Selection"
-
 
 #============================================
 def extract_jersey_color(frame: numpy.ndarray, box: list) -> tuple:
@@ -609,137 +616,29 @@ def collect_seeds(
 		print(f"  {len(all_seeds)} existing seeds, "
 			f"{len(seed_frame_indices)} candidates at {interval_seconds}s interval")
 
-	# scrub step is 0.2 seconds worth of frames
-	scrub_step = max(1, int(round(fps * 0.2)))
+	# Create QApplication if not already running
+	app = QApplication.instance()
+	if app is None:
+		app = QApplication([])
 
-	new_seeds = []
-	read_fail_count = 0
-	skip_count = 0
-	scrub_count = 0
-	absence_count = 0
-	list_idx = 0
-	current_frame = seed_frame_indices[0] if seed_frame_indices else 0
-	while list_idx < len(seed_frame_indices):
-		frame_idx = current_frame
-		# print seed counter for progress visibility
-		print(f"  seed {list_idx + 1}/{len(seed_frame_indices)}  "
-			f"frame {frame_idx}")
-		# read frame using reliable multi-strategy reader
-		frame = reader.read_frame(frame_idx)
-		if frame is None:
-			read_fail_count += 1
-			list_idx += 1
-			if list_idx < len(seed_frame_indices):
-				current_frame = seed_frame_indices[list_idx]
-			continue
-		time_sec = frame_idx / fps
-		drawn_box = _interactive_draw_box(frame)
-		if drawn_box is None:
-			# user pressed ESC/q to finish
-			print(f"  user quit at frame {frame_idx} "
-				f"({list_idx+1}/{len(seed_frame_indices)})")
-			break
-		if drawn_box == "skip":
-			skip_count += 1
-			# advance to next seed interval
-			list_idx += 1
-			if list_idx < len(seed_frame_indices):
-				current_frame = seed_frame_indices[list_idx]
-			continue
-		if drawn_box == "prev":
-			scrub_count += 1
-			# scrub backward by 0.2 seconds
-			current_frame = max(0, current_frame - scrub_step)
-			continue
-		if drawn_box == "next":
-			scrub_count += 1
-			# scrub forward by 0.2 seconds
-			current_frame = min(total_frames - 1, current_frame + scrub_step)
-			continue
-		# handle absence markers
-		if drawn_box in ("not_in_frame", "obstructed"):
-			absence_count += 1
-			seed = {
-				"frame_index": frame_idx,
-				"frame": frame_idx,
-				"time_s": round(time_sec, 3),
-				"status": drawn_box,
-				"conf": None,
-				"pass": pass_number,
-				"source": "human",
-				"mode": "initial",
-			}
-			new_seeds.append(seed)
-			# save incrementally to avoid losing work on crash
-			if save_callback is not None:
-				save_callback(all_seeds + new_seeds)
-			list_idx += 1
-			if list_idx < len(seed_frame_indices):
-				current_frame = seed_frame_indices[list_idx]
-			continue
-		# handle partial mode: user marks runner as partially obstructed,
-		# then draws the torso box on the same frame
-		if drawn_box == "partial":
-			print("  partial mode: draw the runner's torso box (press p again to cancel)")
-			# dark gold box color to distinguish partial mode from normal green
-			partial_box = _interactive_draw_box(frame, box_color=(0, 200, 220))
-			if partial_box == "partial":
-				# second p press cancels partial mode, re-show same frame
-				print("  partial mode cancelled")
-				continue
-			if isinstance(partial_box, list):
-				# user drew a box: build seed with partial status
-				norm_box = normalize_seed_box(partial_box, config)
-				jersey_hsv = extract_jersey_color(frame, norm_box)
-				seed = _build_seed_dict(
-					frame_idx, time_sec, norm_box, jersey_hsv, pass_number, "initial",
-				)
-				# override status to partial (position good, appearance bad)
-				seed["status"] = "partial"
-				new_seeds.append(seed)
-				# save incrementally to avoid losing work on crash
-				if save_callback is not None:
-					save_callback(all_seeds + new_seeds)
-			else:
-				# user skipped or escaped the partial draw, treat as skip
-				pass
-			list_idx += 1
-			if list_idx < len(seed_frame_indices):
-				current_frame = seed_frame_indices[list_idx]
-			continue
-		# process the drawn rectangle into a seed
-		norm_box = normalize_seed_box(drawn_box, config)
-		jersey_hsv = extract_jersey_color(frame, norm_box)
-		seed = _build_seed_dict(
-			frame_idx, time_sec, norm_box, jersey_hsv, pass_number, "initial",
-		)
-		new_seeds.append(seed)
-		# save incrementally to avoid losing work on crash
-		if save_callback is not None:
-			save_callback(all_seeds + new_seeds)
-		list_idx += 1
-		if list_idx < len(seed_frame_indices):
-			current_frame = seed_frame_indices[list_idx]
+	# Create window and controller
+	window = AnnotationWindow("Track Runner - Seed Collection")
+	controller = SeedController(
+		seed_frame_indices=seed_frame_indices,
+		reader=reader,
+		fps=fps,
+		config=config,
+		all_seeds=all_seeds,
+		save_callback=save_callback,
+		pass_number=pass_number,
+		mode_str="initial",
+	)
+	window.set_controller(controller)
+	window.show()
+	app.exec()
 
 	reader.close()
-	cv2.destroyAllWindows()
-	# flush macOS event loop to dismiss the window and spinning pinwheel
-	for _ in range(5):
-		cv2.waitKey(1)
-
-	# print collection summary
-	drawn_count = len(new_seeds) - absence_count
-	print(f"  seed collection summary: "
-		f"{drawn_count} drawn, {absence_count} absent, "
-		f"{skip_count} skipped, {scrub_count} scrubs, "
-		f"{read_fail_count} read failures")
-	if list_idx >= len(seed_frame_indices):
-		print(f"  completed all {len(seed_frame_indices)} seed frames")
-	else:
-		print(f"  stopped at {list_idx+1}/{len(seed_frame_indices)} seed frames")
-
-	# append new seeds without overwriting existing
-	all_seeds.extend(new_seeds)
+	all_seeds = controller.get_final_seeds()
 	return all_seeds
 
 
@@ -796,9 +695,6 @@ def collect_seeds_at_frames(
 	# create reliable frame reader with sequential fallback
 	reader = frame_reader.FrameReader(video_path, fps, total_frames, debug=debug)
 
-	# scrub step is 0.2 seconds worth of frames
-	scrub_step = max(1, int(round(fps * 0.2)))
-
 	sorted_targets = sorted(target_frames)
 	# filter out frames that already have seeds to prevent duplicates
 	if all_seeds:
@@ -810,116 +706,31 @@ def collect_seeds_at_frames(
 			print(f"  filtered {skipped} target frames that already have seeds")
 	if not sorted_targets:
 		# all targets already seeded, nothing to do
-		all_seeds.extend([])
+		reader.close()
 		return all_seeds
-	new_seeds = []
-	list_idx = 0
-	current_frame = sorted_targets[0]
 
-	while list_idx < len(sorted_targets):
-		frame_idx = current_frame
-		# print seed counter for progress visibility
-		print(f"  seed {list_idx + 1}/{len(sorted_targets)}  "
-			f"frame {frame_idx}")
-		frame = reader.read_frame(frame_idx)
-		if frame is None:
-			list_idx += 1
-			if list_idx < len(sorted_targets):
-				current_frame = sorted_targets[list_idx]
-			continue
-		time_sec = frame_idx / fps
+	# Create QApplication if not already running
+	app = QApplication.instance()
+	if app is None:
+		app = QApplication([])
 
-		# look up predictions for this frame if available
-		frame_preds = None
-		if predictions is not None:
-			frame_preds = predictions.get(frame_idx)
-
-		drawn_box = _interactive_draw_box(frame, predictions=frame_preds)
-		if drawn_box is None:
-			break
-		if drawn_box == "skip":
-			list_idx += 1
-			if list_idx < len(sorted_targets):
-				current_frame = sorted_targets[list_idx]
-			continue
-		if drawn_box == "prev":
-			current_frame = max(0, current_frame - scrub_step)
-			continue
-		if drawn_box == "next":
-			current_frame = min(total_frames - 1, current_frame + scrub_step)
-			continue
-		# handle absence markers
-		if drawn_box in ("not_in_frame", "obstructed"):
-			seed = {
-				"frame_index": frame_idx,
-				"frame": frame_idx,
-				"time_s": round(time_sec, 3),
-				"status": drawn_box,
-				"conf": None,
-				"pass": pass_number,
-				"source": "human",
-				"mode": mode,
-			}
-			new_seeds.append(seed)
-			# save incrementally to avoid losing work on crash
-			if save_callback is not None:
-				save_callback(all_seeds + new_seeds)
-			list_idx += 1
-			if list_idx < len(sorted_targets):
-				current_frame = sorted_targets[list_idx]
-			continue
-		# handle partial mode: user marks runner as partially obstructed,
-		# then draws the torso box on the same frame
-		if drawn_box == "partial":
-			print("  partial mode: draw the runner's torso box (press p again to cancel)")
-			# dark gold box color to distinguish partial mode from normal green
-			partial_box = _interactive_draw_box(
-				frame, predictions=frame_preds, box_color=(0, 200, 220),
-			)
-			if partial_box == "partial":
-				# second p press cancels partial mode, re-show same frame
-				print("  partial mode cancelled")
-				continue
-			if isinstance(partial_box, list):
-				# user drew a box: build seed with partial status
-				norm_box = normalize_seed_box(partial_box, config)
-				jersey_hsv = extract_jersey_color(frame, norm_box)
-				seed = _build_seed_dict(
-					frame_idx, time_sec, norm_box, jersey_hsv, pass_number, mode,
-				)
-				# override status to partial (position good, appearance bad)
-				seed["status"] = "partial"
-				new_seeds.append(seed)
-				# save incrementally to avoid losing work on crash
-				if save_callback is not None:
-					save_callback(all_seeds + new_seeds)
-			else:
-				# user skipped or escaped the partial draw, treat as skip
-				pass
-			list_idx += 1
-			if list_idx < len(sorted_targets):
-				current_frame = sorted_targets[list_idx]
-			continue
-		# process the drawn rectangle into a seed
-		norm_box = normalize_seed_box(drawn_box, config)
-		jersey_hsv = extract_jersey_color(frame, norm_box)
-		seed = _build_seed_dict(
-			frame_idx, time_sec, norm_box, jersey_hsv, pass_number, mode,
-		)
-		new_seeds.append(seed)
-		# save incrementally to avoid losing work on crash
-		if save_callback is not None:
-			save_callback(all_seeds + new_seeds)
-		list_idx += 1
-		if list_idx < len(sorted_targets):
-			current_frame = sorted_targets[list_idx]
+	# Create window and controller
+	window = AnnotationWindow("Track Runner - Target Collection")
+	controller = TargetController(
+		sorted_targets=sorted_targets,
+		reader=reader,
+		fps=fps,
+		config=config,
+		all_seeds=all_seeds,
+		save_callback=save_callback,
+		pass_number=pass_number,
+		mode_str=mode,
+		predictions=predictions,
+	)
+	window.set_controller(controller)
+	window.show()
+	app.exec()
 
 	reader.close()
-	cv2.destroyAllWindows()
-	# flush macOS event loop to dismiss the window and spinning pinwheel
-	for _ in range(5):
-		cv2.waitKey(1)
-
-	# append new seeds without overwriting existing
-	all_seeds.extend(new_seeds)
+	all_seeds = controller.get_final_seeds()
 	return all_seeds

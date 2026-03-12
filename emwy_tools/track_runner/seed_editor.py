@@ -5,17 +5,22 @@ on its original frame with optional forward/backward prediction overlays
 and lets the user navigate, delete, change status, or redraw the box.
 """
 
+# Standard Library
+# (none)
+
 # PIP3 modules
 import cv2
 import numpy
+from PySide6.QtWidgets import QApplication
 
 # local repo modules
-import detection
 import frame_reader
 import seeding
+import ui.workspace as workspace_module
+import ui.edit_controller as edit_controller_module
 
-# window title for the interactive seed editor UI
-EDIT_WINDOW_TITLE = "Track Runner - Seed Editor"
+AnnotationWindow = workspace_module.AnnotationWindow
+EditController = edit_controller_module.EditController
 
 
 #============================================
@@ -317,322 +322,6 @@ def _draw_preview_box(
 
 
 #============================================
-def _interactive_edit_seed(
-	frame: numpy.ndarray,
-	seed: dict,
-	seed_index: int,
-	total_seeds: int,
-	predictions: dict | None = None,
-	seed_confidence: dict | None = None,
-	config: dict | None = None,
-	detector: object | None = None,
-) -> str | list | None:
-	"""Core UI loop for editing one seed.
-
-	Shows the frame with the existing seed box in cyan, optional FWD/BWD
-	prediction boxes, status bar, and instruction text.
-
-	Args:
-		frame: BGR image of the seed's frame.
-		seed: Current seed dict.
-		seed_index: 0-based index of this seed in the list.
-		total_seeds: Total number of seeds being reviewed.
-		predictions: Optional prediction dict for overlay display.
-
-	Returns:
-		"keep": keep seed as-is, advance to next
-		"prev": go back to previous seed
-		"delete": remove this seed
-		"not_in_frame": change status to not_in_frame
-		"obstructed": change status to obstructed
-		"partial": change status to partial (then redraw)
-		list [x,y,w,h]: redraw with new box
-		None: quit/save and exit
-	"""
-	# prepare display frame with overlays
-	display = frame.copy()
-	frame_idx = int(seed["frame_index"])
-	status = seed["status"]
-	time_s = seed.get("time_s", frame_idx / 30.0)
-
-	# draw prediction overlays first (behind seed box)
-	_draw_predictions_overlay(display, predictions, frame_idx)
-	# choose color based on seed status: gold for partial, cyan for visible
-	if status == "partial":
-		seed_color = (0, 200, 220)
-	else:
-		seed_color = (255, 255, 0)
-	_draw_seed_overlay(display, seed, color=seed_color)
-
-	# mutable state for mouse drawing (redraw mode)
-	draw_state = {
-		"drawing": False,
-		"x1": 0, "y1": 0,
-		"x2": 0, "y2": 0,
-		"done": False,
-		# zoom state: z key cycles through zoom levels (0=off, 1-3=zoomed)
-		"zoom_level": 0,
-		"zoom_cx": 0, "zoom_cy": 0,
-	}
-	# frame dimensions for zoom crop calculation
-	ed_frame_h, ed_frame_w = frame.shape[:2]
-	# three zoom levels: 1.5x, 2.25x, 3.375x (each 1.5x the previous)
-	_zoom_factors = [1.0, 1.5, 2.25, 3.375]
-	# minimum and maximum area guardrails for drawn boxes
-	min_box_area = 10
-	max_box_area = ed_frame_w * ed_frame_h * 0.5
-
-	#============================================
-	def _mouse_to_frame(mx: int, my: int) -> tuple:
-		"""Map mouse coordinates back to original frame coordinates."""
-		if draw_state["zoom_level"] == 0:
-			return (mx, my)
-		zf = _zoom_factors[draw_state["zoom_level"]]
-		crop_w = int(ed_frame_w / zf)
-		crop_h = int(ed_frame_h / zf)
-		crop_x1 = max(0, min(draw_state["zoom_cx"] - crop_w // 2, ed_frame_w - crop_w))
-		crop_y1 = max(0, min(draw_state["zoom_cy"] - crop_h // 2, ed_frame_h - crop_h))
-		orig_x = int(crop_x1 + mx * crop_w / ed_frame_w)
-		orig_y = int(crop_y1 + my * crop_h / ed_frame_h)
-		return (orig_x, orig_y)
-
-	#============================================
-	def _apply_zoom(img: numpy.ndarray) -> numpy.ndarray:
-		"""Apply zoom crop and resize if zoom is active."""
-		if draw_state["zoom_level"] == 0:
-			return img
-		zf = _zoom_factors[draw_state["zoom_level"]]
-		crop_w = int(ed_frame_w / zf)
-		crop_h = int(ed_frame_h / zf)
-		crop_x1 = max(0, min(draw_state["zoom_cx"] - crop_w // 2, ed_frame_w - crop_w))
-		crop_y1 = max(0, min(draw_state["zoom_cy"] - crop_h // 2, ed_frame_h - crop_h))
-		cropped = img[crop_y1:crop_y1 + crop_h, crop_x1:crop_x1 + crop_w]
-		zoomed_img = cv2.resize(cropped, (ed_frame_w, ed_frame_h))
-		return zoomed_img
-
-	#============================================
-	def mouse_callback(event: int, x: int, y: int, flags: int, param: object) -> None:
-		"""Handle mouse events for rectangle drawing."""
-		if event == cv2.EVENT_LBUTTONDOWN:
-			fx, fy = _mouse_to_frame(x, y)
-			draw_state["drawing"] = True
-			draw_state["x1"] = fx
-			draw_state["y1"] = fy
-			draw_state["x2"] = fx
-			draw_state["y2"] = fy
-		elif event == cv2.EVENT_MOUSEMOVE and draw_state["drawing"]:
-			fx, fy = _mouse_to_frame(x, y)
-			draw_state["x2"] = fx
-			draw_state["y2"] = fy
-		elif event == cv2.EVENT_LBUTTONUP:
-			fx, fy = _mouse_to_frame(x, y)
-			draw_state["drawing"] = False
-			draw_state["x2"] = fx
-			draw_state["y2"] = fy
-			draw_state["done"] = True
-
-	cv2.namedWindow(EDIT_WINDOW_TITLE, cv2.WINDOW_NORMAL)
-	cv2.setMouseCallback(EDIT_WINDOW_TITLE, mouse_callback)
-
-	while True:
-		show = display.copy()
-		# draw the redraw rectangle preview while dragging (in frame coords)
-		if draw_state["drawing"]:
-			cv2.rectangle(
-				show,
-				(draw_state["x1"], draw_state["y1"]),
-				(draw_state["x2"], draw_state["y2"]),
-				(0, 255, 0), 2,
-			)
-		# apply zoom crop after drawing overlays on full-frame image
-		show = _apply_zoom(show)
-		# draw status bar at the top (on display coords)
-		status_text = (
-			f"Seed {seed_index + 1}/{total_seeds} | "
-			f"frame {frame_idx} | {time_s:.1f}s | {status}"
-		)
-		# append confidence score if available
-		if seed_confidence is not None:
-			conf_score = seed_confidence.get("score", 0.0)
-			conf_label = seed_confidence.get("label", "unknown")
-			status_text += f" | conf: {conf_score:.2f} ({conf_label})"
-		cv2.putText(
-			show, status_text,
-			(10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-			(0, 255, 255), 2,
-		)
-		# draw instruction text
-		cv2.putText(
-			show,
-			"SPACE/RIGHT=keep, LEFT=prev, d=delete, draw=redraw",
-			(10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-			(0, 255, 255), 2,
-		)
-		cv2.putText(
-			show,
-			"n=not_in_frame, o=obstructed, p=partial, y=YOLO, f=FWD/BWD",
-			(10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-			(0, 255, 255), 2,
-		)
-		cv2.putText(
-			show,
-			"z=toggle zoom, ESC/q=save+exit",
-			(10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-			(0, 255, 255), 2,
-		)
-		# show zoom indicator when zoomed
-		if draw_state["zoom_level"] > 0:
-			zoom_label = f"ZOOM {_zoom_factors[draw_state['zoom_level']]:.1f}x"
-			cv2.putText(
-				show, zoom_label,
-				(ed_frame_w - 200, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-				(0, 255, 0), 2,
-			)
-		cv2.imshow(EDIT_WINDOW_TITLE, show)
-		key = cv2.waitKey(30) & 0xFF
-		# ESC or q: save and exit
-		if key == 27 or key == 113:
-			return None
-		# SPACE or right arrow: keep, next seed
-		if key == 32 or key == 83 or key == 3:
-			return "keep"
-		# left arrow: previous seed
-		if key == 81 or key == 2:
-			return "prev"
-		# z key: cycle zoom levels (off -> 1.5x -> 2.25x -> 3.4x -> off)
-		if key == 122:
-			next_level = draw_state["zoom_level"] + 1
-			if next_level >= len(_zoom_factors):
-				# reset to no zoom
-				draw_state["zoom_level"] = 0
-			else:
-				draw_state["zoom_level"] = next_level
-				# set center on first zoom level only
-				if next_level == 1:
-					# center on average of FWD/BWD predictions when available
-					zoom_cx = ed_frame_w // 2
-					zoom_cy = ed_frame_h // 2
-					if predictions is not None:
-						fwd = predictions.get("forward")
-						bwd = predictions.get("backward")
-						if fwd is not None and bwd is not None:
-							zoom_cx = int((fwd["cx"] + bwd["cx"]) / 2.0)
-							zoom_cy = int((fwd["cy"] + bwd["cy"]) / 2.0)
-						elif fwd is not None:
-							zoom_cx = int(fwd["cx"])
-							zoom_cy = int(fwd["cy"])
-						elif bwd is not None:
-							zoom_cx = int(bwd["cx"])
-							zoom_cy = int(bwd["cy"])
-					draw_state["zoom_cx"] = zoom_cx
-					draw_state["zoom_cy"] = zoom_cy
-			continue
-		# d key: delete seed
-		if key == 100:
-			return "delete"
-		# n key: change status to not_in_frame
-		if key == 110:
-			return "not_in_frame"
-		# o key: change status to obstructed
-		if key == 111:
-			return "obstructed"
-		# p key: change status to partial (preserve zoom state)
-		if key == 112:
-			# return zoom state so caller can pass it to the draw box
-			zoom_info = {
-				"zoom_level": draw_state["zoom_level"],
-				"zoom_cx": draw_state["zoom_cx"],
-				"zoom_cy": draw_state["zoom_cy"],
-			}
-			return ("partial", zoom_info)
-		# y key: YOLO-based bbox polish with preview
-		if key == 121:
-			if status in ("not_in_frame", "obstructed"):
-				continue
-			# lazily create YOLO detector on first y-key press
-			if isinstance(detector, list) and detector[0] is None:
-				print("  loading YOLO detector for bbox polish...")
-				detector[0] = detection.create_detector(config or {})
-			# resolve detector from lazy list or direct reference
-			det = detector[0] if isinstance(detector, list) else detector
-			if det is None:
-				continue
-			refined = _refine_box_yolo(frame, seed, config or {}, det)
-			if refined is None:
-				# flash "no refinement available" briefly
-				tmp = display.copy()
-				cv2.putText(
-					tmp, "No YOLO refinement available",
-					(10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-					(0, 0, 255), 2,
-				)
-				cv2.imshow(EDIT_WINDOW_TITLE, tmp)
-				cv2.waitKey(800)
-				continue
-			# show preview: green refined box alongside original
-			preview = display.copy()
-			_draw_preview_box(preview, refined, color=(0, 255, 0))
-			cv2.putText(
-				preview, "YOLO polish: SPACE=accept, other=reject",
-				(10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-				(0, 255, 0), 2,
-			)
-			cv2.imshow(EDIT_WINDOW_TITLE, preview)
-			accept_key = cv2.waitKey(0) & 0xFF
-			if accept_key == 32:
-				# return as polish tuple for caller to set bbox_polish mode
-				rx = int(refined["cx"] - refined["w"] / 2.0)
-				ry = int(refined["cy"] - refined["h"] / 2.0)
-				return ("bbox_polish", [rx, ry, int(refined["w"]), int(refined["h"])])
-			continue
-		# f key: FWD/BWD consensus bbox polish with preview
-		if key == 102:
-			if status in ("not_in_frame", "obstructed"):
-				continue
-			refined = _refine_box_consensus(seed, predictions, frame_idx)
-			if refined is None:
-				# flash "no refinement available" briefly
-				tmp = display.copy()
-				cv2.putText(
-					tmp, "No FWD/BWD predictions available",
-					(10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-					(0, 0, 255), 2,
-				)
-				cv2.imshow(EDIT_WINDOW_TITLE, tmp)
-				cv2.waitKey(800)
-				continue
-			# show preview: green refined box alongside original
-			preview = display.copy()
-			_draw_preview_box(preview, refined, color=(0, 255, 0))
-			cv2.putText(
-				preview, "FWD/BWD polish: SPACE=accept, other=reject",
-				(10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-				(0, 255, 0), 2,
-			)
-			cv2.imshow(EDIT_WINDOW_TITLE, preview)
-			accept_key = cv2.waitKey(0) & 0xFF
-			if accept_key == 32:
-				rx = int(refined["cx"] - refined["w"] / 2.0)
-				ry = int(refined["cy"] - refined["h"] / 2.0)
-				return ("bbox_polish", [rx, ry, int(refined["w"]), int(refined["h"])])
-			continue
-		# check if mouse drawing finished (redraw)
-		if draw_state["done"]:
-			x1 = min(draw_state["x1"], draw_state["x2"])
-			y1 = min(draw_state["y1"], draw_state["y2"])
-			x2 = max(draw_state["x1"], draw_state["x2"])
-			y2 = max(draw_state["y1"], draw_state["y2"])
-			w = x2 - x1
-			h = y2 - y1
-			box_area = w * h
-			# reject boxes that are too small or too large
-			if box_area < min_box_area or box_area > max_box_area:
-				draw_state["done"] = False
-				continue
-			return [x1, y1, w, h]
-
-
-#============================================
 def edit_seeds(
 	video_path: str,
 	seeds: list,
@@ -641,6 +330,7 @@ def edit_seeds(
 	frame_filter: set | None = None,
 	seed_confidences: dict | None = None,
 	debug: bool = False,
+	save_callback: object = None,
 ) -> tuple:
 	"""Main loop for reviewing and editing seeds interactively.
 
@@ -657,6 +347,7 @@ def edit_seeds(
 		seed_confidences: Optional dict mapping frame_index to confidence
 			dicts with 'score' and 'label' keys.
 		debug: Enable verbose output.
+		save_callback: Optional callable(work_seeds) for incremental saves.
 
 	Returns:
 		Tuple of (edited_seeds, summary) where edited_seeds is the cleaned
@@ -691,19 +382,9 @@ def edit_seeds(
 	cap.release()
 	if fps <= 0:
 		raise RuntimeError(f"invalid fps from video: {video_path}")
+
 	# create reliable frame reader
 	reader = frame_reader.FrameReader(video_path, fps, total_frames, debug=debug)
-
-	# tracking counters
-	reviewed = 0
-	kept = 0
-	redrawn = 0
-	deleted = 0
-	status_changed = 0
-	# set of indices in work_seeds to delete at the end
-	delete_indices = set()
-	# frame indices that were modified (for selective interval invalidation)
-	changed_frames = set()
 
 	# lazy YOLO detector for bbox polish (created on first y-key press)
 	yolo_detector = [None]
@@ -711,146 +392,36 @@ def edit_seeds(
 	print(f"  editing {len(filtered_indices)} seeds "
 		f"(of {len(work_seeds)} total)")
 
-	nav_idx = 0
-	while 0 <= nav_idx < len(filtered_indices):
-		seed_list_idx = filtered_indices[nav_idx]
-		seed = work_seeds[seed_list_idx]
-		frame_idx = int(seed["frame_index"])
+	# Create QApplication if not already running
+	app = QApplication.instance()
+	if app is None:
+		app = QApplication([])
 
-		# read the frame
-		frame = reader.read_frame(frame_idx)
-		if frame is None:
-			print(f"  warning: cannot read frame {frame_idx}, skipping")
-			nav_idx += 1
-			continue
-
-		# look up confidence for this seed's frame
-		frame_confidence = None
-		if seed_confidences is not None:
-			frame_confidence = seed_confidences.get(frame_idx)
-
-		reviewed += 1
-		result = _interactive_edit_seed(
-			frame, seed, nav_idx, len(filtered_indices),
-			predictions=predictions,
-			seed_confidence=frame_confidence,
-			config=config,
-			detector=yolo_detector,
-		)
-
-		if result is None:
-			# user pressed ESC/q to save and exit
-			print(f"  user quit at seed {nav_idx + 1}/{len(filtered_indices)}")
-			break
-		if result == "keep":
-			kept += 1
-			nav_idx += 1
-			continue
-		if result == "prev":
-			nav_idx = max(0, nav_idx - 1)
-			continue
-		if result == "delete":
-			deleted += 1
-			delete_indices.add(seed_list_idx)
-			changed_frames.add(frame_idx)
-			nav_idx += 1
-			continue
-		if result in ("not_in_frame", "obstructed"):
-			status_changed += 1
-			changed_frames.add(frame_idx)
-			# change status and remove position data for absence statuses
-			work_seeds[seed_list_idx] = {
-				"frame_index": seed.get("frame_index"),
-				"frame": seed.get("frame"),
-				"time_s": seed.get("time_s"),
-				"status": result,
-				"pass": seed["pass"],
-				"source": "human",
-				"mode": "edit_redraw",
-			}
-			nav_idx += 1
-			continue
-		if isinstance(result, tuple) and len(result) == 2 and result[0] == "partial":
-			# partial mode: re-show frame for redraw with gold box color
-			# preserve zoom state from the editor
-			zoom_info = result[1]
-			print("  partial mode: draw the runner's torso box (press p to cancel)")
-			partial_box = seeding._interactive_draw_box(
-				frame, box_color=(0, 200, 220), initial_zoom=zoom_info,
-			)
-			if partial_box == "partial":
-				print("  partial mode cancelled")
-				continue
-			if isinstance(partial_box, list):
-				status_changed += 1
-				redrawn += 1
-				changed_frames.add(frame_idx)
-				time_sec = seed.get("time_s", frame_idx / fps)
-				norm_box = seeding.normalize_seed_box(partial_box, config)
-				jersey_hsv = seeding.extract_jersey_color(frame, norm_box)
-				new_seed = seeding._build_seed_dict(
-					frame_idx, time_sec, norm_box, jersey_hsv,
-					seed["pass"], "edit_redraw",
-				)
-				new_seed["status"] = "partial"
-				work_seeds[seed_list_idx] = new_seed
-			nav_idx += 1
-			continue
-		if isinstance(result, tuple) and len(result) == 2 and result[0] == "bbox_polish":
-			# user accepted a YOLO or FWD/BWD polish
-			redrawn += 1
-			changed_frames.add(frame_idx)
-			polish_box = result[1]
-			time_sec = seed.get("time_s", frame_idx / fps)
-			norm_box = seeding.normalize_seed_box(polish_box, config)
-			jersey_hsv = seeding.extract_jersey_color(frame, norm_box)
-			new_seed = seeding._build_seed_dict(
-				frame_idx, time_sec, norm_box, jersey_hsv,
-				seed["pass"], "bbox_polish",
-			)
-			work_seeds[seed_list_idx] = new_seed
-			nav_idx += 1
-			continue
-		if isinstance(result, list):
-			# user drew a new box (redraw)
-			redrawn += 1
-			changed_frames.add(frame_idx)
-			time_sec = seed.get("time_s", frame_idx / fps)
-			norm_box = seeding.normalize_seed_box(result, config)
-			jersey_hsv = seeding.extract_jersey_color(frame, norm_box)
-			new_seed = seeding._build_seed_dict(
-				frame_idx, time_sec, norm_box, jersey_hsv,
-				seed["pass"], "edit_redraw",
-			)
-			work_seeds[seed_list_idx] = new_seed
-			nav_idx += 1
-			continue
+	# Create controller and window
+	controller = EditController(
+		work_seeds=work_seeds,
+		filtered_indices=filtered_indices,
+		reader=reader,
+		fps=fps,
+		config=config,
+		save_callback=save_callback or (lambda ws: None),
+		predictions=predictions,
+		seed_confidences=seed_confidences,
+		yolo_detector_list=yolo_detector,
+	)
+	window = AnnotationWindow("Track Runner - Seed Editor")
+	window.set_controller(controller)
+	window.show()
+	app.exec()
 
 	reader.close()
-	cv2.destroyAllWindows()
-	# flush macOS event loop to dismiss window
-	for _ in range(5):
-		cv2.waitKey(1)
 
-	# remove deleted seeds (iterate in reverse to preserve indices)
-	if delete_indices:
-		edited_seeds = [
-			s for i, s in enumerate(work_seeds)
-			if i not in delete_indices
-		]
-	else:
-		edited_seeds = work_seeds
+	# Get final results
+	edited_seeds, summary = controller.get_summary()
 
-	summary = {
-		"reviewed": reviewed,
-		"kept": kept,
-		"redrawn": redrawn,
-		"deleted": deleted,
-		"status_changed": status_changed,
-		"changed_frames": changed_frames,
-	}
 	# print edit summary
-	print(f"  edit summary: {reviewed} reviewed, {kept} kept, "
-		f"{redrawn} redrawn, {deleted} deleted, "
-		f"{status_changed} status changed")
+	print(f"  edit summary: {summary['reviewed']} reviewed, "
+		f"{summary['kept']} kept, "
+		f"{summary['redrawn']} redrawn, {summary['deleted']} deleted, "
+		f"{summary['status_changed']} status changed")
 	return (edited_seeds, summary)

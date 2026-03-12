@@ -9,6 +9,7 @@ Diagnostics files store interval and trajectory data for debugging.
 # Standard Library
 import json
 import os
+import tempfile
 
 #============================================
 
@@ -30,6 +31,25 @@ VALID_SEED_MODES = frozenset(
 	"edit_redraw", "solve_refine", "interactive_refine", "bbox_polish",
 	"target_refine"]
 )
+
+#============================================
+
+def validate_seed(seed: dict) -> None:
+	"""Validate a seed dict and raise ValueError on constraint violations.
+
+	Args:
+		seed: Seed dictionary to validate.
+
+	Raises:
+		ValueError: If validation fails.
+	"""
+	status = seed.get("status")
+	if status == "obstructed":
+		if "torso_box" not in seed or seed["torso_box"] is None:
+			raise ValueError(
+				f"obstructed seed at frame {seed.get('frame_index')} "
+				f"must have torso_box (use 'a' key to draw an approximate box)"
+			)
 
 #============================================
 
@@ -107,14 +127,23 @@ def load_seeds(path: str) -> dict:
 #============================================
 
 def write_seeds(path: str, seeds_data: dict) -> None:
-	"""Write seeds data to a JSON file.
+	"""Write seeds data to a JSON file with atomic write semantics.
 
-	Ensures the required header key is present before writing.
+	Ensures the required header key is present before writing and validates
+	all seeds. Uses atomic rename to prevent data corruption.
 
 	Args:
 		path: Output file path.
 		seeds_data: Seeds dictionary to write (must include 'seeds' list).
+
+	Raises:
+		ValueError: If any seed fails validation.
 	"""
+	# validate all seeds before writing
+	if "seeds" in seeds_data and isinstance(seeds_data["seeds"], list):
+		for seed in seeds_data["seeds"]:
+			validate_seed(seed)
+
 	# ensure header version is set correctly before writing
 	seeds_data[SEEDS_HEADER_KEY] = SEEDS_HEADER_VALUE
 	# sort seeds by frame_index for human-readable output
@@ -123,9 +152,20 @@ def write_seeds(path: str, seeds_data: dict) -> None:
 			seeds_data["seeds"],
 			key=lambda s: int(s["frame_index"]),
 		)
-	with open(path, "w") as fh:
-		json.dump(seeds_data, fh, indent=2)
-	return
+
+	# write to temp file in same directory (same filesystem for atomic rename)
+	dir_path = os.path.dirname(os.path.abspath(path))
+	fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp.json")
+	try:
+		with os.fdopen(fd, "w") as fh:
+			json.dump(seeds_data, fh, indent=2)
+		# atomic rename - never truncates original until new content is ready
+		os.replace(tmp_path, path)
+	except Exception:
+		# clean up temp file if anything failed before replace
+		if os.path.exists(tmp_path):
+			os.unlink(tmp_path)
+		raise
 
 
 #============================================
@@ -368,7 +408,6 @@ def write_solver_diagnostics(
 
 # round-trip self-check for load/write pairs
 if __name__ == "__main__":
-	import tempfile
 	# test seeds round-trip
 	seeds_data = {
 		"video_file": "test.mov",

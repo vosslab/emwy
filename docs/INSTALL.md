@@ -8,6 +8,7 @@ power renders and exporters.
 - Python 3.12.
 - System tools: `ffmpeg`, `sox`, `mkvtoolnix` (provides `mkvmerge`), `mediainfo`, and `mlt` (provides `melt`).
 - macOS with Homebrew is the primary development platform.
+- PySide6 6.x for the track runner annotation tool (installed via `pip_requirements.txt`).
 
 ## Install steps
 

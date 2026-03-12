@@ -2,21 +2,15 @@
 
 # Standard Library
 import os
-import urllib.request
 
 # PIP3 modules
 import cv2
 import numpy
 
 # Constants for YOLO nano ONNX model
-# No pre-exported yolov8n.onnx exists on GitHub releases.
-# We download yolov8n.pt and export to ONNX via ultralytics.
-YOLO_PT_URL = (
-	"https://github.com/ultralytics/assets/releases/download/"
-	"v8.2.0/yolov8n.pt"
-)
+# ONNX file is created once via tools/export_yolo_onnx.py and cached.
+# No ultralytics pip dependency at runtime.
 YOLO_WEIGHTS_FILENAME = "yolov8n.onnx"
-YOLO_PT_FILENAME = "yolov8n.pt"
 YOLO_EXPECTED_ONNX_MIN = 5_000_000  # ~12-13MB
 YOLO_EXPECTED_ONNX_MAX = 20_000_000
 YOLO_INPUT_SIZE = 640
@@ -24,52 +18,23 @@ PERSON_CLASS_ID = 0  # COCO class 0 = person
 
 
 #============================================
-def _export_pt_to_onnx(pt_path: str, onnx_path: str) -> bool:
-	"""Export a YOLO .pt model to ONNX format via ultralytics.
-
-	Args:
-		pt_path: Path to the .pt weights file.
-		onnx_path: Desired output path for the ONNX file.
-
-	Returns:
-		True if export succeeded, False otherwise.
-	"""
-	try:
-		import ultralytics
-	except ImportError:
-		print("WARNING: ultralytics not installed, cannot export to ONNX")
-		return False
-	print(f"Exporting {pt_path} to ONNX format...")
-	model = ultralytics.YOLO(pt_path)
-	# export writes to same directory as .pt file
-	result_path = model.export(format="onnx", imgsz=640)
-	if result_path and os.path.isfile(result_path):
-		# move to desired location if different
-		if os.path.realpath(result_path) != os.path.realpath(onnx_path):
-			os.replace(result_path, onnx_path)
-		return True
-	return False
-
-
-#============================================
 def ensure_yolo_weights(cache_dir: str | None = None) -> str:
-	"""Get YOLOv8n ONNX weights, downloading and exporting if needed.
+	"""Get YOLOv8n ONNX weights from cache.
 
-	Checks for cached ONNX file first. If missing, downloads yolov8n.pt
-	and exports to ONNX via ultralytics.
+	Checks for the cached ONNX file. If missing, prints instructions
+	for running the one-time export script.
 
 	Args:
-		cache_dir: Directory to store the weights file.
+		cache_dir: Directory to look for the weights file.
 			Defaults to ~/.cache/track_runner/.
 
 	Returns:
-		Path to the ONNX weights file, or empty string on failure.
+		Path to the ONNX weights file, or empty string if not found.
 	"""
 	if cache_dir is None:
 		cache_dir = os.path.join(
 			os.path.expanduser("~"), ".cache", "track_runner"
 		)
-	os.makedirs(cache_dir, exist_ok=True)
 	onnx_path = os.path.join(cache_dir, YOLO_WEIGHTS_FILENAME)
 	# return existing ONNX weights if valid
 	if os.path.isfile(onnx_path):
@@ -77,31 +42,14 @@ def ensure_yolo_weights(cache_dir: str | None = None) -> str:
 		if YOLO_EXPECTED_ONNX_MIN <= file_size <= YOLO_EXPECTED_ONNX_MAX:
 			return onnx_path
 		print(f"WARNING: existing ONNX file has unexpected size "
-			f"({file_size} bytes), re-exporting")
-		os.remove(onnx_path)
-	# download .pt weights if not cached
-	pt_path = os.path.join(cache_dir, YOLO_PT_FILENAME)
-	if not os.path.isfile(pt_path):
-		print(f"Downloading YOLOv8n weights from {YOLO_PT_URL}")
-		try:
-			urllib.request.urlretrieve(YOLO_PT_URL, pt_path)
-		except Exception as err:
-			print(f"WARNING: failed to download YOLO weights: {err}")
-			return ""
-	# export .pt to ONNX
-	if not _export_pt_to_onnx(pt_path, onnx_path):
-		return ""
-	# validate exported file
-	if not os.path.isfile(onnx_path):
-		print("WARNING: ONNX export did not produce a file")
-		return ""
-	file_size = os.path.getsize(onnx_path)
-	if not (YOLO_EXPECTED_ONNX_MIN <= file_size <= YOLO_EXPECTED_ONNX_MAX):
-		print(f"WARNING: exported ONNX has unexpected size ({file_size})")
-		os.remove(onnx_path)
-		return ""
-	print(f"YOLOv8n ONNX weights ready at {onnx_path}")
-	return onnx_path
+			f"({file_size} bytes), please re-export")
+	# ONNX file not found, print instructions
+	print(f"YOLO ONNX weights not found at {onnx_path}")
+	print("Run the one-time export script to create them:")
+	print("  pip3 install ultralytics")
+	print("  python3 tools/export_yolo_onnx.py")
+	print("  pip3 uninstall ultralytics  # optional cleanup")
+	return ""
 
 
 #============================================
@@ -317,7 +265,11 @@ def create_detector(config: dict) -> YoloDetector:
 	# obtain YOLO weights, raise on failure
 	weights_path = ensure_yolo_weights()
 	if not weights_path:
-		raise RuntimeError("YOLO weights unavailable; cannot create detector")
+		msg = "YOLO ONNX weights not found. Run the one-time export:\n"
+		msg += "  pip3 install ultralytics\n"
+		msg += "  python3 tools/export_yolo_onnx.py\n"
+		msg += "  pip3 uninstall ultralytics  # optional cleanup"
+		raise RuntimeError(msg)
 	det = YoloDetector(
 		weights_path,
 		confidence_threshold=confidence_threshold,

@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-03-12
+
+### Additions and New Features
+- Added [emwy_tools/track_runner/ui/](emwy_tools/track_runner/ui/) package: PySide6-based annotation window replacing all OpenCV `cv2.namedWindow` popup loops in track runner.
+- Added [emwy_tools/track_runner/ui/frame_view.py](emwy_tools/track_runner/ui/frame_view.py): `FrameView(QGraphicsView)` renders BGR frames via `QImage`/`QPixmap`, supports cursor-anchored zoom (1.25x per wheel tick, clamped 0.5x-10x) and `map_to_scene()` coordinate mapping.
+- Added [emwy_tools/track_runner/ui/overlay_items.py](emwy_tools/track_runner/ui/overlay_items.py): `RectItem` (colored outline rect with optional label), `PreviewBoxItem` (semi-transparent green proposed box for polish preview), `ScaleBarItem` (zoom label in top-right corner, hidden at <=1.05x).
+- Added [emwy_tools/track_runner/ui/theme.py](emwy_tools/track_runner/ui/theme.py): `apply_theme(app, mode)` supports dark/light/system modes; dark palette uses bg `#0F0F23`, text `#F8FAFC`, accent `#E11D48`; system detection via `app.styleHints().colorScheme()` with palette-brightness fallback.
+- Added [emwy_tools/track_runner/ui/actions.py](emwy_tools/track_runner/ui/actions.py): `make_action()` factory for `QAction` with shortcut and tooltip; loads standard pixmap icons when a `QStyle.StandardPixmap` is provided.
+- Added [emwy_tools/track_runner/ui/app_shell.py](emwy_tools/track_runner/ui/app_shell.py): `AppShell(QMainWindow)` base class; applies system theme on init; exposes `toggle_theme()` and `set_theme(mode)`.
+- Added [emwy_tools/track_runner/ui/workspace.py](emwy_tools/track_runner/ui/workspace.py): `AnnotationWindow(AppShell)` with `FrameView` as central widget; mode toolbar with mutually-exclusive Seed/Target/Edit `QActionGroup`; mode accent colors: Seed=`#0D9488`, Target=`#3B82F6`, Edit=`#8B5CF6`; saves window geometry to `QSettings` on close; `run()` enters the Qt event loop.
+- Added [emwy_tools/track_runner/ui/status_presenter.py](emwy_tools/track_runner/ui/status_presenter.py): `StatusPresenter` QLabel showing `"Seed N/M  frame F  T.Ts  STATUS [conf S (L)]"`; per-status colors: visible=`#22C55E`, partial=`#F59E0B`, obstructed=`#F97316`, not_in_frame=`#94A3B8`.
+- Added [emwy_tools/track_runner/ui/seed_controller.py](emwy_tools/track_runner/ui/seed_controller.py): `SeedController(QObject)` replaces the `cv2.namedWindow` while-loop in `collect_seeds()`; QObject event filter on window and viewport handles keyboard (ESC/q=quit, SPACE=skip, LEFT/RIGHT=navigate, N=not_in_frame, P=partial, F=fwd_bwd_avg, A=approx_obstruction) and mouse drag for drawing boxes; FWD/BWD prediction boxes rendered as `RectItem` overlays; `ScaleBarItem` updated via `QTimer.singleShot` after wheel events.
+- Added [emwy_tools/track_runner/ui/target_controller.py](emwy_tools/track_runner/ui/target_controller.py): `TargetController(SeedController)` subclass for `collect_seeds_at_frames()` with `pass_number=2` and `mode_str="suggested_refine"` defaults.
+- Added [emwy_tools/track_runner/ui/edit_controller.py](emwy_tools/track_runner/ui/edit_controller.py): `EditController(QObject)` replaces the `cv2.namedWindow` while-loop in `seed_editor.edit_seeds()`; keys: ESC/q=quit, SPACE/RIGHT=keep, LEFT=prev, D=delete, N=not_in_frame, P=partial, A=approx_obstruction, Y=YOLO polish, F=consensus polish, Z=zoom; `_YoloLoaderThread(QThread)` lazily loads YOLO weights on first `y` press; `_show_polish_preview()` adds a `PreviewBoxItem`; SPACE accepts pending polish; any other key rejects it; every committed op calls `save_callback` immediately for atomic mid-session persistence.
+- Added `validate_seed()` to [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py): raises `ValueError` if `status == "obstructed"` and `torso_box` is absent. Called in `write_seeds()` before serialization.
+- Added `a` key for positioned obstruction in seed and edit UIs. Draws a bounding box saved as `status: "obstructed"` with `torso_box`; replaces the old `o` key shortcut.
+- Added `pyside6` to [pip_requirements.txt](pip_requirements.txt) and updated [docs/INSTALL.md](docs/INSTALL.md) with PySide6 6.x dependency note.
+- Added [docs/EMWY_TOOLS_MODULE_LAYOUT.md](docs/EMWY_TOOLS_MODULE_LAYOUT.md): documents track_runner/ui/ split philosophy, promotion rule (2+ consumers), naming conventions, and non-goals.
+
+### Behavior or Interface Changes
+- `collect_seeds()` in [emwy_tools/track_runner/seeding.py](emwy_tools/track_runner/seeding.py) now uses `SeedController` + `AnnotationWindow` instead of a `cv2.namedWindow` while-loop. Behavior and keybindings preserved; window is now a native Qt window with dark theme and zoom.
+- `collect_seeds_at_frames()` in [emwy_tools/track_runner/seeding.py](emwy_tools/track_runner/seeding.py) now uses `TargetController` + `AnnotationWindow`.
+- `edit_seeds()` in [emwy_tools/track_runner/seed_editor.py](emwy_tools/track_runner/seed_editor.py) now uses `EditController` + `AnnotationWindow`. Added `save_callback` parameter so callers can supply a write-through save function; each committed seed edit calls it immediately.
+- `write_seeds()` in [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py) upgraded to atomic write: uses `tempfile.mkstemp()` + `os.replace()` so the seeds file is never partially written.
+- Removed all `cv2.destroyAllWindows()` calls from seeding and seed_editor modules. Window lifecycle is now managed by the Qt event loop.
+
+### Decisions and Failures
+- Chose QObject event filter pattern over subclassing `QWidget.keyPressEvent` to keep controllers decoupled from the window hierarchy. Controllers install themselves on the window and viewport and can be swapped per mode without modifying `AnnotationWindow`.
+- Chose `QApplication.instance() or QApplication([])` guard so `collect_seeds()` can be called multiple times in the same process without crashing on a second `QApplication` construction.
+- Positioned obstruction (`a` key) stores `torso_box` as the drawn box with no `jersey_hsv`, distinguishing it from legacy obstructed seeds that had no positional data.
+
 ## 2026-03-11
 
 ### Additions and New Features

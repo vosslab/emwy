@@ -4,6 +4,7 @@ numpy
 opencv-python
 pillow
 pyflakes
+pyside6  # Qt framework for annotation UI
 pyyaml
 scipy
 textual
