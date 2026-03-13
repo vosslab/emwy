@@ -18,8 +18,8 @@ import numpy
 # local repo modules
 import config
 import detection
-import emwy_yaml_writer
-import tools_common
+import common_tools.emwy_yaml_writer as emwy_yaml_writer
+import common_tools.tools_common as tools_common
 
 #============================================
 

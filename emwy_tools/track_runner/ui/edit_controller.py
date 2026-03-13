@@ -9,6 +9,7 @@ of existing seeds. Handles keyboard shortcuts and mouse drawing.
 
 # PIP3 modules
 from PySide6.QtCore import QObject, Qt, QTimer, QThread
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QPushButton
 import numpy
 
 # local repo modules
@@ -136,8 +137,78 @@ class EditController(QObject):
 		self._yolo_thread: object = None
 		self._approx_mode: bool = False
 
+		# Current seed being reviewed
+		self._current_seed: dict | None = None
+
+		# Toolbar widgets
+		self._toolbar_widget: QWidget | None = None
+		self._btn_partial: QPushButton | None = None
+		self._btn_approx: QPushButton | None = None
+
 		# Session state
 		self._done = False
+
+	#============================================
+
+	@property
+	def toolbar_widget(self) -> QWidget | None:
+		"""Toolbar widget for the annotation toolbar.
+
+		Returns:
+			QWidget with navigation and draw mode buttons, or None.
+		"""
+		return self._toolbar_widget
+
+	#============================================
+
+	def _build_toolbar(self) -> QWidget:
+		"""Build the toolbar widget with nav and draw mode buttons.
+
+		Returns:
+			QWidget containing prev/next and draw mode buttons.
+		"""
+		widget = QWidget()
+		layout = QHBoxLayout(widget)
+		layout.setContentsMargins(4, 0, 4, 0)
+		layout.setSpacing(4)
+
+		# Navigation buttons
+		btn_prev = QPushButton("<  Prev")
+		btn_prev.setToolTip("Previous seed (LEFT or Shift+LEFT when zoomed)")
+		btn_prev.clicked.connect(self._on_prev)
+		layout.addWidget(btn_prev)
+
+		btn_keep = QPushButton("Keep  >")
+		btn_keep.setToolTip("Keep seed and advance (SPACE or RIGHT)")
+		btn_keep.clicked.connect(self._on_keep)
+		layout.addWidget(btn_keep)
+
+		# Separator space
+		layout.addSpacing(12)
+
+		# Draw mode toggle buttons (checkable for visual state)
+		self._btn_partial = QPushButton("Partial")
+		self._btn_partial.setCheckable(True)
+		self._btn_partial.setToolTip("Toggle partial draw mode (P)")
+		self._btn_partial.clicked.connect(self._on_partial_mode)
+		layout.addWidget(self._btn_partial)
+
+		self._btn_approx = QPushButton("Approx")
+		self._btn_approx.setCheckable(True)
+		self._btn_approx.setToolTip("Toggle approx/obstruction draw mode (A)")
+		self._btn_approx.clicked.connect(self._on_approx_toggle)
+		layout.addWidget(self._btn_approx)
+
+		return widget
+
+	#============================================
+
+	def _sync_toolbar_buttons(self) -> None:
+		"""Sync toolbar button checked state with internal mode flags."""
+		if self._btn_partial is not None:
+			self._btn_partial.setChecked(self._partial_mode)
+		if self._btn_approx is not None:
+			self._btn_approx.setChecked(self._approx_mode)
 
 	#============================================
 
@@ -149,8 +220,14 @@ class EditController(QObject):
 		"""
 		self._window = window
 
+		# Build toolbar widget
+		self._toolbar_widget = self._build_toolbar()
+
 		# Install event filter for keyboard and mouse events
+		# Filter on window and frame_view for key events,
+		# and on viewport for mouse events
 		self._window.installEventFilter(self)
+		self._window.get_frame_view().installEventFilter(self)
 		viewport = self._window.get_frame_view().viewport()
 		viewport.installEventFilter(self)
 
@@ -163,6 +240,14 @@ class EditController(QObject):
 		toolbar_widget = self._status_presenter.get_widget()
 		window.statusBar().addWidget(toolbar_widget)
 
+		# Show keybinding instructions in the window title
+		keybindings = (
+			"  [SPACE/R=keep  L=prev(Shift when zoomed)  D=delete  "
+			"N=not_in_frame  P=partial  A=approx  "
+			"Y=YOLO  F=consensus  ESC/q=done]"
+		)
+		window.setWindowTitle(window.windowTitle() + keybindings)
+
 		# Load and display the first frame
 		self._load_current_seed()
 
@@ -172,6 +257,7 @@ class EditController(QObject):
 		"""Deactivate the controller and disconnect from window events."""
 		if self._window is not None:
 			self._window.removeEventFilter(self)
+			self._window.get_frame_view().removeEventFilter(self)
 			viewport = self._window.get_frame_view().viewport()
 			viewport.removeEventFilter(self)
 
@@ -217,7 +303,8 @@ class EditController(QObject):
 
 		if event.type() == QEventType.Type.KeyPress:
 			key = event.key()
-			if self.handle_key_press(key):
+			modifiers = event.modifiers()
+			if self.handle_key_press(key, modifiers):
 				return True
 		elif event.type() == QEventType.Type.MouseButtonPress:
 			if isinstance(event, QMouseEvent):
@@ -244,9 +331,12 @@ class EditController(QObject):
 				self.handle_mouse_release(sx, sy)
 				return True
 		elif event.type() == QEventType.Type.Wheel:
-			# Update scale bar after zoom changes
+			# Delegate wheel to the FrameView so zoom works when filter
+			# is installed on the viewport
+			frame_view = self._window.get_frame_view()
+			frame_view.wheelEvent(event)
 			QTimer.singleShot(0, self._update_scale_bar)
-			return False
+			return True
 
 		return super().eventFilter(obj, event)
 
@@ -260,6 +350,7 @@ class EditController(QObject):
 
 		seed_list_idx = self._filtered_indices[self._nav_idx]
 		seed = self._work_seeds[seed_list_idx]
+		self._current_seed = seed
 		frame_idx = int(seed["frame_index"])
 
 		# Read the frame
@@ -392,15 +483,21 @@ class EditController(QObject):
 
 	#============================================
 
-	def handle_key_press(self, key: int) -> bool:
+	def handle_key_press(self, key: int, modifiers: object = None) -> bool:
 		"""Handle keyboard events.
 
 		Args:
 			key: Qt key code.
+			modifiers: Qt keyboard modifiers (for detecting Shift, etc.).
 
 		Returns:
 			True if event was handled.
 		"""
+		# Check for Shift modifier on arrow keys for frame advance
+		shift_held = False
+		if modifiers is not None:
+			shift_held = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+
 		# Reject polish preview on any non-SPACE key
 		if self._polish_mode == "pending" and key != Qt.Key.Key_Space:
 			self._clear_polish_preview()
@@ -409,15 +506,31 @@ class EditController(QObject):
 		if key == Qt.Key.Key_Escape or key == Qt.Key.Key_Q:
 			self._on_quit()
 			return True
-		elif key == Qt.Key.Key_Space or key == Qt.Key.Key_Right:
+		elif key == Qt.Key.Key_Space:
 			if self._polish_mode == "pending":
 				self._on_accept_polish()
 				return True
 			self._on_keep()
 			return True
+		elif key == Qt.Key.Key_Right:
+			# Shift+Right always advances; bare Right advances at 1x, pans when zoomed
+			is_zoomed = self._window.get_frame_view().get_zoom_factor() > 1.05
+			if shift_held or not is_zoomed:
+				if self._polish_mode == "pending":
+					self._on_accept_polish()
+					return True
+				self._on_keep()
+				return True
+			# Bare Right when zoomed = let QGraphicsView pan
+			return False
 		elif key == Qt.Key.Key_Left:
-			self._on_prev()
-			return True
+			# Shift+Left always advances; bare Left advances at 1x, pans when zoomed
+			is_zoomed = self._window.get_frame_view().get_zoom_factor() > 1.05
+			if shift_held or not is_zoomed:
+				self._on_prev()
+				return True
+			# Bare Left when zoomed = let QGraphicsView pan
+			return False
 		elif key == Qt.Key.Key_D:
 			self._on_delete()
 			return True
@@ -545,7 +658,7 @@ class EditController(QObject):
 		Args:
 			box: Box as [x, y, w, h].
 		"""
-		from emwy_tools.track_runner import seeding as seeding_module
+		import seeding as seeding_module
 
 		seed_list_idx = self._filtered_indices[self._nav_idx]
 		seed = self._work_seeds[seed_list_idx]
@@ -553,7 +666,8 @@ class EditController(QObject):
 
 		if self._approx_mode:
 			self._approx_mode = False
-			# Build obstructed seed with position box
+			self._update_mode_badge()
+			# Build approximate seed with approx area box
 			norm_box = seeding_module.normalize_seed_box(box, self._config)
 			tx, ty, tw, th = norm_box
 			cx = float(tx + tw / 2.0)
@@ -562,7 +676,7 @@ class EditController(QObject):
 				"frame_index": frame_idx,
 				"frame": frame_idx,
 				"time_s": seed.get("time_s", round(frame_idx / self._fps, 3)),
-				"status": "obstructed",
+				"status": "approximate",
 				"torso_box": norm_box,
 				"cx": cx,
 				"cy": cy,
@@ -584,6 +698,7 @@ class EditController(QObject):
 
 		if self._partial_mode:
 			self._partial_mode = False
+			self._update_mode_badge()
 			norm_box = seeding_module.normalize_seed_box(box, self._config)
 			jersey_hsv = seeding_module.extract_jersey_color(
 				self._current_bgr, norm_box
@@ -687,16 +802,54 @@ class EditController(QObject):
 	#============================================
 
 	def _on_partial_mode(self) -> None:
-		"""Enter partial mode for redrawing torso box."""
-		self._partial_mode = True
-		print("  partial mode: draw the runner's torso box")
+		"""Toggle partial mode for redrawing torso box."""
+		if self._partial_mode:
+			self._partial_mode = False
+			self._update_mode_badge()
+			print("  partial mode cancelled")
+		else:
+			self._partial_mode = True
+			self._approx_mode = False
+			self._update_mode_badge()
+			print("  partial mode: draw the runner's torso box (press p again to cancel)")
 
 	#============================================
 
 	def _on_zoom_toggle(self) -> None:
-		"""Toggle zoom level."""
-		# Delegate to frame_view zoom; update scale bar after
-		QTimer.singleShot(0, self._update_scale_bar)
+		"""Cycle through zoom levels (1x -> 1.5x -> 2.25x -> 3.375x -> 1x).
+
+		Centers zoom on the current seed position when available,
+		otherwise centers on the frame center.
+		"""
+		zoom_levels = [1.0, 1.5, 2.25, 3.375]
+		frame_view = self._window.get_frame_view()
+		current = frame_view.get_zoom_factor()
+		# find the next zoom level in the cycle
+		next_zoom = zoom_levels[0]
+		for zf in zoom_levels:
+			if zf > current + 0.01:
+				next_zoom = zf
+				break
+
+		# determine zoom center from current seed or frame center
+		center_x = -1.0
+		center_y = -1.0
+		if next_zoom > 1.0:
+			# try to center on current seed position
+			if self._current_seed is not None:
+				cx = self._current_seed.get("cx")
+				cy = self._current_seed.get("cy")
+				if cx is not None and cy is not None:
+					center_x = float(cx)
+					center_y = float(cy)
+			# fallback to frame center
+			if center_x < 0 and self._current_bgr is not None:
+				h, w = self._current_bgr.shape[:2]
+				center_x = w / 2.0
+				center_y = h / 2.0
+
+		frame_view.set_zoom(next_zoom, center_x, center_y)
+		self._update_scale_bar()
 
 	#============================================
 
@@ -872,12 +1025,35 @@ class EditController(QObject):
 		"""Toggle approximated obstruction mode."""
 		if self._approx_mode:
 			self._approx_mode = False
-			self._status_presenter.get_widget().setText("Approx cancelled")
+			self._update_mode_badge()
+			print("  approx mode cancelled")
 		else:
 			self._approx_mode = True
-			self._status_presenter.get_widget().setText(
-				"Approx mode: draw the obstruction region"
+			self._partial_mode = False
+			self._update_mode_badge()
+			print("  approx mode: draw approximate box for obstructed position")
+
+	#============================================
+
+	def _update_mode_badge(self) -> None:
+		"""Update the status bar to show active draw mode (partial/approx)."""
+		self._sync_toolbar_buttons()
+		if self._window is None:
+			return
+		status_widget = self._status_presenter.get_widget()
+		if self._approx_mode:
+			self._window.statusBar().setStyleSheet(
+				"background-color: #F97316; color: #000000; font-weight: bold;"
 			)
+			status_widget.setText("** APPROX MODE ** draw approximate box (press 'a' to cancel)")
+		elif self._partial_mode:
+			self._window.statusBar().setStyleSheet(
+				"background-color: #F59E0B; color: #000000; font-weight: bold;"
+			)
+			status_widget.setText("** PARTIAL MODE ** draw visible torso (press 'p' to cancel)")
+		else:
+			self._window.statusBar().setStyleSheet("")
+			self._update_status_presenter()
 
 	#============================================
 

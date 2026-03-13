@@ -292,6 +292,113 @@ def test_scoring_score_interval_returns_expected_keys() -> None:
 		assert key in result, f"missing key: {key}"
 
 
+#============================================
+def test_classify_confidence_short_interval_promotes_one_tier() -> None:
+	"""3-frame interval with fair metrics promotes to good."""
+	import track_runner.scoring as scoring_mod
+	confidence, reasons = scoring_mod.classify_confidence(
+		agreement=0.35, identity=0.8, margin=0.6,
+		interval_length=3,
+	)
+	# without short-interval promotion this would be "fair"
+	assert confidence == "good"
+
+
+#============================================
+def test_classify_confidence_short_interval_low_to_fair() -> None:
+	"""2-frame interval with low metrics promotes from low to fair."""
+	import track_runner.scoring as scoring_mod
+	confidence, reasons = scoring_mod.classify_confidence(
+		agreement=0.15, identity=0.8, margin=0.15,
+		interval_length=2,
+	)
+	# without promotion this would be "low"
+	assert confidence == "fair"
+
+
+#============================================
+def test_classify_confidence_long_interval_unchanged() -> None:
+	"""100-frame interval does not get short-interval promotion."""
+	import track_runner.scoring as scoring_mod
+	confidence, reasons = scoring_mod.classify_confidence(
+		agreement=0.35, identity=0.8, margin=0.6,
+		interval_length=100,
+	)
+	assert confidence == "fair"
+
+
+#============================================
+def test_classify_confidence_short_high_stays_high() -> None:
+	"""3-frame interval already at high does not double-promote."""
+	import track_runner.scoring as scoring_mod
+	confidence, reasons = scoring_mod.classify_confidence(
+		agreement=0.8, identity=0.9, margin=0.8,
+		interval_length=3,
+	)
+	assert confidence == "high"
+
+
+#============================================
+def test_approx_seed_included_in_usable() -> None:
+	"""Approximate seed is included in usable seeds filter."""
+	# replicate the filter logic from solve_all_intervals
+	seeds = [
+		{"status": "visible", "frame_index": 0, "cx": 1, "cy": 1, "w": 1, "h": 1, "conf": 1.0, "pass": 1},
+		{"status": "approximate", "frame_index": 10, "cx": 2, "cy": 2, "w": 2, "h": 2,
+			"torso_box": [10, 20, 30, 40], "conf": None, "pass": 1},
+		{"status": "not_in_frame", "frame_index": 20, "pass": 1},
+	]
+	usable = [
+		s for s in seeds
+		if s["status"] in ("visible", "partial", "approximate")
+	]
+	assert len(usable) == 2
+	assert usable[1]["status"] == "approximate"
+
+
+#============================================
+def test_not_in_frame_seed_excluded_from_usable() -> None:
+	"""Not-in-frame seed is excluded from usable seeds."""
+	seeds = [
+		{"status": "not_in_frame", "frame_index": 5, "pass": 1},
+	]
+	usable = [
+		s for s in seeds
+		if s["status"] in ("visible", "partial", "approximate")
+	]
+	assert len(usable) == 0
+
+
+#============================================
+def test_trajectory_erasure_all_drawing_modes() -> None:
+	"""_apply_trajectory_erasure erases approx and not_in_frame, keeps visible and partial."""
+	import track_runner.interval_solver as solver
+	fps = 30.0
+	# build a trajectory of 500 frames with dummy data
+	trajectory = [{"cx": 1.0}] * 500
+	# all four drawing modes
+	seeds = [
+		# visible: precise torso box, fully visible -- keep
+		{"status": "visible", "frame_index": 50},
+		# partial: precise torso box, partially hidden -- keep
+		{"status": "partial", "frame_index": 100},
+		# approximate: larger approx area, uncertain position -- erase
+		{"status": "approximate", "frame_index": 200, "torso_box": [10, 20, 30, 40]},
+		# not_in_frame: runner off-screen -- erase
+		{"status": "not_in_frame", "frame_index": 400},
+	]
+	# pass ALL seeds; function decides what to erase
+	result = solver._apply_trajectory_erasure(trajectory, seeds, fps)
+	# visible at 50: NOT erased
+	assert result[50] is not None
+	# partial at 100: NOT erased
+	assert result[100] is not None
+	# approximate at 200: erased (uncertain position)
+	assert result[200] is None
+	# not_in_frame at 400: erased (off-screen)
+	assert result[400] is None
+
+
 # ============================================================
 # propagator tests
 # ============================================================

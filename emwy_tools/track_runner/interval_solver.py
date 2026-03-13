@@ -602,49 +602,95 @@ def _print_interval_result_rich(
 	progress.console.print(_format_interval_result(result, fps))
 
 
-# erase radius in seconds around absence seeds (no position data)
-ABSENCE_ERASE_RADIUS_S = 1.0    # seconds to erase around not_in_frame
-OBSTRUCTED_ERASE_RADIUS_S = 0.5  # seconds to erase around obstructed
+# erase radius in seconds for trajectory erasure
+APPROX_ERASE_RADIUS_S = 0.5     # seconds to erase around approx seeds
+NOT_IN_FRAME_ERASE_RADIUS_S = 1.0  # seconds to erase around not_in_frame seeds
 
 
 #============================================
-def _apply_absence_erasure(
+def _apply_trajectory_erasure(
 	trajectory: list,
-	absence_seeds: list,
+	seeds: list,
 	fps: float,
 ) -> list:
-	"""Erase trajectory frames near absence seeds.
+	"""Erase trajectory near seeds that lack accurate position data.
 
-	For each absence seed (not_in_frame or obstructed without position data),
-	sets trajectory frames within the erase radius to None. Partial seeds
-	are NOT erased because they have reliable position data.
+	Callers pass ALL seeds; this function decides what to erase based
+	on the four drawing modes:
+
+	- visible: precise torso box, fully visible runner. NO erasure.
+	- partial: precise torso box, partially hidden but position known.
+	  NO erasure.
+	- approximate: larger approx area where the runner is believed to
+	  be (fully hidden behind obstruction). Erase within
+	  APPROX_ERASE_RADIUS_S. Position is uncertain.
+	- not_in_frame: runner completely outside the frame. Erase within
+	  NOT_IN_FRAME_ERASE_RADIUS_S. No position data at all.
+
+	Legacy seeds with status "obstructed" are treated the same as
+	"approximate".
 
 	Args:
 		trajectory: List of tracking state dicts (or None) indexed by frame.
-		absence_seeds: List of seed dicts with status not_in_frame or obstructed.
+		seeds: List of all seed dicts (any status).
 		fps: Video frame rate for converting seconds to frames.
 
 	Returns:
 		The modified trajectory list (same object, modified in place).
 	"""
 	n = len(trajectory)
-	for seed in absence_seeds:
+	erase_count = 0
+	for seed in seeds:
 		status = seed.get("status", "")
-		# only erase for seeds without position data
-		if status not in ("not_in_frame", "obstructed"):
+		# visible: precise torso box, fully visible -- keep
+		if status == "visible":
 			continue
-		# choose erase radius based on status
-		if status == "not_in_frame":
-			radius_frames = int(round(ABSENCE_ERASE_RADIUS_S * fps))
+		# partial: precise torso box, position known -- keep
+		if status == "partial":
+			continue
+		# approximate (or legacy "obstructed"): uncertain position -- erase
+		if status in ("approximate", "obstructed"):
+			radius_frames = int(round(APPROX_ERASE_RADIUS_S * fps))
+		# not_in_frame: runner off-screen -- erase
+		elif status == "not_in_frame":
+			radius_frames = int(round(NOT_IN_FRAME_ERASE_RADIUS_S * fps))
 		else:
-			radius_frames = int(round(OBSTRUCTED_ERASE_RADIUS_S * fps))
+			# unknown status, skip safely
+			continue
+		erase_count += 1
 		seed_frame = int(seed["frame_index"])
 		# erase frames within the radius
 		erase_start = max(0, seed_frame - radius_frames)
 		erase_end = min(n - 1, seed_frame + radius_frames)
 		for fi in range(erase_start, erase_end + 1):
 			trajectory[fi] = None
+	if erase_count > 0:
+		print(f"  erasing trajectory near {erase_count} seeds")
 	return trajectory
+
+
+#============================================
+def _prepare_usable_seed(seed: dict) -> dict:
+	"""Copy seed and set default conf=0.3 for approx seeds.
+
+	When a runner is fully hidden, the user draws a larger approx area
+	indicating the general region. This guides the solver through the
+	gap but confidence is low because the exact position is unknown.
+
+	Args:
+		seed: Seed dict, possibly with status "approximate" or legacy
+			"obstructed".
+
+	Returns:
+		Original seed if not approx, or a copy with conf=0.3 if
+		approx and conf was not already set.
+	"""
+	if seed["status"] in ("approximate", "obstructed") and seed.get("conf") is None:
+		prepared = dict(seed)
+		# approx area, uncertain position -- lower confidence
+		prepared["conf"] = 0.3
+		return prepared
+	return seed
 
 
 #============================================
@@ -694,10 +740,16 @@ def solve_all_intervals(
 	info = reader.get_info()
 	fps = float(info.get("fps", 30.0))
 
-	# filter to usable seeds (visible + partial have position data)
+	# filter to usable seeds for interval endpoint solving:
+	# - visible: precise torso box, fully visible runner
+	# - partial: precise torso box, partially hidden but position known
+	# - approximate (or legacy obstructed with torso_box): uncertain position,
+	#   guides solver through gap as weak endpoint
+	# not_in_frame and legacy obstructed without torso_box are excluded
 	usable_seeds = [
-		s for s in seeds
-		if s["status"] in ("visible", "partial")
+		_prepare_usable_seed(s) for s in seeds
+		if s["status"] in ("visible", "partial", "approximate")
+		or (s["status"] == "obstructed" and s.get("torso_box") is not None)
 	]
 
 	if len(usable_seeds) < 2:
@@ -830,11 +882,6 @@ def solve_all_intervals(
 	if num_workers > 1 and new_count > 1:
 		# get video_path from reader for spawning worker readers
 		video_path = reader.video_path
-		# compute total frames across new intervals for progress bar
-		total_frames = 0
-		for ui in new_indices:
-			s_start, s_end = all_pairs[ui]
-			total_frames += int(s_end["frame_index"]) - int(s_start["frame_index"])
 		# cap actual workers to new interval count
 		actual_workers = min(num_workers, new_count)
 		print(f"  solving {new_count} intervals ({actual_workers} workers)...")
@@ -855,8 +902,9 @@ def solve_all_intervals(
 					appearance_model, config, w_idx,
 				)
 				future_to_pair_idx[future] = ui
-			# poll shared counter for frame-level progress instead of
-			# blocking on as_completed() with interval-level granularity
+			# track progress by intervals completed (not frames)
+			# frame-level tracking has off-by-one issues with 1-frame intervals
+			# because propagator includes both endpoints
 			parallel_results = {}
 			collected = set()
 			done_count = 0
@@ -866,8 +914,8 @@ def solve_all_intervals(
 				rich.progress.TaskProgressColumn(),
 				rich.progress.TimeRemainingColumn(),
 			) as progress:
-				frame_task = progress.add_task(
-					"  frames processed", total=total_frames,
+				interval_task = progress.add_task(
+					"  intervals solved", total=new_count,
 				)
 				last_wall_print = time.time()
 				try:
@@ -882,7 +930,7 @@ def solve_all_intervals(
 								done_count += 1
 								# persist to disk
 								_persist_and_notify(pair_idx, result)
-								# print interval result and completion count
+								# print interval result
 								_print_interval_result_rich(result, fps, progress)
 								if on_interval_complete is not None:
 									on_interval_complete(result)
@@ -894,28 +942,20 @@ def solve_all_intervals(
 										f"{result['end_frame']} done "
 										f"({n_frames} frames, {elapsed:.1f}s wall)"
 									)
-								progress.console.print(
-									f"  intervals complete: "
-									f"{done_count}/{new_count}"
+								# update interval-level progress bar
+								progress.update(
+									interval_task, completed=done_count,
 								)
-						# update frame-level progress from shared counter
-						# cap at 99% until all futures are collected
-						current_frames = frame_counter.value
-						if done_count < new_count:
-							current_frames = min(
-								current_frames, total_frames - 1,
-							)
-						progress.update(
-							frame_task, completed=current_frames,
-						)
 						# print wall time and throughput every 30 seconds
 						now = time.time()
 						if now - last_wall_print >= 30.0:
 							elapsed = now - t_start
+							current_frames = frame_counter.value
 							fps_rate = current_frames / max(0.1, elapsed)
 							progress.console.print(
 								f"  wall time {elapsed:.0f}s  "
-								f"frames={current_frames}/{total_frames}  "
+								f"intervals={done_count}/{new_count}  "
+								f"frames={current_frames}  "
 								f"({fps_rate:.1f} frames/s)"
 							)
 							last_wall_print = now
@@ -930,7 +970,7 @@ def solve_all_intervals(
 					raise
 				# all futures collected: set progress to 100%
 				progress.update(
-					frame_task, completed=total_frames,
+					interval_task, completed=new_count,
 				)
 		# merge prior and newly solved results in original order
 		for pair_idx in range(total_intervals):
@@ -982,14 +1022,8 @@ def solve_all_intervals(
 	# stitch all intervals into full trajectory
 	trajectory = stitch_trajectories(interval_results)
 
-	# erase trajectory frames near absence seeds (not_in_frame, obstructed)
-	absence_seeds = [
-		s for s in seeds
-		if s.get("status", "") in ("not_in_frame", "obstructed")
-	]
-	if absence_seeds:
-		print(f"  erasing trajectory near {len(absence_seeds)} absence seeds")
-		trajectory = _apply_absence_erasure(trajectory, absence_seeds, fps)
+	# erase trajectory near absence seeds (function decides which seeds to erase)
+	trajectory = _apply_trajectory_erasure(trajectory, seeds, fps)
 
 	output = {
 		"intervals": interval_results,

@@ -335,10 +335,8 @@ def _validate_diagnostics_confidence(diagnostics: dict) -> None:
 		diagnostics: Dict with "intervals" key.
 	"""
 	for iv in diagnostics.get("intervals", []):
-		# confidence may be nested under interval_score (in-memory)
-		# or at top level (diagnostics file)
 		score = iv["interval_score"]
-		if "confidence" not in score and "confidence" not in iv:
+		if "confidence" not in score:
 			raise RuntimeError(
 				"diagnostics missing confidence data. "
 				"Run 'solve' to regenerate."
@@ -613,13 +611,13 @@ def _validate_usable_seeds(seeds: list) -> tuple:
 	not_in_frame_count = sum(
 		1 for s in seeds if s.get("status") == "not_in_frame"
 	)
-	obstructed_count = sum(
-		1 for s in seeds if s.get("status") == "obstructed"
+	approx_count = sum(
+		1 for s in seeds if s.get("status") in ("approximate", "obstructed")
 	)
-	if not_in_frame_count > 0 or obstructed_count > 0 or partial_count > 0:
+	if not_in_frame_count > 0 or approx_count > 0 or partial_count > 0:
 		print(f"  seed status breakdown: "
 			f"{visible_count} visible, {partial_count} partial, "
-			f"{not_in_frame_count} not_in_frame, {obstructed_count} obstructed")
+			f"{approx_count} approx, {not_in_frame_count} not_in_frame")
 	return (usable_seeds, visible_count, partial_count)
 
 
@@ -707,6 +705,28 @@ def _mode_seed(
 		pass_number = max(existing_passes) + 1
 	else:
 		pass_number = 1
+	# load predictions from diagnostics or solved intervals if available
+	predictions = None
+	diag_path = state_io.default_diagnostics_path(args.input_file)
+	intervals_path = state_io.default_intervals_path(args.input_file)
+	if os.path.isfile(diag_path):
+		diag_data = state_io.load_diagnostics(diag_path)
+		if diag_data.get("intervals"):
+			predictions = _build_predictions_from_diagnostics(diag_data)
+			if predictions:
+				print(f"  loaded predictions for {len(predictions)} frames")
+	if not predictions and os.path.isfile(intervals_path):
+		intervals_file = state_io.load_intervals(intervals_path)
+		solved_intervals = intervals_file.get("solved_intervals", {})
+		if solved_intervals:
+			intervals_list = list(solved_intervals.values())
+			predictions = _build_predictions_from_diagnostics(
+				{"intervals": intervals_list}
+			)
+			if predictions:
+				print(f"  loaded predictions for {len(predictions)} frames "
+					"(from solved intervals)")
+
 	# seed collection
 	print(f"launching seed collection (pass {pass_number})...")
 	seeds = seeding.collect_seeds(
@@ -719,6 +739,7 @@ def _mode_seed(
 		debug=args.debug,
 		save_callback=_make_save_callback(seeds_path),
 		time_range=time_range,
+		predictions=predictions,
 	)
 	if not seeds:
 		raise RuntimeError("no seeds collected")
@@ -1075,19 +1096,15 @@ def _mode_encode(
 	)
 	trajectory = interval_solver.stitch_trajectories(interval_results)
 
-	# apply absence erasure from seeds (not_in_frame, obstructed)
+	# apply absence erasure from seeds (function decides which seeds to erase)
 	seeds_path = state_io.default_seeds_path(args.input_file)
 	if os.path.isfile(seeds_path):
 		seeds_data = state_io.load_seeds(seeds_path)
-		absence_seeds = [
-			s for s in seeds_data.get("seeds", [])
-			if s.get("status", "") in ("not_in_frame", "obstructed")
-		]
-		if absence_seeds:
-			fps = float(diag_data.get("fps", video_info["fps"]))
-			trajectory = interval_solver._apply_absence_erasure(
-				trajectory, absence_seeds, fps,
-			)
+		all_seeds = seeds_data.get("seeds", [])
+		fps = float(diag_data.get("fps", video_info["fps"]))
+		trajectory = interval_solver._apply_trajectory_erasure(
+			trajectory, all_seeds, fps,
+		)
 
 	if not trajectory:
 		raise RuntimeError(

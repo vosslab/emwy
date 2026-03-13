@@ -11,7 +11,7 @@ import numpy
 from PySide6.QtWidgets import QApplication
 
 # local repo modules
-import frame_reader
+import common_tools.frame_reader as frame_reader
 import ui.workspace as workspace_module
 import ui.seed_controller as seed_controller_module
 import ui.target_controller as target_controller_module
@@ -241,7 +241,7 @@ def _interactive_draw_box(
 	Returns:
 		Drawn box as [x, y, w, h], or "skip" if spacebar pressed,
 		or "prev"/"next" if left/right arrow pressed,
-		or "not_in_frame"/"obstructed" if n/o pressed,
+		or "not_in_frame" if n pressed,
 		or "partial" if p pressed,
 		or averaged FWD/BWD box as [x,y,w,h] if f pressed with sufficient overlap,
 		or None if ESC/q pressed to finish.
@@ -373,7 +373,7 @@ def _interactive_draw_box(
 		)
 		cv2.putText(
 			show,
-			"n=not in frame, o=obstructed, p=partial, f=FWD/BWD avg",
+			"n=not in frame, p=partial, a=approx, f=FWD/BWD avg",
 			(10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
 			(0, 255, 255), 2,
 		)
@@ -483,10 +483,7 @@ def _interactive_draw_box(
 		# n key: mark runner as not in frame
 		if key == 110:
 			return "not_in_frame"
-		# o key: mark runner as obstructed
-		if key == 111:
-			return "obstructed"
-		# p key: mark runner as partial (obstructed torso, but position known)
+		# p key: mark runner as partial (partially hidden, but position known)
 		if key == 112:
 			return "partial"
 		# check if mouse drawing finished
@@ -518,6 +515,7 @@ def collect_seeds(
 	debug: bool = False,
 	save_callback: object = None,
 	time_range: tuple | None = None,
+	predictions: dict | None = None,
 ) -> list:
 	"""Collect initial seed points for runner tracking (pass 1).
 
@@ -541,6 +539,8 @@ def collect_seeds(
 			seed is collected, for crash-safe incremental saving.
 		time_range: Optional (start_s, end_s) tuple to limit candidate frames.
 			Either value may be None for open-ended ranges.
+		predictions: Optional dict mapping frame_index to prediction dicts
+			with "forward"/"backward" state dicts for overlay display.
 
 	Returns:
 		List of seed dicts in v2 format (existing + newly collected).
@@ -632,6 +632,7 @@ def collect_seeds(
 		save_callback=save_callback,
 		pass_number=pass_number,
 		mode_str="initial",
+		predictions=predictions,
 	)
 	window.set_controller(controller)
 	window.show()
@@ -715,7 +716,7 @@ def collect_seeds_at_frames(
 		app = QApplication([])
 
 	# Create window and controller
-	window = AnnotationWindow("Track Runner - Target Collection")
+	window = AnnotationWindow("Track Runner - Target Collection", initial_mode="target")
 	controller = TargetController(
 		sorted_targets=sorted_targets,
 		reader=reader,

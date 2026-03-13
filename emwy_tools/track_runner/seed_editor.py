@@ -14,7 +14,7 @@ import numpy
 from PySide6.QtWidgets import QApplication
 
 # local repo modules
-import frame_reader
+import common_tools.frame_reader as frame_reader
 import seeding
 import ui.workspace as workspace_module
 import ui.edit_controller as edit_controller_module
@@ -32,8 +32,8 @@ def _draw_seed_overlay(
 ) -> None:
 	"""Draw an existing seed box on the frame with transparency.
 
-	For absence seeds (not_in_frame/obstructed), draws a status label
-	instead of a box.
+	For non-precise seeds (approximate/not_in_frame), draws a status
+	label instead of a box.
 
 	Args:
 		frame: BGR image to draw on (modified in place).
@@ -42,7 +42,7 @@ def _draw_seed_overlay(
 		alpha: Opacity for the overlay (0.0 = invisible, 1.0 = opaque).
 	"""
 	status = seed["status"]
-	if status in ("not_in_frame", "obstructed"):
+	if status in ("not_in_frame", "approximate", "obstructed"):
 		# draw status label in the center of the frame
 		h, w = frame.shape[:2]
 		label = f"[{status}]"
@@ -409,7 +409,7 @@ def edit_seeds(
 		seed_confidences=seed_confidences,
 		yolo_detector_list=yolo_detector,
 	)
-	window = AnnotationWindow("Track Runner - Seed Editor")
+	window = AnnotationWindow("Track Runner - Seed Editor", initial_mode="edit")
 	window.set_controller(controller)
 	window.show()
 	app.exec()

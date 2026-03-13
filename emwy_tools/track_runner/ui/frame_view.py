@@ -122,6 +122,24 @@ class FrameView(QGraphicsView):
 
 	#============================================
 
+	def set_zoom(self, factor: float, center_x: float = -1, center_y: float = -1) -> None:
+		"""
+		Set zoom to a specific factor, optionally centering on a scene point.
+
+		Args:
+			factor: Desired zoom factor (clamped to min/max).
+			center_x: Scene x coordinate to center on (-1 for no recentering).
+			center_y: Scene y coordinate to center on (-1 for no recentering).
+		"""
+		self.zoom_factor = max(self.min_zoom, min(self.max_zoom, factor))
+		self.setTransform(QTransform().scale(self.zoom_factor, self.zoom_factor))
+		# center the view on the requested scene point
+		if center_x >= 0 and center_y >= 0:
+			from PySide6.QtCore import QPointF
+			self.centerOn(QPointF(center_x, center_y))
+
+	#============================================
+
 	def get_zoom_factor(self) -> float:
 		"""
 		Get the current zoom scale factor.

@@ -477,6 +477,44 @@ def _box_to_crop_coords(
 
 
 #============================================
+def _compute_overlay_scale(
+	out_h: int,
+	box_h_px: float = 0.0,
+) -> float:
+	"""Compute a draw-scale factor for debug overlay elements.
+
+	Scales relative to 1080p as the reference resolution, then adjusts
+	down when the tracked box is small relative to the frame (zoomed out).
+
+	Args:
+		out_h: Output frame height in pixels.
+		box_h_px: Tracked box height in crop-space pixels (0 if unknown).
+
+	Returns:
+		Float scale factor (1.0 at 1080p with box filling ~30% of frame).
+	"""
+	# base scale: normalize to 1080p
+	res_scale = out_h / 1080.0
+	# box scale: how much of the frame the runner fills
+	if box_h_px > 0 and out_h > 0:
+		fill_ratio = box_h_px / out_h
+		# clamp: don't go below 0.3x or above 1.0x from box size
+		box_factor = max(0.3, min(1.0, fill_ratio / 0.3))
+	else:
+		box_factor = 0.5
+	scale = res_scale * box_factor
+	# floor at 0.25 so things stay visible on very small outputs
+	scale = max(0.25, scale)
+	return scale
+
+
+#============================================
+# overlay transparency: 0.0 = invisible, 1.0 = opaque
+_OVERLAY_ALPHA_BOXES = 0.55
+_OVERLAY_ALPHA_TEXT = 0.70
+
+
+#============================================
 def draw_debug_overlay_cropped(
 	frame: numpy.ndarray,
 	state: dict | None,
@@ -491,6 +529,10 @@ def draw_debug_overlay_cropped(
 	crop-space pixel coords. Draws accepted torso track (solid green),
 	forward/backward track boxes (dashed), competitor box (red), and
 	text labels for confidence, source, and interval ID.
+
+	All drawing elements scale with output resolution and tracked box
+	size, so overlays remain proportional whether zoomed in or out.
+	Boxes and text are drawn with transparency via alpha blending.
 
 	Args:
 		frame: BGR image (already cropped and resized to out_w x out_h).
@@ -507,10 +549,13 @@ def draw_debug_overlay_cropped(
 			- "interval_id": str like "150-450"
 	"""
 	if state is None:
-		# no tracking data for this frame
+		# no tracking data: scale text to output resolution
+		s = _compute_overlay_scale(out_h)
+		font_scale = max(0.3, 0.5 * s)
+		thickness = max(1, int(1.5 * s))
 		cv2.putText(
-			frame, "NO DATA", (10, 30),
-			cv2.FONT_HERSHEY_SIMPLEX, 0.7, _COLOR_LOST, 2,
+			frame, "NO DATA", (10, int(25 * s)),
+			cv2.FONT_HERSHEY_SIMPLEX, font_scale, _COLOR_LOST, thickness,
 		)
 		return
 
@@ -522,6 +567,37 @@ def draw_debug_overlay_cropped(
 	w = state.get("w")
 	h = state.get("h")
 
+	# compute box height in crop-space pixels for scale computation
+	box_h_px = 0.0
+	if h is not None:
+		crop_x, crop_y, crop_w, crop_h = crop_rect
+		scale_y = out_h / crop_h if crop_h > 0 else 1.0
+		box_h_px = h * scale_y
+
+	# compute drawing scale from resolution and box size
+	s = _compute_overlay_scale(out_h, box_h_px)
+
+	# scaled drawing parameters
+	# line thickness: 1px at small scale, up to 2-3px at full scale
+	thin_line = max(1, int(1.0 * s))
+	med_line = max(1, int(1.5 * s))
+	outline_line = max(1, int(2.5 * s))
+	# crosshair length scales with box size
+	cross_len = max(4, int(8 * s))
+	# text sizes
+	font_scale_large = max(0.25, 0.45 * s)
+	font_scale_med = max(0.2, 0.38 * s)
+	font_scale_small = max(0.2, 0.35 * s)
+	text_thick = max(1, int(1.2 * s))
+	# dash length for dashed rects
+	dash_len = max(4, int(8 * s))
+	# confidence bar dimensions
+	bar_w = max(30, int(70 * s))
+	bar_h = max(4, int(8 * s))
+	# text vertical positions
+	text_y1 = max(12, int(22 * s))
+	text_y2 = max(24, int(42 * s))
+
 	# resolve debug_state values safely
 	if debug_state is None:
 		debug_state = {}
@@ -531,74 +607,91 @@ def draw_debug_overlay_cropped(
 	confidence_label = debug_state.get("confidence_label", "")
 	interval_id = debug_state.get("interval_id", "")
 
+	# draw all boxes and crosshair on an overlay for alpha blending
+	overlay = frame.copy()
+
 	# draw dashed blue forward track box when available
 	if forward_box is not None:
 		fx1, fy1, fx2, fy2 = _box_to_crop_coords(forward_box, crop_rect, out_w, out_h)
-		_draw_dashed_rect(frame, fx1, fy1, fx2, fy2, _COLOR_FORWARD, thickness=2)
+		_draw_dashed_rect(overlay, fx1, fy1, fx2, fy2, _COLOR_FORWARD,
+			thickness=thin_line, dash_len=dash_len)
 
 	# draw dashed orange backward track box when available
 	if backward_box is not None:
 		bx1, by1, bx2, by2 = _box_to_crop_coords(backward_box, crop_rect, out_w, out_h)
-		_draw_dashed_rect(frame, bx1, by1, bx2, by2, _COLOR_BACKWARD, thickness=2)
+		_draw_dashed_rect(overlay, bx1, by1, bx2, by2, _COLOR_BACKWARD,
+			thickness=thin_line, dash_len=dash_len)
 
 	# draw red competitor box when present (low margin situation)
 	if competitor_box is not None:
 		rx1, ry1, rx2, ry2 = _box_to_crop_coords(competitor_box, crop_rect, out_w, out_h)
-		# black outline for contrast
-		cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (0, 0, 0), 4)
-		cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), _COLOR_COMPETITOR, 2)
+		cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2), (0, 0, 0), outline_line)
+		cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2), _COLOR_COMPETITOR, med_line)
 
 	# draw accepted torso track as solid green box
 	if cx is not None and cy is not None and w is not None and h is not None:
 		accepted_box = [cx, cy, w, h]
 		ax1, ay1, ax2, ay2 = _box_to_crop_coords(accepted_box, crop_rect, out_w, out_h)
 		# black outline for contrast against any background
-		cv2.rectangle(frame, (ax1, ay1), (ax2, ay2), (0, 0, 0), 5)
+		cv2.rectangle(overlay, (ax1, ay1), (ax2, ay2), (0, 0, 0), outline_line)
 		# solid green accepted track box
-		cv2.rectangle(frame, (ax1, ay1), (ax2, ay2), _COLOR_ACCEPTED, 3)
+		cv2.rectangle(overlay, (ax1, ay1), (ax2, ay2), _COLOR_ACCEPTED, med_line)
 		# crosshair at box center
 		cross_cx = int((ax1 + ax2) / 2)
 		cross_cy = int((ay1 + ay2) / 2)
-		cross_len = 12
-		cv2.line(frame, (cross_cx - cross_len, cross_cy), (cross_cx + cross_len, cross_cy), (0, 0, 0), 3)
-		cv2.line(frame, (cross_cx, cross_cy - cross_len), (cross_cx, cross_cy + cross_len), (0, 0, 0), 3)
-		cv2.line(frame, (cross_cx - cross_len, cross_cy), (cross_cx + cross_len, cross_cy), _COLOR_ACCEPTED, 1)
-		cv2.line(frame, (cross_cx, cross_cy - cross_len), (cross_cx, cross_cy + cross_len), _COLOR_ACCEPTED, 1)
+		cv2.line(overlay, (cross_cx - cross_len, cross_cy),
+			(cross_cx + cross_len, cross_cy), (0, 0, 0), med_line)
+		cv2.line(overlay, (cross_cx, cross_cy - cross_len),
+			(cross_cx, cross_cy + cross_len), (0, 0, 0), med_line)
+		cv2.line(overlay, (cross_cx - cross_len, cross_cy),
+			(cross_cx + cross_len, cross_cy), _COLOR_ACCEPTED, thin_line)
+		cv2.line(overlay, (cross_cx, cross_cy - cross_len),
+			(cross_cx, cross_cy + cross_len), _COLOR_ACCEPTED, thin_line)
+
+	# blend box overlay onto frame with transparency
+	cv2.addWeighted(overlay, _OVERLAY_ALPHA_BOXES, frame, 1.0 - _OVERLAY_ALPHA_BOXES, 0, frame)
+
+	# draw text on a separate overlay for text transparency
+	text_overlay = frame.copy()
 
 	# build top-left info text: source and confidence value
 	source_color = _source_color(source)
 	source_label = f"src:{source}" if source else "src:unknown"
-	cv2.putText(frame, source_label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, source_color, 2)
+	text_x = max(4, int(6 * s))
+	cv2.putText(text_overlay, source_label, (text_x, text_y1),
+		cv2.FONT_HERSHEY_SIMPLEX, font_scale_large, source_color, text_thick)
 
 	# confidence label: HIGH / MED / LOW from debug_state, or compute fallback
 	if confidence_label:
 		conf_text = f"conf:{confidence_label} ({conf:.2f})"
 	else:
 		conf_text = f"conf:{conf:.2f}"
-	cv2.putText(frame, conf_text, (10, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.6, source_color, 2)
+	cv2.putText(text_overlay, conf_text, (text_x, text_y2),
+		cv2.FONT_HERSHEY_SIMPLEX, font_scale_med, source_color, text_thick)
 
 	# interval ID in bottom-left corner when provided
 	if interval_id:
 		interval_text = f"[{interval_id}]"
 		cv2.putText(
-			frame, interval_text, (10, out_h - 12),
-			cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1,
+			text_overlay, interval_text, (text_x, out_h - max(6, int(8 * s))),
+			cv2.FONT_HERSHEY_SIMPLEX, font_scale_small, (200, 200, 200), thin_line,
 		)
 
 	# draw confidence bar in top-right corner
-	bar_w = 100
-	bar_h = 12
-	bar_x = out_w - bar_w - 10
-	bar_y = 10
+	bar_x = out_w - bar_w - max(4, int(6 * s))
+	bar_y = max(4, int(6 * s))
 	# background bar (dark gray)
-	cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (50, 50, 50), -1)
+	cv2.rectangle(text_overlay, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (50, 50, 50), -1)
 	# filled portion scales with conf value
 	fill_w = int(bar_w * max(0.0, min(1.0, conf)))
 	# color: green at 1.0, red at 0.0
 	bar_g = int(255 * conf)
 	bar_r = int(255 * (1.0 - conf))
 	bar_color = (0, bar_g, bar_r)
-	cv2.rectangle(frame, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), bar_color, -1)
+	cv2.rectangle(text_overlay, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), bar_color, -1)
+
+	# blend text overlay onto frame
+	cv2.addWeighted(text_overlay, _OVERLAY_ALPHA_TEXT, frame, 1.0 - _OVERLAY_ALPHA_TEXT, 0, frame)
 
 
 #============================================

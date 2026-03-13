@@ -8,7 +8,7 @@ import tempfile
 import pytest
 
 # local repo modules
-import tools_common
+import common_tools.tools_common as tools_common
 
 #============================================
 

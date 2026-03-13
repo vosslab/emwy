@@ -7,11 +7,12 @@ Provides the AnnotationWindow with mode toolbar and annotation controls.
 # (none needed)
 
 # PIP3 modules
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QAction, QActionGroup
 
 # local repo modules
+import common_tools.frame_filters as frame_filters_module
 import ui.frame_view as frame_view_module
 import ui.app_shell as app_shell_module
 
@@ -28,11 +29,12 @@ class AnnotationWindow(AppShell):
 	and persists window geometry via QSettings.
 	"""
 
-	def __init__(self, title: str = "Track Runner") -> None:
+	def __init__(self, title: str = "Track Runner", initial_mode: str = "seed") -> None:
 		"""Initialize the AnnotationWindow.
 
 		Args:
 			title: Window title to display.
+			initial_mode: Starting mode ("seed", "target", or "edit").
 		"""
 		super().__init__()
 
@@ -48,6 +50,20 @@ class AnnotationWindow(AppShell):
 			"target": "#3B82F6",
 			"edit": "#8B5CF6",
 		}
+
+		# Create annotation toolbar
+		self._annotation_toolbar = self.addToolBar("Annotation")
+		self._annotation_toolbar.setMovable(False)
+
+		# Initialize state before mode toolbar (setChecked fires _on_mode_changed)
+		self._active_controller = None
+		self._current_mode = "seed"
+		self._current_filter = "none"
+		self._raw_bgr = None
+
+		# Create mode label before mode toolbar so _on_mode_changed can update it
+		self._mode_label = QLabel("MODE: SEED")
+		self._annotation_toolbar.addWidget(self._mode_label)
 
 		# Create mode toolbar
 		self._mode_toolbar = self.addToolBar("Modes")
@@ -67,23 +83,16 @@ class AnnotationWindow(AppShell):
 			self._mode_toolbar.addAction(action)
 			self._mode_actions[mode] = action
 
-		# Set Seed mode as default
-		self._mode_actions["seed"].setChecked(True)
-
-		# Create annotation toolbar
-		self._annotation_toolbar = self.addToolBar("Annotation")
-		self._annotation_toolbar.setMovable(False)
-
-		# Add mode label to annotation toolbar
-		self._mode_label = QLabel("MODE: SEED")
-		self._annotation_toolbar.addWidget(self._mode_label)
-
-		# Initialize state
-		self._active_controller = None
-		self._current_mode = "seed"
+		# Set initial mode (defaults to seed)
+		self._mode_actions[initial_mode].setChecked(True)
 
 		# Apply initial mode color
-		self._apply_mode_color("seed")
+		self._apply_mode_color(initial_mode)
+
+		# Add display filter button to annotation toolbar
+		self._filter_button = QPushButton("Filter: none")
+		self._filter_button.clicked.connect(self._cycle_filter)
+		self._annotation_toolbar.addWidget(self._filter_button)
 
 		# Restore window geometry from QSettings
 		settings = QSettings("emwy", "AnnotationWindow")
@@ -161,9 +170,12 @@ class AnnotationWindow(AppShell):
 		# Clear annotation toolbar and add new controller widgets
 		for action in self._annotation_toolbar.actions():
 			self._annotation_toolbar.removeAction(action)
-		# Re-add mode label
+		# Re-add mode label and filter button
 		self._mode_label = QLabel(f"MODE: {self._current_mode.upper()}")
 		self._annotation_toolbar.addWidget(self._mode_label)
+		self._filter_button = QPushButton(f"Filter: {self._current_filter}")
+		self._filter_button.clicked.connect(self._cycle_filter)
+		self._annotation_toolbar.addWidget(self._filter_button)
 
 		# Activate new controller if provided
 		if self._active_controller is not None:
@@ -177,13 +189,36 @@ class AnnotationWindow(AppShell):
 
 	#============================================
 
+	def _cycle_filter(self) -> None:
+		"""Advance to the next display filter preset and refresh the frame."""
+		self._current_filter = frame_filters_module.get_next_preset(
+			self._current_filter
+		)
+		self._filter_button.setText(f"Filter: {self._current_filter}")
+		# re-apply filter to the current raw frame
+		if self._raw_bgr is not None:
+			filtered = frame_filters_module.apply_filter(
+				self._raw_bgr, self._current_filter
+			)
+			self._frame_view.set_frame(filtered)
+
+	#============================================
+
 	def set_frame(self, bgr_array) -> None:
 		"""Set the displayed frame.
+
+		Stores the raw BGR array and applies the active display filter
+		before forwarding to the frame view.
 
 		Args:
 			bgr_array: BGR numpy array for display.
 		"""
-		self._frame_view.set_frame(bgr_array)
+		# keep raw reference for filter cycling
+		self._raw_bgr = bgr_array
+		filtered = frame_filters_module.apply_filter(
+			bgr_array, self._current_filter
+		)
+		self._frame_view.set_frame(filtered)
 
 	#============================================
 

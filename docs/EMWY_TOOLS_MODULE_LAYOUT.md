@@ -3,18 +3,19 @@
 This document describes the organization philosophy for the `emwy_tools/` directory.
 The rules guide where to place new code as tools are written and refactored.
 
-## Shared modules at emwy_tools/ level
+## Shared modules in common_tools/
 
-A module belongs at the top level of `emwy_tools/` when it serves 2 or more tools.
+Shared modules live in `emwy_tools/common_tools/` when they serve 2 or more tools.
 
-Current examples:
+Current contents:
 
-- `tools_common.py`: shared utility functions used by multiple tools
-- `emwy_yaml_writer.py`: shared YAML generation
-- `frame_reader.py`: shared video frame reading
+- `common_tools/tools_common.py`: shared utility functions used by multiple tools
+- `common_tools/emwy_yaml_writer.py`: shared YAML generation
+- `common_tools/frame_reader.py`: shared video frame reading
+- `common_tools/frame_filters.py`: display-only image filters for annotation UIs
 
 Until a module has at least 2 real consumers, it stays inside the consuming tool's
-folder. This keeps the root level clean and avoids premature generalization.
+folder. This keeps the shared layer clean and avoids premature generalization.
 
 ## Per-tool code goes in tool subfolders
 
@@ -115,7 +116,7 @@ Do not create these directories unless a second tool actually needs the code:
 
 - `emwy_tools/qt_common/`
 - `emwy_tools/qt_layer/`
-- `emwy_tools/common/`
+- `emwy_tools/common/` (use `common_tools/` instead)
 - `emwy_tools/media/`
 - `emwy_tools/ui/`
 
@@ -126,10 +127,13 @@ often leads to over-designed code that does not match actual use cases.
 
 ```
 emwy_tools/
-  emwy_yaml_writer.py       # shared: used by multiple tools
-  frame_reader.py           # shared: video input
   run_tool.py               # shared: tool runner
-  tools_common.py           # shared: utilities
+  common_tools/             # shared modules
+    __init__.py
+    emwy_yaml_writer.py     # shared: YAML generation
+    frame_filters.py        # shared: display-only image filters
+    frame_reader.py         # shared: video input
+    tools_common.py         # shared: utilities
   silence_annotator/        # tool
     config.py
     detection.py
@@ -163,8 +167,12 @@ emwy_tools/
       theme.py              # qt plumbing
       app_shell.py          # qt plumbing
       actions.py            # qt plumbing
+      workspace.py            # annotation workspace
+      seed_controller.py      # seed annotation controller
+      target_controller.py    # target management controller
+      edit_controller.py      # edit operations controller
+      status_presenter.py     # status display presenter
       __init__.py
-      (future: controllers and presenters)
   video_scruncher/          # tool
     video_scruncher.py
     __init__.py

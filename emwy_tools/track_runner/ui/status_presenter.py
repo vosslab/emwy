@@ -95,6 +95,7 @@ class StatusPresenter:
 		color_map = {
 			"visible": "#22C55E",
 			"partial": "#F59E0B",
+			"approximate": "#F97316",
 			"obstructed": "#F97316",
 			"not_in_frame": "#94A3B8",
 		}

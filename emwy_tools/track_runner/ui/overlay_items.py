@@ -18,8 +18,10 @@ class RectItem(QGraphicsRectItem):
 	"""
 	A colored rectangle overlay item with optional label.
 
-	Draws a colored outline rectangle (no fill) with an optional text label
-	positioned above the top-left corner.
+	Draws a semi-transparent filled rectangle with a thin border and
+	optional text label above the top-left corner. Border thickness
+	scales with the box area so overlays stay unobtrusive on small
+	torso boxes but remain visible on large ones.
 	"""
 
 	def __init__(
@@ -30,6 +32,7 @@ class RectItem(QGraphicsRectItem):
 		h: float,
 		color_str: str = "#00FF00",
 		label: str = "",
+		fill_alpha: int = 38,
 		parent: QtWidgets.QGraphicsItem | None = None
 	) -> None:
 		"""
@@ -42,20 +45,36 @@ class RectItem(QGraphicsRectItem):
 			h: Height of rectangle.
 			color_str: Color as hex string (e.g. "#00FF00").
 			label: Optional text label.
+			fill_alpha: Fill opacity 0-255 (default 38, ~15%).
 			parent: Parent graphics item.
 		"""
 		super().__init__(x, y, w, h, parent)
 
 		color = QColor(color_str)
+
+		# semi-transparent fill matching old opencv alpha=0.15
+		fill_color = QColor(color_str)
+		fill_color.setAlpha(fill_alpha)
+		self.setBrush(QBrush(fill_color))
+
+		# border thickness scales with box area
+		# small boxes (~50x80) get thickness 1, large (~200x300) get 2
+		box_area = w * h
+		thickness = 1 if box_area < 20000 else 2
 		pen = QPen(color)
-		pen.setWidth(2)
+		pen.setWidth(thickness)
 		self.setPen(pen)
-		self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
 
 		if label:
-			self.label_text = QGraphicsTextItem(label, self)
-			self.label_text.setDefaultTextColor(color)
-			self.label_text.setPos(x, y - 20)
+			# label font scales with box height
+			font_size = max(7, min(12, int(h * 0.08)))
+			label_item = QGraphicsTextItem(label, self)
+			label_item.setDefaultTextColor(color)
+			label_font = QFont()
+			label_font.setPointSize(font_size)
+			label_item.setFont(label_font)
+			# position label just above the top-left corner
+			label_item.setPos(x, y - font_size - 6)
 
 	#============================================
 

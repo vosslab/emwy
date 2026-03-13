@@ -32,24 +32,39 @@ VALID_SEED_MODES = frozenset(
 	"target_refine"]
 )
 
+# flag to avoid repeating legacy obstructed-seed warnings on every save
+_WARNED_LEGACY_OBSTRUCTED = False
+
 #============================================
 
-def validate_seed(seed: dict) -> None:
-	"""Validate a seed dict and raise ValueError on constraint violations.
+def _set_warned_legacy() -> None:
+	"""Set the warned flag so legacy obstructed warnings print only once."""
+	global _WARNED_LEGACY_OBSTRUCTED
+	_WARNED_LEGACY_OBSTRUCTED = True
+
+#============================================
+
+def validate_seed(seed: dict) -> int | None:
+	"""Validate a seed dict and return frame index if legacy issue found.
 
 	Args:
 		seed: Seed dictionary to validate.
 
-	Raises:
-		ValueError: If validation fails.
+	Returns:
+		Frame index if approximate seed is missing torso_box, else None.
 	"""
 	status = seed.get("status")
+	# legacy "obstructed" without torso_box is a data problem
 	if status == "obstructed":
 		if "torso_box" not in seed or seed["torso_box"] is None:
-			raise ValueError(
-				f"obstructed seed at frame {seed.get('frame_index')} "
-				f"must have torso_box (use 'a' key to draw an approximate box)"
-			)
+			frame_idx = seed.get("frame_index")
+			return frame_idx
+	# "approximate" should always have torso_box
+	if status == "approximate":
+		if "torso_box" not in seed or seed["torso_box"] is None:
+			frame_idx = seed.get("frame_index")
+			return frame_idx
+	return None
 
 #============================================
 
@@ -112,13 +127,30 @@ def load_seeds(path: str) -> dict:
 			f"expected {SEEDS_HEADER_KEY}={SEEDS_HEADER_VALUE}, got {header_val}"
 		)
 	# backfill "conf" for seeds created before field was added
+	# migrate legacy "obstructed" with torso_box to "approximate"
+	# drop legacy "obstructed" without torso_box (unusable, no position data)
 	if "seeds" in data and isinstance(data["seeds"], list):
+		cleaned = []
+		dropped_count = 0
 		for seed in data["seeds"]:
 			if "conf" not in seed:
 				seed["conf"] = None
+			status = seed.get("status")
+			if status == "obstructed":
+				if seed.get("torso_box") is not None:
+					# has approx area, migrate to "approximate"
+					seed["status"] = "approximate"
+				else:
+					# legacy obstructed without position data, drop it
+					dropped_count += 1
+					continue
+			cleaned.append(seed)
+		if dropped_count > 0:
+			print(f"  dropped {dropped_count} legacy obstructed seed(s) "
+				f"with no position data")
 		# sort seeds by frame_index so consumers always get time-ordered data
 		data["seeds"] = sorted(
-			data["seeds"],
+			cleaned,
 			key=lambda s: int(s["frame_index"]),
 		)
 	return data
@@ -139,10 +171,17 @@ def write_seeds(path: str, seeds_data: dict) -> None:
 	Raises:
 		ValueError: If any seed fails validation.
 	"""
-	# validate all seeds before writing
+	# validate all seeds before writing; collect legacy warnings
 	if "seeds" in seeds_data and isinstance(seeds_data["seeds"], list):
+		bad_frames = []
 		for seed in seeds_data["seeds"]:
-			validate_seed(seed)
+			bad_frame = validate_seed(seed)
+			if bad_frame is not None:
+				bad_frames.append(bad_frame)
+		if bad_frames and not _WARNED_LEGACY_OBSTRUCTED:
+			_set_warned_legacy()
+			print(f"  warning: {len(bad_frames)} approx seed(s) missing "
+				f"torso_box (use 'a' key to fix): frames {bad_frames}")
 
 	# ensure header version is set correctly before writing
 	seeds_data[SEEDS_HEADER_KEY] = SEEDS_HEADER_VALUE
@@ -198,6 +237,20 @@ def load_diagnostics(path: str) -> dict:
 			f"diagnostics file header mismatch in {path}: "
 			f"expected {DIAGNOSTICS_HEADER_KEY}={DIAGNOSTICS_HEADER_VALUE}, got {header_val}"
 		)
+	# reconstruct interval_score sub-dict from flat on-disk fields
+	# write_solver_diagnostics flattens interval_score to top-level keys,
+	# but consumers expect iv["interval_score"]["confidence"] etc.
+	_score_keys = (
+		"agreement_score", "identity_score", "competitor_margin",
+		"confidence", "failure_reasons",
+	)
+	for iv in data.get("intervals", []):
+		if "interval_score" not in iv:
+			score = {}
+			for key in _score_keys:
+				if key in iv:
+					score[key] = iv[key]
+			iv["interval_score"] = score
 	return data
 
 

@@ -9,6 +9,7 @@ mouse drawing for seed collection.
 
 # PIP3 modules
 from PySide6.QtCore import QObject, Qt, QTimer
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton
 import numpy
 
 # local repo modules
@@ -79,6 +80,96 @@ class SeedController(QObject):
 		self._approx_mode: bool = False
 		self._current_bgr: numpy.ndarray | None = None
 		self._scale_bar_item: object = None
+		self._toolbar_widget: QWidget | None = None
+		self._btn_partial: QPushButton | None = None
+		self._btn_approx: QPushButton | None = None
+		# scrub step in seconds, adjustable via [ and ]
+		self._scrub_step_s: float = 0.2
+		self._step_value_label: QLabel | None = None
+
+	#============================================
+
+	@property
+	def toolbar_widget(self) -> QWidget | None:
+		"""Toolbar widget for the annotation toolbar.
+
+		Returns:
+			QWidget with navigation and draw mode buttons, or None.
+		"""
+		return self._toolbar_widget
+
+	#============================================
+
+	def _build_toolbar(self) -> QWidget:
+		"""Build the toolbar widget with nav and draw mode buttons.
+
+		Returns:
+			QWidget containing prev/next and draw mode buttons.
+		"""
+		widget = QWidget()
+		layout = QHBoxLayout(widget)
+		layout.setContentsMargins(4, 0, 4, 0)
+		layout.setSpacing(4)
+
+		# Navigation buttons
+		btn_prev = QPushButton("<  Prev")
+		btn_prev.setToolTip("Previous frame (LEFT or Shift+LEFT when zoomed)")
+		btn_prev.clicked.connect(self._on_prev)
+		layout.addWidget(btn_prev)
+
+		btn_next = QPushButton("Next  >")
+		btn_next.setToolTip("Next frame (RIGHT or Shift+RIGHT when zoomed)")
+		btn_next.clicked.connect(self._on_next)
+		layout.addWidget(btn_next)
+
+		btn_skip = QPushButton("Skip")
+		btn_skip.setToolTip("Skip this frame (SPACE)")
+		btn_skip.clicked.connect(self._on_skip)
+		layout.addWidget(btn_skip)
+
+		# Step size control: [ - ] N [ + ]
+		layout.addSpacing(8)
+		step_label = QLabel("Step:")
+		layout.addWidget(step_label)
+		btn_step_down = QPushButton("[")
+		btn_step_down.setFixedWidth(24)
+		btn_step_down.setToolTip("Decrease step size ([)")
+		btn_step_down.clicked.connect(self._decrease_step)
+		layout.addWidget(btn_step_down)
+		self._step_value_label = QLabel(self._step_label())
+		layout.addWidget(self._step_value_label)
+		btn_step_up = QPushButton("]")
+		btn_step_up.setFixedWidth(24)
+		btn_step_up.setToolTip("Increase step size (])")
+		btn_step_up.clicked.connect(self._increase_step)
+		layout.addWidget(btn_step_up)
+
+		# Separator space
+		layout.addSpacing(12)
+
+		# Draw mode toggle buttons (checkable for visual state)
+		self._btn_partial = QPushButton("Partial")
+		self._btn_partial.setCheckable(True)
+		self._btn_partial.setToolTip("Toggle partial draw mode (P)")
+		self._btn_partial.clicked.connect(self._on_partial_toggle)
+		layout.addWidget(self._btn_partial)
+
+		self._btn_approx = QPushButton("Approx")
+		self._btn_approx.setCheckable(True)
+		self._btn_approx.setToolTip("Toggle approx/obstruction draw mode (A)")
+		self._btn_approx.clicked.connect(self._on_approx_toggle)
+		layout.addWidget(self._btn_approx)
+
+		return widget
+
+	#============================================
+
+	def _sync_toolbar_buttons(self) -> None:
+		"""Sync toolbar button checked state with internal mode flags."""
+		if self._btn_partial is not None:
+			self._btn_partial.setChecked(self._partial_mode)
+		if self._btn_approx is not None:
+			self._btn_approx.setChecked(self._approx_mode)
 
 	#============================================
 
@@ -91,14 +182,29 @@ class SeedController(QObject):
 		self._window = window
 
 		# Install event filter for keyboard and mouse events
+		# Filter on window for key events, on frame_view for key events
+		# that QGraphicsView would otherwise consume (arrows for scrolling),
+		# and on viewport for mouse events
 		self._window.installEventFilter(self)
+		self._window.get_frame_view().installEventFilter(self)
 		viewport = self._window.get_frame_view().viewport()
 		viewport.installEventFilter(self)
+
+		# Build toolbar widget
+		self._toolbar_widget = self._build_toolbar()
 
 		# Add scale bar item to scene
 		scene = self._window.get_frame_view().scene()
 		self._scale_bar_item = ScaleBarItem()
 		scene.addItem(self._scale_bar_item)
+
+		# Show keybinding instructions in the status bar
+		keybindings = (
+			"LR=scrub(Shift when zoomed)  []=step size  SPACE=skip  ESC/q=done  "
+			"n=not_in_frame  p=partial  a=approx_obstruction  "
+			"f=FWD/BWD avg  WHEEL=zoom"
+		)
+		self._window.statusBar().showMessage(keybindings)
 
 		# Load and display the first frame
 		self._refresh_frame()
@@ -110,6 +216,7 @@ class SeedController(QObject):
 		"""Deactivate the controller and disconnect from window events."""
 		if self._window is not None:
 			self._window.removeEventFilter(self)
+			self._window.get_frame_view().removeEventFilter(self)
 			viewport = self._window.get_frame_view().viewport()
 			viewport.removeEventFilter(self)
 
@@ -147,7 +254,8 @@ class SeedController(QObject):
 
 		if event.type() == QEventType.Type.KeyPress:
 			key = event.key()
-			if self.handle_key_press(key):
+			modifiers = event.modifiers()
+			if self.handle_key_press(key, modifiers):
 				return True
 		elif event.type() == QEventType.Type.MouseButtonPress:
 			if isinstance(event, QMouseEvent):
@@ -174,11 +282,47 @@ class SeedController(QObject):
 				self.handle_mouse_release(sx, sy)
 				return True
 		elif event.type() == QEventType.Type.Wheel:
-			# Update scale bar after zoom changes
+			# Delegate wheel to the FrameView so zoom works when filter
+			# is installed on the viewport
+			frame_view = self._window.get_frame_view()
+			frame_view.wheelEvent(event)
 			QTimer.singleShot(0, self._update_scale_bar)
-			return False
+			return True
 
 		return super().eventFilter(obj, event)
+
+	#============================================
+
+	def _get_prediction_center(self) -> tuple | None:
+		"""Get the center point of FWD/BWD predictions for the current frame.
+
+		Returns average of FWD and BWD centers if both exist, single center
+		if only one exists, or None if no predictions.
+
+		Returns:
+			Tuple of (cx, cy) or None.
+		"""
+		if self._predictions is None:
+			return None
+		preds = self._predictions.get(self._current_frame)
+		if preds is None:
+			return None
+
+		centers = []
+		fwd = preds.get("forward")
+		if fwd is not None:
+			centers.append((float(fwd["cx"]), float(fwd["cy"])))
+		bwd = preds.get("backward")
+		if bwd is not None:
+			centers.append((float(bwd["cx"]), float(bwd["cy"])))
+
+		if not centers:
+			return None
+
+		# Average the available centers
+		avg_cx = sum(c[0] for c in centers) / len(centers)
+		avg_cy = sum(c[1] for c in centers) / len(centers)
+		return (avg_cx, avg_cy)
 
 	#============================================
 
@@ -190,13 +334,37 @@ class SeedController(QObject):
 			self._current_bgr = frame
 			self._update_fwd_bwd_overlays()
 			self._update_scale_bar()
+			# Recenter on prediction center when zoomed in
+			self._recenter_on_prediction()
 
-		# Print progress
-		progress_msg = (
-			f"  seed {self._list_idx + 1}/{len(self._seed_frame_indices)}  "
-			f"frame {self._current_frame}"
+		# update title bar with current state
+		self._refresh_frame_title()
+
+	#============================================
+
+	def _refresh_frame_title(self) -> None:
+		"""Update window title with frame, step, and zoom info."""
+		step_frames = max(1, int(round(self._fps * self._scrub_step_s)))
+		zoom = self._window.get_frame_view().get_zoom_factor()
+		title = (
+			f"Seed {self._list_idx + 1}/{len(self._seed_frame_indices)} | "
+			f"Frame {self._current_frame} | "
+			f"Step {step_frames}f | "
+			f"Zoom {zoom:.1f}x"
 		)
-		print(progress_msg)
+		self._window.setWindowTitle(title)
+
+	#============================================
+
+	def _recenter_on_prediction(self) -> None:
+		"""Recenter the view on the prediction center when zoomed in."""
+		frame_view = self._window.get_frame_view()
+		zoom = frame_view.get_zoom_factor()
+		if zoom <= 1.05:
+			return
+		center = self._get_prediction_center()
+		if center is not None:
+			frame_view.set_zoom(zoom, center[0], center[1])
 
 	#============================================
 
@@ -254,15 +422,21 @@ class SeedController(QObject):
 
 	#============================================
 
-	def handle_key_press(self, key: int) -> bool:
+	def handle_key_press(self, key: int, modifiers: object = None) -> bool:
 		"""Handle keyboard events.
 
 		Args:
 			key: Qt key code.
+			modifiers: Qt keyboard modifiers (for detecting Shift, etc.).
 
 		Returns:
 			True if event was handled.
 		"""
+		# Check for Shift modifier on arrow keys for frame advance
+		shift_held = False
+		if modifiers is not None:
+			shift_held = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+
 		if key == Qt.Key.Key_Escape or key == Qt.Key.Key_Q:
 			self._on_quit()
 			return True
@@ -270,10 +444,30 @@ class SeedController(QObject):
 			self._on_skip()
 			return True
 		elif key == Qt.Key.Key_Left:
-			self._on_prev()
-			return True
+			# compute step multiplier from held modifiers
+			mult = self._step_multiplier(modifiers)
+			# Shift+Left always scrubs; bare Left scrubs at 1x, pans when zoomed
+			is_zoomed = self._window.get_frame_view().get_zoom_factor() > 1.05
+			if shift_held or not is_zoomed:
+				self._on_prev(mult)
+				return True
+			# bare Left when zoomed = let QGraphicsView pan
+			return False
 		elif key == Qt.Key.Key_Right:
-			self._on_next()
+			# compute step multiplier from held modifiers
+			mult = self._step_multiplier(modifiers)
+			# Shift+Right always scrubs; bare Right scrubs at 1x, pans when zoomed
+			is_zoomed = self._window.get_frame_view().get_zoom_factor() > 1.05
+			if shift_held or not is_zoomed:
+				self._on_next(mult)
+				return True
+			# bare Right when zoomed = let QGraphicsView pan
+			return False
+		elif key == Qt.Key.Key_BracketLeft:
+			self._decrease_step()
+			return True
+		elif key == Qt.Key.Key_BracketRight:
+			self._increase_step()
 			return True
 		elif key == Qt.Key.Key_N:
 			self._on_not_in_frame()
@@ -286,6 +480,9 @@ class SeedController(QObject):
 			return True
 		elif key == Qt.Key.Key_F:
 			self._on_fwd_bwd_avg()
+			return True
+		elif key == Qt.Key.Key_Z:
+			self._on_zoom_toggle()
 			return True
 
 		return False
@@ -394,10 +591,11 @@ class SeedController(QObject):
 			box: Box as [x, y, w, h].
 		"""
 		# Import here to avoid circular dependency
-		from emwy_tools.track_runner import seeding as seeding_module
+		import seeding as seeding_module
 
 		if self._approx_mode:
 			self._approx_mode = False
+			self._update_mode_badge()
 			norm_box = seeding_module.normalize_seed_box(box, self._config)
 			tx, ty, tw, th = norm_box
 			cx = float(tx + tw / 2.0)
@@ -406,7 +604,7 @@ class SeedController(QObject):
 				"frame_index": self._current_frame,
 				"frame": self._current_frame,
 				"time_s": round(self._current_frame / self._fps, 3),
-				"status": "obstructed",
+				"status": "approximate",
 				"torso_box": norm_box,
 				"cx": cx,
 				"cy": cy,
@@ -422,6 +620,7 @@ class SeedController(QObject):
 			return
 		elif self._partial_mode:
 			self._partial_mode = False
+			self._update_mode_badge()
 			norm_box = seeding_module.normalize_seed_box(box, self._config)
 			jersey_hsv = seeding_module.extract_jersey_color(
 				self._current_bgr, norm_box
@@ -484,20 +683,94 @@ class SeedController(QObject):
 
 	#============================================
 
-	def _on_prev(self) -> None:
-		"""Scrub backward by 0.2 seconds."""
-		scrub_step = max(1, int(round(self._fps * 0.2)))
-		self._current_frame = max(0, self._current_frame - scrub_step)
+	def _step_multiplier(self, modifiers: object) -> int:
+		"""Compute a temporary step multiplier from held modifier keys.
+
+		Alt multiplies by 5. Shift is NOT used here because it already
+		means "force scrub when zoomed".
+
+		Args:
+			modifiers: Qt keyboard modifiers.
+
+		Returns:
+			Integer multiplier (1 or 5).
+		"""
+		mult = 1
+		if modifiers is not None:
+			if bool(modifiers & Qt.KeyboardModifier.AltModifier):
+				mult = 5
+		return mult
+
+	#============================================
+
+	def _on_prev(self, multiplier: int = 1) -> None:
+		"""Scrub backward by the current step size times multiplier.
+
+		Args:
+			multiplier: Temporary speed multiplier (default 1).
+		"""
+		scrub_step = max(1, int(round(self._fps * self._scrub_step_s)))
+		self._current_frame = max(0, self._current_frame - scrub_step * multiplier)
 		self._refresh_frame()
 
 	#============================================
 
-	def _on_next(self) -> None:
-		"""Scrub forward by 0.2 seconds."""
-		scrub_step = max(1, int(round(self._fps * 0.2)))
-		total_frames = self._reader.total_frames
-		self._current_frame = min(total_frames - 1, self._current_frame + scrub_step)
+	def _on_next(self, multiplier: int = 1) -> None:
+		"""Scrub forward by the current step size times multiplier.
+
+		Args:
+			multiplier: Temporary speed multiplier (default 1).
+		"""
+		scrub_step = max(1, int(round(self._fps * self._scrub_step_s)))
+		# Use last seed frame as upper bound for scrubbing
+		max_frame = self._seed_frame_indices[-1] if self._seed_frame_indices else 0
+		self._current_frame = min(max_frame, self._current_frame + scrub_step * multiplier)
 		self._refresh_frame()
+
+	#============================================
+
+	# available step sizes in seconds, cycled with Shift+LR
+	_STEP_SIZES = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
+
+	def _step_label(self) -> str:
+		"""Format the current step size for display.
+
+		Returns:
+			String like "0.2s (6f)" showing seconds and frames.
+		"""
+		frames = max(1, int(round(self._fps * self._scrub_step_s)))
+		label = f"{self._scrub_step_s}s ({frames}f)"
+		return label
+
+	#============================================
+
+	def _increase_step(self) -> None:
+		"""Increase the scrub step to the next larger preset."""
+		for s in self._STEP_SIZES:
+			if s > self._scrub_step_s + 0.001:
+				self._scrub_step_s = s
+				break
+		self._update_step_display()
+
+	#============================================
+
+	def _decrease_step(self) -> None:
+		"""Decrease the scrub step to the next smaller preset."""
+		for s in reversed(self._STEP_SIZES):
+			if s < self._scrub_step_s - 0.001:
+				self._scrub_step_s = s
+				break
+		self._update_step_display()
+
+	#============================================
+
+	def _update_step_display(self) -> None:
+		"""Update the step label in the toolbar and window title."""
+		if self._step_value_label is not None:
+			self._step_value_label.setText(self._step_label())
+		# refresh window title to show new step size
+		if self._window is not None:
+			self._refresh_frame_title()
 
 	#============================================
 
@@ -522,9 +795,13 @@ class SeedController(QObject):
 		"""Toggle partial mode."""
 		if self._partial_mode:
 			self._partial_mode = False
+			self._update_mode_badge()
 			print("  partial mode cancelled")
 		else:
 			self._partial_mode = True
+			# cancel approx if active
+			self._approx_mode = False
+			self._update_mode_badge()
 			print("  partial mode: draw the runner's torso box (press p again to cancel)")
 
 	#============================================
@@ -533,10 +810,47 @@ class SeedController(QObject):
 		"""Toggle approximate/positioned obstruction mode."""
 		if self._approx_mode:
 			self._approx_mode = False
+			self._update_mode_badge()
 			print("  approx mode cancelled")
 		else:
 			self._approx_mode = True
+			# cancel partial if active
+			self._partial_mode = False
+			self._update_mode_badge()
 			print("  approx mode: draw approximate box to record obstruction position")
+
+	#============================================
+
+	def _update_mode_badge(self) -> None:
+		"""Update the status bar to show active draw mode (partial/approx)."""
+		self._sync_toolbar_buttons()
+		if self._window is None:
+			return
+		if self._approx_mode:
+			self._window.statusBar().showMessage(
+				"** APPROX MODE ** draw approximate box for obstructed position "
+				"(press 'a' to cancel)"
+			)
+			self._window.statusBar().setStyleSheet(
+				"background-color: #F97316; color: #000000; font-weight: bold;"
+			)
+		elif self._partial_mode:
+			self._window.statusBar().showMessage(
+				"** PARTIAL MODE ** draw visible portion of torso "
+				"(press 'p' to cancel)"
+			)
+			self._window.statusBar().setStyleSheet(
+				"background-color: #F59E0B; color: #000000; font-weight: bold;"
+			)
+		else:
+			# restore default keybinding text
+			keybindings = (
+				"LR=scrub(Shift when zoomed)  []=step size  SPACE=skip  ESC/q=done  "
+				"n=not_in_frame  p=partial  a=approx_obstruction  "
+				"f=FWD/BWD avg  z=zoom"
+			)
+			self._window.statusBar().showMessage(keybindings)
+			self._window.statusBar().setStyleSheet("")
 
 	#============================================
 
@@ -546,6 +860,43 @@ class SeedController(QObject):
 			return
 		zoom = self._window.get_frame_view().get_zoom_factor()
 		self._scale_bar_item.update_zoom(zoom)
+
+	#============================================
+
+	def _on_zoom_toggle(self) -> None:
+		"""Cycle through zoom levels (1x -> 1.5x -> 2.25x -> 3.375x -> 1x).
+
+		Centers zoom on the average of FWD/BWD predictions when available,
+		otherwise centers on the frame center.
+		"""
+		# zoom levels matching the old opencv code
+		zoom_levels = [1.0, 1.5, 2.25, 3.375]
+		frame_view = self._window.get_frame_view()
+		current = frame_view.get_zoom_factor()
+		# find the next zoom level in the cycle
+		next_zoom = zoom_levels[0]
+		for zf in zoom_levels:
+			# use small epsilon to handle float comparison
+			if zf > current + 0.01:
+				next_zoom = zf
+				break
+
+		# determine zoom center from predictions or frame center
+		center_x = -1.0
+		center_y = -1.0
+		if next_zoom > 1.0:
+			center = self._get_prediction_center()
+			if center is not None:
+				center_x = center[0]
+				center_y = center[1]
+			# fallback to frame center if no predictions
+			elif self._current_bgr is not None:
+				h, w = self._current_bgr.shape[:2]
+				center_x = w / 2.0
+				center_y = h / 2.0
+
+		frame_view.set_zoom(next_zoom, center_x, center_y)
+		self._update_scale_bar()
 
 	#============================================
 

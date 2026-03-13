@@ -145,6 +145,7 @@ def classify_confidence(
 	agreement: float,
 	identity: float,
 	margin: float,
+	interval_length: int = 0,
 ) -> tuple:
 	"""Classify overall confidence from agreement, identity, and competitor margin.
 
@@ -154,6 +155,10 @@ def classify_confidence(
 		- agreement > 0.2 + margin > 0.1 -> "fair"   (borderline)
 		- everything else                 -> "low"    (needs seed)
 
+	Short-interval promotion: intervals of 5 frames or fewer get bumped
+	up one tier (low->fair, fair->good) since FWD/BWD barely propagated
+	and agreement noise dominates. Never promotes to "high".
+
 	Additional failure reasons are appended regardless of tier:
 		- margin < 0.2                    -> "likely_identity_swap"
 		- identity < 0.4                  -> "weak_appearance"
@@ -162,6 +167,8 @@ def classify_confidence(
 		agreement: Float [0, 1], forward/backward agreement score.
 		identity: Float [0, 1], average identity match score.
 		margin: Float [0, 1], average separation from competitors.
+		interval_length: Number of frames in the interval. When > 0 and
+			<= 5, promotes confidence one tier (never to "high").
 
 	Returns:
 		Tuple of (confidence_label: str, failure_reasons: list of str).
@@ -183,6 +190,13 @@ def classify_confidence(
 	else:
 		confidence = "low"
 		failure_reasons.append("low_agreement")
+
+	# short intervals: agreement is noisy, promote one tier
+	short_interval = interval_length > 0 and interval_length <= 5
+	if short_interval and confidence not in ("high",):
+		tier_order = ["low", "fair", "good", "high"]
+		idx = tier_order.index(confidence)
+		confidence = tier_order[min(idx + 1, len(tier_order) - 1)]
 
 	# additional reasons
 	if margin < 0.2:
@@ -237,6 +251,7 @@ def score_interval(
 	# Classify confidence from the three aggregate signals
 	confidence, failure_reasons = classify_confidence(
 		agreement_score, identity_score, competitor_margin,
+		interval_length=len(forward_track),
 	)
 
 	# Compute per-frame meeting point errors for diagnostic output
