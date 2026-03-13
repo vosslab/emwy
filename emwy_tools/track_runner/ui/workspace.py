@@ -56,10 +56,15 @@ class AnnotationWindow(AppShell):
 		self._annotation_toolbar = self.addToolBar("Annotation")
 		self._annotation_toolbar.setMovable(False)
 
+		# Guard: set_controller() is called during init via setChecked signal;
+		# skip teardown logic until all widgets exist
+		self._init_complete = False
+
 		# Initialize state before mode toolbar (setChecked fires _on_mode_changed)
 		self._active_controller = None
+		self._controller_widget_action = None
 		self._current_mode = "seed"
-		self._current_filter = "none"
+		self._current_filter = "bilateral+clahe"
 		self._raw_bgr = None
 
 		# Create mode label before mode toolbar so _on_mode_changed can update it
@@ -91,7 +96,7 @@ class AnnotationWindow(AppShell):
 		self._apply_mode_color(initial_mode)
 
 		# Add display filter button to annotation toolbar
-		self._filter_button = QPushButton("Filter: none")
+		self._filter_button = QPushButton("Filter: bilateral+clahe")
 		self._filter_button.clicked.connect(self._cycle_filter)
 		self._annotation_toolbar.addWidget(self._filter_button)
 
@@ -140,6 +145,9 @@ class AnnotationWindow(AppShell):
 		geometry = settings.value("geometry")
 		if geometry is not None:
 			self.restoreGeometry(geometry)
+
+		# all widgets created; set_controller() can now do full teardown
+		self._init_complete = True
 
 	#============================================
 
@@ -208,24 +216,26 @@ class AnnotationWindow(AppShell):
 		# Store new controller
 		self._active_controller = controller
 
-		# Reset progress bar between controller swaps (guard for early init)
-		if hasattr(self, "_progress_bar"):
-			self._progress_bar.setValue(0)
-			self._progress_bar.setMaximum(0)
-
-		# Reset overlay toggles to all-visible on mode switch (guard for early init)
-		if hasattr(self, "_overlay_actions"):
-			for action in self._overlay_actions.values():
-				action.setChecked(True)
-
-		# Clear annotation toolbar and re-add persistent widgets (no recreation)
-		if not hasattr(self, "_annotation_toolbar"):
+		# skip widget teardown during __init__ (setChecked fires before widgets exist)
+		if not self._init_complete:
 			return
-		self._annotation_toolbar.clear()
+
+		# Reset progress bar between controller swaps
+		self._progress_bar.setValue(0)
+		self._progress_bar.setMaximum(0)
+
+		# Reset overlay toggles to all-visible on mode switch
+		for action in self._overlay_actions.values():
+			action.setChecked(True)
+
+		# Remove previous controller widget from toolbar (keep mode_label and filter_button)
+		if self._controller_widget_action is not None:
+			self._annotation_toolbar.removeAction(self._controller_widget_action)
+			self._controller_widget_action = None
+
+		# Update persistent widget labels
 		self._mode_label.setText(f"MODE: {self._current_mode.upper()}")
-		self._annotation_toolbar.addWidget(self._mode_label)
 		self._filter_button.setText(f"Filter: {self._current_filter}")
-		self._annotation_toolbar.addWidget(self._filter_button)
 
 		# Activate new controller if provided
 		if self._active_controller is not None:
@@ -235,7 +245,7 @@ class AnnotationWindow(AppShell):
 			if hasattr(self._active_controller, "toolbar_widget"):
 				widget = self._active_controller.toolbar_widget
 				if widget is not None:
-					self._annotation_toolbar.addWidget(widget)
+					self._controller_widget_action = self._annotation_toolbar.addWidget(widget)
 
 	#============================================
 

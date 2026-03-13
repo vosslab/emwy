@@ -167,8 +167,7 @@ Standalone analysis scripts in [tools/](tools/):
 
 ```
 tools/
-  measure_seed_variability.py
-  plot_seed_variability.py
+  analyze_track_runner_json.py
 ```
 
 ### Development scripts

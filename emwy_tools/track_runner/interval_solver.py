@@ -1499,12 +1499,10 @@ def solve_all_intervals(
 
 	if reused_count > 0:
 		print(f"  {reused_count}/{total_intervals} intervals reused from prior solve")
-		# print prior interval results
+		# fire callbacks for prior intervals without printing each one
 		for pair_idx in range(total_intervals):
 			if prior_results[pair_idx] is not None:
 				result = prior_results[pair_idx]
-				line = _format_interval_result(result, fps)
-				print(f"{line}  [PRIOR]")
 				if on_interval_complete is not None:
 					on_interval_complete(result)
 
