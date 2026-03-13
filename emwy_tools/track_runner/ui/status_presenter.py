@@ -8,6 +8,7 @@ and status color in the annotation toolbar.
 # (none)
 
 # PIP3 modules
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel
 
 # local repo modules
@@ -106,10 +107,10 @@ class StatusPresenter:
 				f"{text}</span>{severity_html}"
 			)
 			self._label.setText(html)
-			self._label.setTextFormat(1)
+			self._label.setTextFormat(Qt.TextFormat.RichText)
 		else:
 			self._label.setText(text)
-			self._label.setTextFormat(0)
+			self._label.setTextFormat(Qt.TextFormat.PlainText)
 
 		# Apply color based on status
 		mono_family = overlay_config.get_mono_font_family()

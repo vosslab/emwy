@@ -16,9 +16,11 @@ import overlay_config
 import common_tools.frame_filters as frame_filters_module
 import ui.frame_view as frame_view_module
 import ui.app_shell as app_shell_module
+import ui.zoom_controls as zoom_controls_module
 
 FrameView = frame_view_module.FrameView
 AppShell = app_shell_module.AppShell
+ZoomControls = zoom_controls_module.ZoomControls
 
 #============================================
 
@@ -122,6 +124,19 @@ class AnnotationWindow(AppShell):
 			action.toggled.connect(self._on_overlay_toggled)
 			self._overlay_toolbar.addAction(action)
 			self._overlay_actions[key] = action
+
+		# Add zoom controls to the status bar
+		self._zoom_controls = ZoomControls()
+		self.statusBar().addPermanentWidget(self._zoom_controls)
+		# Connect zoom controls -> frame view
+		self._zoom_controls.zoom_in_clicked.connect(self._on_zoom_in)
+		self._zoom_controls.zoom_out_clicked.connect(self._on_zoom_out)
+		self._zoom_controls.zoom_to_fit_clicked.connect(self._frame_view.fit_to_view)
+		self._zoom_controls.zoom_slider_changed.connect(self._on_zoom_slider)
+		# Connect frame view -> zoom controls (bidirectional sync)
+		self._frame_view.zoom_changed.connect(
+			self._zoom_controls.update_zoom_display
+		)
 
 		# Add progress bar to the status bar
 		self._progress_bar = QProgressBar()
@@ -354,6 +369,31 @@ class AnnotationWindow(AppShell):
 		settings = QSettings("emwy", "AnnotationWindow")
 		settings.setValue("geometry", self.saveGeometry())
 		super().closeEvent(event)
+
+	#============================================
+
+	def _on_zoom_in(self) -> None:
+		"""Zoom in by 1.25x from the current zoom factor."""
+		current = self._frame_view.get_zoom_factor()
+		self._frame_view.set_zoom(current * 1.25)
+
+	#============================================
+
+	def _on_zoom_out(self) -> None:
+		"""Zoom out by 1.25x from the current zoom factor."""
+		current = self._frame_view.get_zoom_factor()
+		self._frame_view.set_zoom(current / 1.25)
+
+	#============================================
+
+	def _on_zoom_slider(self, percent: int) -> None:
+		"""Set zoom from slider value (percent).
+
+		Args:
+			percent: Zoom percentage from the slider (e.g. 150 for 1.5x).
+		"""
+		factor = percent / 100.0
+		self._frame_view.set_zoom(factor)
 
 	#============================================
 

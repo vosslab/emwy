@@ -25,6 +25,32 @@ TargetController = target_controller_module.TargetController
 SEED_WINDOW_TITLE = "Track Runner - Seed Selection"
 
 #============================================
+def _clamp_box(frame: numpy.ndarray, box: list) -> tuple:
+	"""Clamp a box to frame bounds and return the ROI.
+
+	Args:
+		frame: BGR image as a numpy array (H, W, 3).
+		box: Rectangle as [x, y, w, h] in pixel coordinates.
+
+	Returns:
+		Cropped ROI as a numpy array, or None if the clamped region is empty.
+	"""
+	frame_h, frame_w = frame.shape[:2]
+	x, y, w, h = box
+	# clamp top-left corner to frame bounds
+	x1 = max(0, int(x))
+	y1 = max(0, int(y))
+	# clamp bottom-right corner to frame bounds
+	x2 = min(frame_w, int(x + w))
+	y2 = min(frame_h, int(y + h))
+	# check for empty region after clamping
+	if x2 <= x1 or y2 <= y1:
+		return None
+	roi = frame[y1:y2, x1:x2]
+	return roi
+
+
+#============================================
 def extract_jersey_color(frame: numpy.ndarray, box: list) -> tuple:
 	"""Extract median HSV color from a rectangular region.
 
@@ -33,11 +59,13 @@ def extract_jersey_color(frame: numpy.ndarray, box: list) -> tuple:
 		box: Rectangle as [x, y, w, h] in pixel coordinates.
 
 	Returns:
-		Tuple of (h_median, s_median, v_median) as ints.
+		Tuple of (h_median, s_median, v_median) as ints,
+		or (0, 0, 0) if the box is out of frame bounds.
 	"""
-	x, y, w, h = box
-	# crop the region of interest from the frame
-	roi = frame[y:y + h, x:x + w]
+	# clamp box to frame bounds and extract ROI
+	roi = _clamp_box(frame, box)
+	if roi is None:
+		return (0, 0, 0)
 	# convert from BGR to HSV color space
 	hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 	# compute median for each HSV channel
@@ -61,9 +89,11 @@ def extract_color_histogram(frame: numpy.ndarray, box: list) -> numpy.ndarray:
 	Returns:
 		Normalized 2D histogram array with shape (30, 32).
 	"""
-	x, y, w, h = box
-	# crop the region of interest
-	roi = frame[y:y + h, x:x + w]
+	# clamp box to frame bounds and extract ROI
+	roi = _clamp_box(frame, box)
+	if roi is None:
+		# return a zero histogram for out-of-bounds regions
+		return numpy.zeros((30, 32), dtype=numpy.float32)
 	# convert from BGR to HSV
 	hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 	# compute 2D histogram on H and S channels

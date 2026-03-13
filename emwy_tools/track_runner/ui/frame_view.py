@@ -8,7 +8,7 @@ QGraphicsView for displaying video frames with zoom and coordinate mapping.
 # PIP3 modules
 import numpy
 from PySide6 import QtGui, QtWidgets
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene
 from PySide6.QtGui import QImage, QPixmap, QColor, QTransform, QPainter
 
@@ -19,8 +19,12 @@ class FrameView(QGraphicsView):
 	"""
 	A QGraphicsView for displaying and interacting with video frames.
 
-	Supports zoom with mouse wheel (anchored to cursor) and coordinate mapping.
+	Supports zoom with mouse wheel (anchored to cursor), trackpad pan,
+	and coordinate mapping.
 	"""
+
+	# emitted when zoom factor changes, carries zoom percentage (e.g. 150.0)
+	zoom_changed = Signal(float)
 
 	def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
 		"""
@@ -51,8 +55,10 @@ class FrameView(QGraphicsView):
 		self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 		self.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
+		# Zoom anchors under cursor; resize keeps center stable so
+		# internal layout changes (status bar badge) don't shift the view
 		self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-		self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+		self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
 
 	#============================================
 
@@ -100,18 +106,81 @@ class FrameView(QGraphicsView):
 
 	#============================================
 
-	def wheelEvent(self, event: QtGui.QWheelEvent) -> None:
-		"""
-		Handle mouse wheel zoom events.
+	def _is_trackpad_event(self, event: QtGui.QWheelEvent) -> bool:
+		"""Detect whether a wheel event came from the trackpad.
 
-		Zoom in on wheel up (scale * 1.25) or out on wheel down (scale / 1.25).
-		Clamped between min_zoom and max_zoom.
+		macOS trackpad events carry scroll phases (Begin/Update/End/Momentum)
+		and provide pixel-level deltas.  Mouse wheel clicks have NoScrollPhase
+		and no pixel delta.  Both signals are checked for reliability across
+		different Qt builds.
+
+		Args:
+			event: Wheel event to classify.
+
+		Returns:
+			True if the event originated from a trackpad.
+		"""
+		# Primary: macOS trackpad has Begin/Update/End/Momentum phases
+		if event.phase() != Qt.ScrollPhase.NoScrollPhase:
+			return True
+		# Secondary: trackpads supply pixel-level scroll deltas
+		if event.hasPixelDelta():
+			return True
+		return False
+
+	#============================================
+
+	def _ensure_pan_margin(self) -> None:
+		"""Expand scene rect so scroll bars have range for panning.
+
+		Adds 2% of the image size as margin on each side, just enough
+		for scroll bars to have range without letting the image leave
+		the viewport.  The margin is reset to image bounds on the next
+		set_frame() or fit_to_view() call.
+		"""
+		if self.pixmap_item is None:
+			return
+		image_rect = self.pixmap_item.boundingRect()
+		# 2% margin: enough scroll range without going off edge
+		margin_w = image_rect.width() * 0.02
+		margin_h = image_rect.height() * 0.02
+		expanded = image_rect.adjusted(
+			-margin_w, -margin_h, margin_w, margin_h,
+		)
+		self.scene_obj.setSceneRect(expanded)
+
+	#============================================
+
+	def wheelEvent(self, event: QtGui.QWheelEvent) -> None:
+		"""Handle mouse wheel zoom and trackpad pan events.
+
+		Trackpad two-finger swipe pans the view via scroll bars.
+		Mouse scroll wheel zooms in/out by 1.25x per notch.
 
 		Args:
 			event: Mouse wheel event.
 		"""
-		delta = event.angleDelta().y()
+		if self._is_trackpad_event(event):
+			# Pan the view via scroll bars
+			pixel_delta = event.pixelDelta()
+			angle_delta = event.angleDelta()
+			# prefer pixelDelta when available; fall back to angleDelta
+			dx = pixel_delta.x() if pixel_delta.x() != 0 else angle_delta.x()
+			dy = pixel_delta.y() if pixel_delta.y() != 0 else angle_delta.y()
+			if dx != 0 or dy != 0:
+				# Exit fit mode since user is deliberately panning
+				self._is_fit_zoom = False
+				# Expand scene rect so scroll bars have range to move
+				self._ensure_pan_margin()
+				h_bar = self.horizontalScrollBar()
+				v_bar = self.verticalScrollBar()
+				h_bar.setValue(h_bar.value() - dx)
+				v_bar.setValue(v_bar.value() - dy)
+			event.accept()
+			return
 
+		# Mouse wheel: zoom in/out
+		delta = event.angleDelta().y()
 		if delta > 0:
 			scale_factor = 1.25
 		else:
@@ -123,6 +192,8 @@ class FrameView(QGraphicsView):
 		# Manual wheel zoom exits fit mode
 		self._is_fit_zoom = False
 		self.setTransform(QTransform().scale(self.zoom_factor, self.zoom_factor))
+		# notify listeners of new zoom percentage
+		self.zoom_changed.emit(self.zoom_factor * 100.0)
 
 	#============================================
 
@@ -159,6 +230,7 @@ class FrameView(QGraphicsView):
 		if center_x >= 0 and center_y >= 0:
 			from PySide6.QtCore import QPointF
 			self.centerOn(QPointF(center_x, center_y))
+		self.zoom_changed.emit(self.zoom_factor * 100.0)
 
 	#============================================
 
@@ -176,13 +248,19 @@ class FrameView(QGraphicsView):
 	def fit_to_view(self) -> None:
 		"""Scale the scene to fit entirely within the viewport.
 
-		No-ops if no pixmap is loaded or if already inside a fit call
-		(recursion guard for layout-triggered resizeEvent re-entry).
+		Resets scene rect to image bounds (undoing any pan margin) then
+		fits.  No-ops if no pixmap is loaded or if already inside a fit
+		call (recursion guard for layout-triggered resizeEvent re-entry).
 		"""
 		if self._in_fit_to_view:
 			return
 		if self.pixmap_item is None:
 			return
+
+		# Reset scene rect to image bounds (undo _ensure_pan_margin)
+		image_rect = self.pixmap_item.boundingRect()
+		self.scene_obj.setSceneRect(image_rect)
+
 		scene_rect = self.scene_obj.sceneRect()
 		if scene_rect.isEmpty():
 			return
@@ -195,6 +273,7 @@ class FrameView(QGraphicsView):
 		self.zoom_factor = transform.m11()
 		self._is_fit_zoom = True
 		self._in_fit_to_view = False
+		self.zoom_changed.emit(self.zoom_factor * 100.0)
 
 	#============================================
 

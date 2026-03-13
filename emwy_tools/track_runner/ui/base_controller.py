@@ -268,10 +268,13 @@ class BaseAnnotationController(QObject):
 				self.handle_mouse_release(sx, sy)
 				return True
 		elif event.type() == QEventType.Type.Wheel:
-			# Delegate wheel to the FrameView so zoom works
+			# Delegate wheel to the FrameView for zoom or trackpad pan
 			frame_view = self._window.get_frame_view()
 			frame_view.wheelEvent(event)
-			QTimer.singleShot(0, self._update_scale_bar)
+			# Only update scale bar on mouse wheel zoom, not trackpad pan
+			is_trackpad = frame_view._is_trackpad_event(event)
+			if not is_trackpad:
+				QTimer.singleShot(0, self._update_scale_bar)
 			return True
 
 		return super().eventFilter(obj, event)

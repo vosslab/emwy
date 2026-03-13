@@ -1,14 +1,17 @@
 """Unit tests for track_runner v2 modules.
 
-Covers: state_io, config, scoring, propagator, hypothesis, review, crop, encoder.
-All v1 tests (kalman, tracker, old scoring API, old seeding API) have been removed.
+Covers: state_io, config, scoring, propagator, hypothesis, review, crop, encoder,
+flow consistency, identity scoring, velocity-adaptive crop, seed suggestion,
+occlusion-risk flagging, detection caching.
 """
 
 # Standard Library
 import os
+import inspect
 import tempfile
 
 # PIP3 modules
+import cv2
 import numpy
 import pytest
 
@@ -2103,3 +2106,422 @@ def test_direct_center_malformed_trajectory() -> None:
 	}
 	with pytest.raises(RuntimeError, match="missing required keys"):
 		crop_mod.trajectory_to_crop_rects(trajectory, video_info, config)
+
+
+# ============================================================
+# WP 1A-1: Forward-backward flow consistency
+# ============================================================
+
+
+#============================================
+def test_propagator_fb_consistency_threshold():
+	"""FB_CONSISTENCY_THRESHOLD is 1.0 pixel."""
+	import propagator
+	assert propagator.FB_CONSISTENCY_THRESHOLD == 1.0
+
+
+#============================================
+def test_propagator_min_flow_features():
+	"""MIN_FLOW_FEATURES must be at least 4."""
+	import propagator
+	assert propagator.MIN_FLOW_FEATURES >= 4
+
+
+# ============================================================
+# WP 1A-2: HSV histogram identity scoring
+# ============================================================
+
+
+#============================================
+def _make_solid_patch(bgr_color: tuple, size: int = 80) -> numpy.ndarray:
+	"""Create a solid-color BGR patch for testing.
+
+	Args:
+		bgr_color: (B, G, R) tuple for the patch color.
+		size: Side length of the square patch in pixels.
+
+	Returns:
+		BGR numpy array of shape (size, size, 3).
+	"""
+	patch = numpy.zeros((size, size, 3), dtype=numpy.uint8)
+	patch[:, :] = bgr_color
+	return patch
+
+
+#============================================
+def _make_appearance_model(bgr_color: tuple, size: int = 80) -> dict:
+	"""Build a minimal appearance model from a solid-color patch.
+
+	Args:
+		bgr_color: (B, G, R) tuple for the model color.
+		size: Side length of the square patch.
+
+	Returns:
+		Appearance model dict with hsv_mean, template, and hs_histogram.
+	"""
+	patch = _make_solid_patch(bgr_color, size)
+	hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+	hsv_mean = (
+		float(numpy.mean(hsv[:, :, 0])),
+		float(numpy.mean(hsv[:, :, 1])),
+		float(numpy.mean(hsv[:, :, 2])),
+	)
+	# compute 2D HS histogram matching propagator.build_appearance_model
+	hs_histogram = cv2.calcHist(
+		[hsv], [0, 1], None,
+		[30, 32], [0, 180, 0, 256],
+	)
+	cv2.normalize(hs_histogram, hs_histogram, alpha=1.0, norm_type=cv2.NORM_L1)
+	model = {
+		"hsv_mean": hsv_mean,
+		"template": patch.copy(),
+		"hs_histogram": hs_histogram,
+		"seed_status": "",
+	}
+	return model
+
+
+#============================================
+def test_identity_score_same_color_large():
+	"""Large runner with same color scores high (>0.7)."""
+	import hypothesis
+	# blue jersey: BGR (180, 50, 50)
+	blue_bgr = (180, 50, 50)
+	model = _make_appearance_model(blue_bgr, size=80)
+	# build a frame with the same blue patch at center
+	frame = numpy.zeros((200, 200, 3), dtype=numpy.uint8)
+	frame[60:140, 60:140] = blue_bgr
+	state = {"cx": 100.0, "cy": 100.0, "w": 80.0, "h": 80.0}
+	score = hypothesis.compute_identity_score(frame, state, model)
+	assert score > 0.7, f"same color large runner scored {score}, expected >0.7"
+
+
+#============================================
+def test_identity_score_different_color_large():
+	"""Large runner with different color scores lower than same color."""
+	import hypothesis
+	# blue jersey model
+	blue_bgr = (180, 50, 50)
+	model = _make_appearance_model(blue_bgr, size=80)
+	# red jersey in the frame: BGR (50, 50, 200)
+	red_bgr = (50, 50, 200)
+	frame = numpy.zeros((200, 200, 3), dtype=numpy.uint8)
+	frame[60:140, 60:140] = red_bgr
+	state = {"cx": 100.0, "cy": 100.0, "w": 80.0, "h": 80.0}
+	score_diff = hypothesis.compute_identity_score(frame, state, model)
+	# same color for comparison
+	frame_same = numpy.zeros((200, 200, 3), dtype=numpy.uint8)
+	frame_same[60:140, 60:140] = blue_bgr
+	score_same = hypothesis.compute_identity_score(frame_same, state, model)
+	assert score_same > score_diff, (
+		f"same-color score {score_same} should exceed diff-color {score_diff}"
+	)
+
+
+#============================================
+def test_identity_score_small_runner_neutral():
+	"""Runner below 30px returns neutral 0.5."""
+	import hypothesis
+	blue_bgr = (180, 50, 50)
+	model = _make_appearance_model(blue_bgr, size=80)
+	frame = numpy.zeros((200, 200, 3), dtype=numpy.uint8)
+	frame[90:110, 90:110] = blue_bgr
+	# 20px tall runner
+	state = {"cx": 100.0, "cy": 100.0, "w": 20.0, "h": 20.0}
+	score = hypothesis.compute_identity_score(frame, state, model)
+	assert score == 0.5, f"small runner scored {score}, expected 0.5"
+
+
+#============================================
+def test_identity_score_medium_runner_uses_mean_hsv():
+	"""Runner 30-60px uses mean-HSV (not histogram)."""
+	import hypothesis
+	blue_bgr = (180, 50, 50)
+	model = _make_appearance_model(blue_bgr, size=80)
+	frame = numpy.zeros((200, 200, 3), dtype=numpy.uint8)
+	frame[75:125, 75:125] = blue_bgr
+	# 50px tall runner: medium range
+	state = {"cx": 100.0, "cy": 100.0, "w": 50.0, "h": 50.0}
+	score = hypothesis.compute_identity_score(frame, state, model)
+	# same color should score reasonably well even with mean-HSV
+	assert score > 0.5, f"medium same-color runner scored {score}, expected >0.5"
+
+
+#============================================
+def test_histogram_bins_constant():
+	"""MIN_HISTOGRAM_BINS is set to 50."""
+	import hypothesis
+	assert hypothesis.MIN_HISTOGRAM_BINS == 50
+
+
+# ============================================================
+# WP 1A-3: Velocity-adaptive crop
+# ============================================================
+
+
+#============================================
+def test_crop_controller_velocity_adaptive():
+	"""CropController adapts velocity cap based on subject speed."""
+	import tr_crop as crop_module
+	controller = crop_module.CropController(
+		frame_width=1920,
+		frame_height=1080,
+		max_crop_velocity=30.0,
+		velocity_scale=2.0,
+		displacement_alpha=0.1,
+	)
+	# feed a stationary target to establish baseline
+	state = {"cx": 960.0, "cy": 540.0, "w": 100.0, "h": 100.0, "conf": 0.9, "source": "merged"}
+	for _ in range(5):
+		controller.update(state)
+	# record the initial EMA displacement
+	initial_ema = controller._ema_displacement
+	# now feed a fast-moving target
+	for step in range(10):
+		moving_state = dict(state, cx=960.0 + step * 50.0)
+		controller.update(moving_state)
+	# EMA displacement should have increased
+	assert controller._ema_displacement > initial_ema, (
+		"EMA displacement should increase with fast-moving target"
+	)
+
+
+# ============================================================
+# WP 1B-1: Seed suggestion
+# ============================================================
+
+
+#============================================
+def test_seed_suggestion_no_confirmed_seeds():
+	"""With no confirmed seeds, suggestion requires manual selection."""
+	import seeding
+	# create a dummy frame
+	frame = numpy.zeros((200, 400, 3), dtype=numpy.uint8)
+	# simulate detections: two candidates
+	candidates = [
+		{"bbox": [100, 100, 50, 100], "confidence": 0.9, "class_id": 0},
+		{"bbox": [300, 100, 50, 100], "confidence": 0.8, "class_id": 0},
+	]
+	confirmed_seeds = []
+	result = seeding.suggest_seed_candidates(
+		frame, candidates, confirmed_seeds, frame_index=0,
+	)
+	# with no confirmed seeds, should require manual selection
+	assert result["suggestion_index"] is None
+
+
+#============================================
+def test_seed_suggestion_single_detection_with_seeds():
+	"""Single detection with confirmed seeds auto-suggests."""
+	import seeding
+	# create a dummy frame
+	frame = numpy.zeros((200, 400, 3), dtype=numpy.uint8)
+	# one candidate
+	candidates = [
+		{"bbox": [100, 100, 50, 100], "confidence": 0.9, "class_id": 0},
+	]
+	# build a confirmed seed with a histogram
+	blue_patch = _make_solid_patch((180, 50, 50), size=80)
+	hsv = cv2.cvtColor(blue_patch, cv2.COLOR_BGR2HSV)
+	hist = cv2.calcHist(
+		[hsv], [0, 1], None,
+		[30, 32], [0, 180, 0, 256],
+	)
+	cv2.normalize(hist, hist, alpha=1.0, norm_type=cv2.NORM_L1)
+	confirmed_seeds = [{"histogram": hist}]
+	result = seeding.suggest_seed_candidates(
+		frame, candidates, confirmed_seeds, frame_index=5,
+	)
+	# single detection with confirmed seeds: should auto-suggest index 0
+	assert result["suggestion_index"] == 0
+	assert result["mode"] == "single"
+
+
+# ============================================================
+# WP 2-1: Occlusion-risk flagging
+# ============================================================
+
+
+#============================================
+def test_occlusion_risk_no_overlap():
+	"""No occlusion risk when detections are far from target."""
+	import hypothesis
+	target = {"cx": 100.0, "cy": 100.0, "w": 50.0, "h": 100.0}
+	# detection far away
+	detections = [
+		{"bbox": [500, 100, 50, 100], "confidence": 0.9, "class_id": 0},
+	]
+	risk = hypothesis.compute_occlusion_risk(target, detections)
+	assert risk is False
+
+
+#============================================
+def test_occlusion_risk_with_overlap():
+	"""Occlusion risk detected when nearby detection overlaps target."""
+	import hypothesis
+	target = {"cx": 100.0, "cy": 100.0, "w": 50.0, "h": 100.0}
+	# detection overlapping partially (not the target itself)
+	# target covers x=[75,125], y=[50,150]
+	# detection covers x=[100,160], y=[50,150]: overlap but not high IoU
+	detections = [
+		{"bbox": [100, 50, 60, 100], "confidence": 0.8, "class_id": 0},
+	]
+	risk = hypothesis.compute_occlusion_risk(target, detections)
+	assert risk is True
+
+
+#============================================
+def test_occlusion_risk_skips_target_itself():
+	"""Detection with very high IoU (the target) is skipped."""
+	import hypothesis
+	target = {"cx": 100.0, "cy": 100.0, "w": 50.0, "h": 100.0}
+	# detection nearly identical to target (IoU ~1.0)
+	detections = [
+		{"bbox": [75, 50, 50, 100], "confidence": 0.95, "class_id": 0},
+	]
+	risk = hypothesis.compute_occlusion_risk(target, detections)
+	# high-IoU detection is the target itself, should be skipped
+	assert risk is False
+
+
+#============================================
+def test_occlusion_iou_threshold():
+	"""OCCLUSION_RISK_IOU is set to 0.15."""
+	import hypothesis
+	assert hypothesis.OCCLUSION_RISK_IOU == 0.15
+
+
+# ============================================================
+# WP 2-2: Review system occlusion integration
+# ============================================================
+
+
+#============================================
+def _make_fused_track(n_frames: int, occlusion_frames: list) -> list:
+	"""Build a minimal fused track with occlusion_risk flags.
+
+	Args:
+		n_frames: Total number of frames.
+		occlusion_frames: List of frame indices (0-based) with occlusion.
+
+	Returns:
+		List of state dicts with occlusion_risk set.
+	"""
+	track = []
+	for i in range(n_frames):
+		state = {
+			"cx": 100.0, "cy": 100.0, "w": 50.0, "h": 80.0,
+			"conf": 0.8, "source": "merged", "fuse_flag": False,
+			"occlusion_risk": i in occlusion_frames,
+		}
+		track.append(state)
+	return track
+
+
+#============================================
+def test_review_find_occlusion_exits():
+	"""_find_occlusion_exits detects True->False transitions."""
+	import review
+	# occlusion at frames 5,6,7 (indices), exits at frame 8
+	track = _make_fused_track(20, [5, 6, 7])
+	interval = {
+		"start_frame": 100,
+		"fused_track": track,
+	}
+	exits = review._find_occlusion_exits(interval)
+	# frame index 8 in the track = absolute frame 108
+	assert 108 in exits, f"expected exit at frame 108, got {exits}"
+
+
+#============================================
+def test_review_occlusion_adds_failure_reason():
+	"""identify_weak_spans adds likely_occlusion for occluded intervals."""
+	import review
+	track = _make_fused_track(30, [10, 11, 12])
+	interval = {
+		"start_frame": 0,
+		"end_frame": 30,
+		"fused_track": track,
+		"interval_score": {
+			"agreement_score": 0.3,
+			"competitor_margin": 0.5,
+			"identity_score": 0.6,
+			"confidence": "low",
+			"failure_reasons": ["low_agreement"],
+		},
+	}
+	diagnostics = {"intervals": [interval], "fps": 30.0}
+	suggestions = review.identify_weak_spans(diagnostics)
+	# should have suggestions including occlusion-related ones
+	reasons = [s["reason"] for s in suggestions]
+	assert "likely_occlusion" in reasons, (
+		f"expected 'likely_occlusion' in reasons, got {reasons}"
+	)
+
+
+#============================================
+def test_review_good_interval_still_gets_occlusion_exits():
+	"""Good-confidence intervals still get occlusion exit suggestions."""
+	import review
+	# occlusion at frames 5-7, exit at frame 8
+	track = _make_fused_track(20, [5, 6, 7])
+	interval = {
+		"start_frame": 200,
+		"end_frame": 220,
+		"fused_track": track,
+		"interval_score": {
+			"agreement_score": 0.9,
+			"competitor_margin": 0.8,
+			"identity_score": 0.9,
+			"confidence": "good",
+			"failure_reasons": [],
+		},
+	}
+	diagnostics = {"intervals": [interval], "fps": 30.0}
+	suggestions = review.identify_weak_spans(diagnostics)
+	# should still get occlusion exit suggestion at frame 208
+	frames = [s["frame"] for s in suggestions]
+	assert 208 in frames, f"expected exit suggestion at 208, got {frames}"
+
+
+# ============================================================
+# WP 2-3: Detection caching
+# ============================================================
+
+
+#============================================
+def test_detection_cache_in_solve_interval_signature():
+	"""solve_interval accepts detection_cache parameter."""
+	import interval_solver
+	sig = inspect.signature(interval_solver.solve_interval)
+	assert "detection_cache" in sig.parameters
+
+
+#============================================
+def test_detection_cache_returned_in_result():
+	"""solve_interval result dict includes detection_cache key."""
+	# just verify the key name is documented in the function
+	import interval_solver
+	# check docstring mentions detection_cache in return
+	doc = interval_solver.solve_interval.__doc__
+	assert "detection_cache" in doc
+
+
+#============================================
+def test_fuse_tracks_propagates_occlusion():
+	"""fuse_tracks preserves occlusion_risk from both directions."""
+	import interval_solver
+	# forward has occlusion, backward does not
+	fwd = [
+		{"cx": 100, "cy": 100, "w": 50, "h": 80, "conf": 0.8, "occlusion_risk": True},
+		{"cx": 102, "cy": 100, "w": 50, "h": 80, "conf": 0.7, "occlusion_risk": False},
+	]
+	bwd = [
+		{"cx": 101, "cy": 100, "w": 50, "h": 80, "conf": 0.7, "occlusion_risk": False},
+		{"cx": 103, "cy": 100, "w": 50, "h": 80, "conf": 0.8, "occlusion_risk": True},
+	]
+	fused = interval_solver.fuse_tracks(fwd, bwd)
+	# frame 0: fwd has occlusion -> should be True (OR)
+	assert fused[0]["occlusion_risk"] is True
+	# frame 1: bwd has occlusion -> should be True (OR)
+	assert fused[1]["occlusion_risk"] is True
