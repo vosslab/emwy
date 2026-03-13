@@ -17,6 +17,7 @@ import rich.progress
 
 # local repo modules
 import crop
+import common_tools.frame_filters as frame_filters
 
 
 #============================================
@@ -132,6 +133,7 @@ class VideoWriter:
 		fps: float,
 		codec: str = "libx264",
 		crf: int = 18,
+		vf_string: str = "",
 	):
 		"""Start ffmpeg pipe for encoding.
 
@@ -142,6 +144,7 @@ class VideoWriter:
 			fps: Output frame rate.
 			codec: Video codec (default libx264).
 			crf: Constant Rate Factor (default 18).
+			vf_string: Optional ffmpeg -vf filter string (e.g. "hqdn3d").
 
 		Raises:
 			RuntimeError: If ffmpeg is not found on the system.
@@ -167,8 +170,11 @@ class VideoWriter:
 			"-vcodec", codec,
 			"-crf", str(crf),
 			"-pix_fmt", "yuv420p",
-			output_path,
 		]
+		# insert ffmpeg video filters when provided
+		if vf_string:
+			cmd.extend(["-vf", vf_string])
+		cmd.append(output_path)
 		# start ffmpeg subprocess with piped stdin
 		self.process = subprocess.Popen(
 			cmd,
@@ -313,6 +319,7 @@ def encode_cropped_video(
 	crf: int = 18,
 	frame_states: list | None = None,
 	debug: bool = False,
+	encode_filters: list | None = None,
 ) -> None:
 	"""Read all frames, apply crops, and write encoded output.
 
@@ -329,13 +336,20 @@ def encode_cropped_video(
 		crf: Constant Rate Factor (default 18).
 		frame_states: List of per-frame state dicts from tracker.
 		debug: If True, draw tracking overlay on cropped frames.
+		encode_filters: Ordered list of filter names to apply during encode.
 	"""
 	info = reader.get_info()
 	fps = info["fps"]
+	# build ffmpeg vf string from encode filters
+	vf_string = ""
+	if encode_filters:
+		vf_string = frame_filters.get_ffmpeg_vf_string(encode_filters)
 	writer = VideoWriter(
 		output_path, crop_width, crop_height, fps,
-		codec=codec, crf=crf,
+		codec=codec, crf=crf, vf_string=vf_string,
 	)
+	# choose interpolation: lanczos when filters are active for quality
+	interp = cv2.INTER_LANCZOS4 if encode_filters else cv2.INTER_LINEAR
 	frame_count = len(crop_rects)
 	# wrap reader with rich progress bar
 	with rich.progress.Progress(
@@ -353,7 +367,10 @@ def encode_cropped_video(
 			crop_rect = crop_rects[frame_idx]
 			cropped = crop.apply_crop(frame, crop_rect)
 			# resize to the exact output dimensions for consistency
-			resized = cv2.resize(cropped, (crop_width, crop_height))
+			resized = cv2.resize(cropped, (crop_width, crop_height), interpolation=interp)
+			# apply opencv encode filters after resize
+			if encode_filters:
+				resized = frame_filters.apply_filter_pipeline(resized, encode_filters)
 			# draw debug overlay on the cropped frame when requested
 			if debug and frame_states is not None:
 				state = frame_states[frame_idx] if frame_idx < len(frame_states) else None
@@ -708,6 +725,7 @@ def _encode_segment(
 	debug: bool,
 	worker_id: int,
 	total_workers: int,
+	encode_filters: list | None = None,
 ) -> str:
 	"""Encode one segment of the video in a worker process.
 
@@ -727,6 +745,7 @@ def _encode_segment(
 		debug: If True, draw debug overlay.
 		worker_id: Worker index for progress bar positioning.
 		total_workers: Total number of workers for display.
+		encode_filters: Ordered list of filter names to apply during encode.
 
 	Returns:
 		Path to the encoded segment file.
@@ -734,10 +753,16 @@ def _encode_segment(
 	reader = VideoReader(video_path)
 	info = reader.get_info()
 	fps = info["fps"]
+	# build ffmpeg vf string from encode filters
+	vf_string = ""
+	if encode_filters:
+		vf_string = frame_filters.get_ffmpeg_vf_string(encode_filters)
 	writer = VideoWriter(
 		output_path, crop_width, crop_height, fps,
-		codec=codec, crf=crf,
+		codec=codec, crf=crf, vf_string=vf_string,
 	)
+	# choose interpolation: lanczos when filters are active for quality
+	interp = cv2.INTER_LANCZOS4 if encode_filters else cv2.INTER_LINEAR
 	chunk_size = len(crop_rects_chunk)
 	# rich progress bar for this worker
 	with rich.progress.Progress(
@@ -759,7 +784,10 @@ def _encode_segment(
 			# crop and resize
 			crop_rect = crop_rects_chunk[local_idx]
 			cropped = crop.apply_crop(frame, crop_rect)
-			resized = cv2.resize(cropped, (crop_width, crop_height))
+			resized = cv2.resize(cropped, (crop_width, crop_height), interpolation=interp)
+			# apply opencv encode filters after resize
+			if encode_filters:
+				resized = frame_filters.apply_filter_pipeline(resized, encode_filters)
 			# draw debug overlay when requested
 			if debug and frame_states_chunk is not None:
 				state = frame_states_chunk[local_idx] if local_idx < len(frame_states_chunk) else None
@@ -785,6 +813,7 @@ def encode_cropped_video_parallel(
 	frame_states: list | None = None,
 	debug: bool = False,
 	workers: int = 4,
+	encode_filters: list | None = None,
 ) -> None:
 	"""Encode cropped video using parallel worker processes.
 
@@ -805,6 +834,7 @@ def encode_cropped_video_parallel(
 		frame_states: List of per-frame state dicts from tracker.
 		debug: If True, draw tracking overlay on cropped frames.
 		workers: Number of parallel encoding workers.
+		encode_filters: Ordered list of filter names to apply during encode.
 	"""
 	# fall back to sequential if only 1 worker
 	if workers <= 1:
@@ -814,6 +844,7 @@ def encode_cropped_video_parallel(
 				crop_width, crop_height,
 				codec=codec, crf=crf,
 				frame_states=frame_states, debug=debug,
+				encode_filters=encode_filters,
 			)
 		return
 
@@ -863,6 +894,7 @@ def encode_cropped_video_parallel(
 				debug,
 				seg["worker_id"],
 				actual_workers,
+				encode_filters,
 			)
 			futures.append((future, seg["path"]))
 		# collect results in order

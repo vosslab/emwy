@@ -97,6 +97,10 @@ _SEVERITY_RANK = {"high": 2, "medium": 1, "low": 0}
 # Duration threshold (seconds) for promoting severity one level
 _DURATION_PROMOTE_THRESHOLD_S = 10.0
 
+# Short intervals (< this many frames) produce noisy FWD/BWD metrics,
+# so high severity is unconditionally demoted to medium
+_SHORT_INTERVAL_FRAMES = 10
+
 
 #============================================
 def classify_interval_severity(interval: dict, fps: float) -> str:
@@ -134,10 +138,18 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 	else:
 		severity = "low"
 
-	# duration-based promotion: intervals longer than threshold promote one level
+	# extract frame range (needed by both demotion and promotion)
 	start_frame = int(interval["start_frame"])
 	end_frame = int(interval["end_frame"])
-	duration_s = (end_frame - start_frame) / max(1.0, fps)
+	interval_frames = end_frame - start_frame
+
+	# short-interval demotion: intervals under 10 frames are noisy,
+	# demote high -> medium unconditionally
+	if interval_frames < _SHORT_INTERVAL_FRAMES and severity == "high":
+		severity = "medium"
+
+	# duration-based promotion: intervals longer than threshold promote one level
+	duration_s = interval_frames / max(1.0, fps)
 	if duration_s > _DURATION_PROMOTE_THRESHOLD_S:
 		if severity == "low":
 			severity = "medium"
@@ -548,6 +560,34 @@ assert len(_targets) == 1
 # severity classification: agreement=0.3 is medium severity
 _sev = classify_interval_severity(_test_diag["intervals"][1], 30.0)
 assert _sev == "medium"
+
+# short-interval demotion: 3-frame interval with agreement=0.1 demoted to medium
+_short_high_interval = {
+	"start_frame": 100,
+	"end_frame": 103,
+	"interval_score": {
+		"confidence": "low",
+		"agreement_score": 0.1,
+		"competitor_margin": 0.1,
+		"failure_reasons": [],
+	},
+}
+_sev_short = classify_interval_severity(_short_high_interval, 30.0)
+assert _sev_short == "medium", f"expected medium, got {_sev_short}"
+
+# short-interval with identity swap also demoted to medium
+_short_swap_interval = {
+	"start_frame": 100,
+	"end_frame": 103,
+	"interval_score": {
+		"confidence": "low",
+		"agreement_score": 0.1,
+		"competitor_margin": 0.1,
+		"failure_reasons": ["likely_identity_swap"],
+	},
+}
+_sev_swap = classify_interval_severity(_short_swap_interval, 30.0)
+assert _sev_swap == "medium", f"expected medium, got {_sev_swap}"
 
 # severity filtering: medium+ should include the fair interval
 _targets_med = generate_refinement_targets(_test_diag, mode="suggested", severity="medium")

@@ -602,6 +602,52 @@ def _print_interval_result_rich(
 	progress.console.print(_format_interval_result(result, fps))
 
 
+#============================================
+def _stamp_seed_confidence(
+	trajectory: list,
+	seeds: list,
+) -> list:
+	"""Stamp seed confidence and status onto trajectory at seed frames.
+
+	Ensures seed frames have the correct confidence regardless of what
+	fuse_tracks() computed. Visible and partial seeds get conf=1.0
+	(precise position known). Approx seeds get conf=0.3 (uncertain).
+
+	Also propagates seed_status into the trajectory state for downstream
+	consumers (crop, encoder) to know which frames have human-verified
+	positions.
+
+	Args:
+		trajectory: List of tracking state dicts indexed by frame number.
+		seeds: List of all seed dicts.
+
+	Returns:
+		The modified trajectory list (same object, modified in place).
+	"""
+	n = len(trajectory)
+	stamped = 0
+	for seed in seeds:
+		frame_idx = int(seed["frame_index"])
+		if frame_idx < 0 or frame_idx >= n:
+			continue
+		if trajectory[frame_idx] is None:
+			continue
+		status = seed.get("status", "")
+		# visible and partial seeds have precise position
+		if status in ("visible", "partial"):
+			trajectory[frame_idx]["conf"] = 1.0
+			trajectory[frame_idx]["seed_status"] = status
+			stamped += 1
+		# approx seeds have uncertain but useful position
+		elif status in ("approximate", "obstructed"):
+			trajectory[frame_idx]["conf"] = 0.3
+			trajectory[frame_idx]["seed_status"] = status
+			stamped += 1
+	if stamped > 0:
+		print(f"  stamped confidence on {stamped} seed frames")
+	return trajectory
+
+
 # erase radius in seconds for trajectory erasure
 APPROX_ERASE_RADIUS_S = 0.5     # seconds to erase around approx seeds
 NOT_IN_FRAME_ERASE_RADIUS_S = 1.0  # seconds to erase around not_in_frame seeds
@@ -663,7 +709,20 @@ def _apply_trajectory_erasure(
 		erase_start = max(0, seed_frame - radius_frames)
 		erase_end = min(n - 1, seed_frame + radius_frames)
 		for fi in range(erase_start, erase_end + 1):
-			trajectory[fi] = None
+			if status in ("approximate", "obstructed"):
+				# use the approx seed position as a low-confidence hint
+				# instead of None which becomes a center-frame fallback
+				trajectory[fi] = {
+					"cx": float(seed["cx"]),
+					"cy": float(seed["cy"]),
+					"w": float(seed["w"]),
+					"h": float(seed["h"]),
+					"conf": 0.3,
+					"source": "approx_seed_hint",
+				}
+			else:
+				# not_in_frame: runner truly off-screen, erase to None
+				trajectory[fi] = None
 	if erase_count > 0:
 		print(f"  erasing trajectory near {erase_count} seeds")
 	return trajectory
@@ -1021,6 +1080,10 @@ def solve_all_intervals(
 
 	# stitch all intervals into full trajectory
 	trajectory = stitch_trajectories(interval_results)
+
+	# stamp seed confidence onto trajectory at seed frames
+	# must happen before erasure so approx seeds get correct conf first
+	trajectory = _stamp_seed_confidence(trajectory, seeds)
 
 	# erase trajectory near absence seeds (function decides which seeds to erase)
 	trajectory = _apply_trajectory_erasure(trajectory, seeds, fps)

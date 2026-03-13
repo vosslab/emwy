@@ -184,6 +184,8 @@ class CropController:
 			if abs(error_cx) >= deadband:
 				alpha = self.smoothing_attack if abs(error_cx) > attack_threshold else self.smoothing_release
 				alpha *= confidence
+				# floor prevents crop from freezing at very low confidence
+				alpha = max(alpha, 0.02)
 				self.smooth_cx += alpha * error_cx
 
 			# smooth center y
@@ -191,6 +193,7 @@ class CropController:
 			if abs(error_cy) >= deadband:
 				alpha = self.smoothing_attack if abs(error_cy) > attack_threshold else self.smoothing_release
 				alpha *= confidence
+				alpha = max(alpha, 0.02)
 				self.smooth_cy += alpha * error_cy
 
 			# smooth crop size
@@ -198,6 +201,7 @@ class CropController:
 			if abs(error_size) >= deadband:
 				alpha = self.smoothing_attack if abs(error_size) > attack_threshold else self.smoothing_release
 				alpha *= confidence
+				alpha = max(alpha, 0.02)
 				self.smooth_size += alpha * error_size
 
 			# Step 5: cap per-frame velocity on center
@@ -398,18 +402,30 @@ def trajectory_to_crop_rects(
 	frame_height = video_info["height"]
 	total_frames = video_info["frame_count"]
 
-	# fill any None gaps with fallback center state
-	fallback_cx = frame_width / 2.0
-	fallback_cy = frame_height / 2.0
+	# fill any None gaps by holding last known position with decaying confidence
+	# instead of snapping to center-frame which pulls the crop away from the runner
+	last_known = None
 	full_trajectory = []
 	for i in range(total_frames):
 		if i < len(trajectory) and trajectory[i] is not None:
 			full_trajectory.append(trajectory[i])
+			last_known = trajectory[i]
+		elif last_known is not None:
+			# hold last known position with reduced confidence
+			hold_state = {
+				"cx": last_known["cx"],
+				"cy": last_known["cy"],
+				"w": last_known["w"],
+				"h": last_known["h"],
+				"conf": 0.15,
+				"source": "hold_last",
+			}
+			full_trajectory.append(hold_state)
 		else:
-			# center-frame fallback with low confidence
+			# no prior position yet, use center-frame as last resort
 			fallback = {
-				"cx": fallback_cx,
-				"cy": fallback_cy,
+				"cx": frame_width / 2.0,
+				"cy": frame_height / 2.0,
 				"w": float(frame_width) * 0.3,
 				"h": float(frame_height) * 0.5,
 				"conf": 0.1,

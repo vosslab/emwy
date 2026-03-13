@@ -37,6 +37,7 @@ def default_config() -> dict:
 			"crop_fill_ratio": 0.30,
 			"video_codec": "libx264",
 			"crf": 18,
+			"encode_filters": [],
 		},
 	}
 	return config

@@ -34,6 +34,7 @@ import seed_editor
 import interval_solver
 import review
 import crop
+import common_tools.frame_filters as frame_filters
 
 
 #============================================
@@ -142,6 +143,14 @@ def parse_args() -> argparse.Namespace:
 		"--keep-temp", dest="keep_temp", action="store_true",
 		help="Keep temporary files after encoding.",
 	)
+	encode_parser.add_argument(
+		"-F", "--encode-filters", dest="encode_filters", type=str,
+		default=None,
+		help=(
+			"Comma-separated filter pipeline for encode output "
+			"(overrides config). Example: bilateral,hqdn3d"
+		),
+	)
 
 	# -- run mode (full pipeline) --
 	run_parser = subparsers.add_parser(
@@ -189,6 +198,14 @@ def parse_args() -> argparse.Namespace:
 		action="store_false",
 		help="Disable interactive refinement prompt after solve.",
 	)
+	run_parser.add_argument(
+		"-F", "--encode-filters", dest="encode_filters", type=str,
+		default=None,
+		help=(
+			"Comma-separated filter pipeline for encode output "
+			"(overrides config). Example: bilateral,hqdn3d"
+		),
+	)
 	run_parser.set_defaults(
 		keep_temp=False,
 		ignore_diagnostics=False,
@@ -218,6 +235,8 @@ def parse_args() -> argparse.Namespace:
 			args.severity = None
 		if not hasattr(args, "interactive_refine"):
 			args.interactive_refine = True
+		if not hasattr(args, "encode_filters"):
+			args.encode_filters = None
 	return args
 
 
@@ -1043,6 +1062,38 @@ def _mode_refine(
 
 
 #============================================
+def _resolve_encode_filters(args: argparse.Namespace, proc_cfg: dict) -> list:
+	"""Resolve the encode filter list from CLI and config.
+
+	CLI --encode-filters overrides config processing.encode_filters.
+	Validates each filter name against the known filter list.
+
+	Args:
+		args: Parsed argparse namespace.
+		proc_cfg: The processing section of the config dict.
+
+	Returns:
+		List of validated filter name strings, or empty list.
+	"""
+	# CLI override takes priority
+	cli_value = getattr(args, "encode_filters", None)
+	if cli_value is not None:
+		# split comma-separated string into list
+		filter_list = [f.strip() for f in cli_value.split(",") if f.strip()]
+	else:
+		# fall back to config value
+		filter_list = list(proc_cfg.get("encode_filters", []))
+	# validate each filter name
+	for name in filter_list:
+		if name not in frame_filters.ALL_ENCODE_FILTERS:
+			raise RuntimeError(
+				f"unknown encode filter: '{name}'. "
+				f"Valid filters: {frame_filters.ALL_ENCODE_FILTERS}"
+			)
+	return filter_list
+
+
+#============================================
 def _mode_encode(
 	args: argparse.Namespace,
 	cfg: dict,
@@ -1142,10 +1193,14 @@ def _mode_encode(
 	video_codec = proc_cfg.get("video_codec", "libx264")
 	crf_value = int(proc_cfg.get("crf", 18))
 
+	# resolve encode filters: CLI overrides config, config overrides default
+	encode_filters = _resolve_encode_filters(args, proc_cfg)
+
 	# encode
 	temp_video = output_path + ".tmp.mp4"
 	workers_enc_label = f" ({num_workers} workers)" if num_workers > 1 else ""
-	print(f"encoding cropped video: {crop_w}x{crop_h}{workers_enc_label}")
+	filters_label = f" filters={encode_filters}" if encode_filters else ""
+	print(f"encoding cropped video: {crop_w}x{crop_h}{workers_enc_label}{filters_label}")
 	t_encode_start = time.time()
 
 	# build frame_states for debug overlay
@@ -1176,6 +1231,7 @@ def _mode_encode(
 			frame_states=frame_states_for_debug,
 			debug=args.debug,
 			workers=num_workers,
+			encode_filters=encode_filters,
 		)
 	else:
 		with encoder.VideoReader(args.input_file) as reader:
@@ -1185,6 +1241,7 @@ def _mode_encode(
 				codec=video_codec, crf=crf_value,
 				frame_states=frame_states_for_debug,
 				debug=args.debug,
+				encode_filters=encode_filters,
 			)
 	t_encode_elapsed = time.time() - t_encode_start
 	print(f"  encode complete ({t_encode_elapsed:.1f}s)")

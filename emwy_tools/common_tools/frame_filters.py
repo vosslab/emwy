@@ -1,7 +1,8 @@
-"""Display-only image filters for annotation UIs.
+"""Image filters for annotation UIs and encode pipelines.
 
-Pure functions that enhance video frames for visual clarity during
-manual annotation. Filters do not affect detection or color extraction.
+Pure functions that enhance video frames. Display filters improve visual
+clarity during manual annotation. Encode filters reduce noise and
+sharpen frames in the crop-and-encode pipeline.
 """
 
 # PIP3 modules
@@ -10,11 +11,17 @@ import numpy
 
 #============================================
 
-# ordered list of available filter presets
+# ordered list of available filter presets (annotation UI cycle list)
 FILTER_PRESETS = [
 	"none", "bilateral", "clahe", "bilateral+clahe",
 	"sharpen", "edge_enhance",
 ]
+
+# encode filter registries: opencv filters run per-frame in python,
+# ffmpeg filters run as -vf flags in the ffmpeg encode command
+OPENCV_ENCODE_FILTERS = ["bilateral", "clahe", "sharpen", "denoise", "auto_levels"]
+FFMPEG_ENCODE_FILTERS = ["hqdn3d", "nlmeans"]
+ALL_ENCODE_FILTERS = OPENCV_ENCODE_FILTERS + FFMPEG_ENCODE_FILTERS
 
 #============================================
 
@@ -66,6 +73,10 @@ def apply_filter(bgr: numpy.ndarray, preset: str) -> numpy.ndarray:
 		return apply_bilateral_clahe(bgr)
 	if preset == "edge_enhance":
 		return apply_edge_enhance(bgr)
+	if preset == "denoise":
+		return apply_denoise(bgr)
+	if preset == "auto_levels":
+		return apply_auto_levels(bgr)
 	# unknown preset, return unchanged
 	return bgr
 
@@ -173,4 +184,109 @@ def apply_edge_enhance(bgr: numpy.ndarray) -> numpy.ndarray:
 	# blend original with edge map
 	blend_weight = 0.3
 	result = cv2.addWeighted(bgr, 1.0, edges_bgr, blend_weight, 0)
+	return result
+
+
+#============================================
+
+def apply_denoise(bgr: numpy.ndarray) -> numpy.ndarray:
+	"""Non-local means denoising for colored images.
+
+	Strong spatial denoiser using fastNlMeansDenoisingColored.
+	Good for removing compression artifacts and sensor noise
+	while preserving edges.
+
+	Args:
+		bgr: Input BGR image.
+
+	Returns:
+		Denoised BGR image.
+	"""
+	result = cv2.fastNlMeansDenoisingColored(
+		bgr, None, h=10, hForColorComponents=10,
+		templateWindowSize=7, searchWindowSize=21,
+	)
+	return result
+
+
+#============================================
+
+def apply_auto_levels(bgr: numpy.ndarray) -> numpy.ndarray:
+	"""Per-channel percentile histogram stretch.
+
+	Computes the 1st and 99th percentile per BGR channel and
+	linearly remaps pixel values to fill the 0-255 range. Helps
+	correct washed-out or underexposed footage.
+
+	Args:
+		bgr: Input BGR image.
+
+	Returns:
+		Level-adjusted BGR image.
+	"""
+	result = numpy.empty_like(bgr)
+	for ch in range(3):
+		channel = bgr[:, :, ch]
+		# compute 1st and 99th percentile bounds
+		low = numpy.percentile(channel, 1)
+		high = numpy.percentile(channel, 99)
+		if high - low < 1:
+			# avoid division by near-zero; channel is nearly flat
+			result[:, :, ch] = channel
+			continue
+		# linear remap from [low, high] to [0, 255]
+		scaled = (channel.astype(numpy.float32) - low) / (high - low) * 255.0
+		result[:, :, ch] = numpy.clip(scaled, 0, 255).astype(numpy.uint8)
+	return result
+
+
+#============================================
+
+def apply_filter_pipeline(bgr: numpy.ndarray, filter_list: list) -> numpy.ndarray:
+	"""Apply opencv encode filters from a filter list in order.
+
+	Skips any ffmpeg filter names in the list (those run in ffmpeg's
+	-vf flag instead). Only applies filters from OPENCV_ENCODE_FILTERS.
+
+	Args:
+		bgr: Input BGR image.
+		filter_list: Ordered list of filter name strings.
+
+	Returns:
+		Filtered BGR image after all applicable opencv filters.
+	"""
+	result = bgr
+	for name in filter_list:
+		if name not in OPENCV_ENCODE_FILTERS:
+			# skip ffmpeg-only filters
+			continue
+		result = apply_filter(result, name)
+	return result
+
+
+#============================================
+
+def get_ffmpeg_vf_string(filter_list: list) -> str:
+	"""Build the ffmpeg -vf value string from a filter list.
+
+	Extracts only ffmpeg filter names from the list, preserving
+	order, and joins them with commas. Maps filter names to their
+	ffmpeg equivalents.
+
+	Args:
+		filter_list: Ordered list of filter name strings.
+
+	Returns:
+		Comma-separated ffmpeg filter string, or empty string if none.
+	"""
+	# map encode filter names to ffmpeg -vf filter syntax
+	ffmpeg_filter_map = {
+		"hqdn3d": "hqdn3d",
+		"nlmeans": "nlmeans",
+	}
+	parts = []
+	for name in filter_list:
+		if name in ffmpeg_filter_map:
+			parts.append(ffmpeg_filter_map[name])
+	result = ",".join(parts)
 	return result
