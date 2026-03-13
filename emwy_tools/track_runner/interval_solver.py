@@ -439,7 +439,7 @@ def solve_interval(
 			rich.progress.TextColumn("{task.description}"),
 			rich.progress.BarColumn(),
 			rich.progress.TaskProgressColumn(),
-			rich.progress.TimeRemainingColumn(),
+			rich.progress.TimeElapsedColumn(),
 		)
 		progress_ctx.start()
 		progress_task = progress_ctx.add_task(
@@ -1560,7 +1560,7 @@ def solve_all_intervals(
 				rich.progress.TextColumn("{task.description}"),
 				rich.progress.BarColumn(),
 				rich.progress.TaskProgressColumn(),
-				rich.progress.TimeRemainingColumn(),
+				rich.progress.TimeElapsedColumn(),
 			) as progress:
 				interval_task = progress.add_task(
 					"  intervals solved", total=new_count,
@@ -1632,7 +1632,7 @@ def solve_all_intervals(
 			rich.progress.TextColumn("{task.description}"),
 			rich.progress.BarColumn(),
 			rich.progress.TaskProgressColumn(),
-			rich.progress.TimeRemainingColumn(),
+			rich.progress.TimeElapsedColumn(),
 		) as progress:
 			task = progress.add_task(
 				"  solving intervals", total=new_count,
