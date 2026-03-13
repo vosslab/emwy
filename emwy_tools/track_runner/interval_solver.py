@@ -102,6 +102,11 @@ def fuse_tracks(
 		# any meaningful overlap counts as agreement
 		agree = dice >= AGREE_DICE_THRESHOLD
 
+		# propagate occlusion_risk from either track (True if either says so)
+		fwd_occlusion = bool(fwd.get("occlusion_risk", False))
+		bwd_occlusion = bool(bwd.get("occlusion_risk", False))
+		frame_occlusion = fwd_occlusion or bwd_occlusion
+
 		if agree:
 			# confidence-weighted average: stronger track pulls position more
 			total_conf = fwd_conf + bwd_conf
@@ -126,6 +131,7 @@ def fuse_tracks(
 				"conf": merged_conf,
 				"source": "merged",
 				"fuse_flag": False,
+				"occlusion_risk": frame_occlusion,
 			}
 		else:
 			# disagreement: pick the higher-confidence track
@@ -136,6 +142,7 @@ def fuse_tracks(
 				winner = dict(bwd)
 				winner["source"] = "propagated"
 			winner["fuse_flag"] = True
+			winner["occlusion_risk"] = frame_occlusion
 			state = winner
 
 		fused.append(state)
@@ -306,6 +313,7 @@ def solve_interval(
 	frame_counter: object = None,
 	backward_reader: object = None,
 	debug: bool = False,
+	detection_cache: dict = None,
 ) -> dict:
 	"""Solve one interval between two seed frames.
 
@@ -327,10 +335,14 @@ def solve_interval(
 			When provided, forward and backward passes run concurrently in threads.
 			When None, both passes use `reader` sequentially.
 		debug: If True, print per-frame debug info (detection count, confidence).
+		detection_cache: Optional dict mapping frame_index to list of detection
+			dicts. When provided, cached detections are reused instead of
+			re-running the detector. New detections are added to the cache.
 
 	Returns:
 		Dict with keys: start_frame, end_frame, fused_track, forward_track,
-		backward_track, interval_score, identity_scores, competitor_margins.
+		backward_track, interval_score, identity_scores, competitor_margins,
+		detection_cache.
 	"""
 	start_frame = int(seed_start["frame_index"])
 	end_frame = int(seed_end["frame_index"])
@@ -414,6 +426,11 @@ def solve_interval(
 	competitor_margins = []
 	competitors = []
 
+	# initialize detection cache: reuse existing or start fresh
+	if detection_cache is None:
+		detection_cache = {}
+	det_cache = detection_cache
+
 	# optional rich progress bar for per-frame debug output
 	progress_ctx = None
 	progress_task = None
@@ -440,13 +457,16 @@ def solve_interval(
 		# use forward state as the target for this frame
 		target = forward_track[i]
 
-		# run detector: use ROI crop on frames after the first (where we
-		# have a predicted position), full-frame on the first frame
-		if detector is None:
+		# run detector: check cache first, then ROI or full-frame
+		if frame_idx in det_cache:
+			# reuse cached detections for this frame
+			detections = det_cache[frame_idx]
+		elif detector is None:
 			detections = []
 		elif i == 0:
 			# first frame: no prior prediction, run full-frame detection
 			detections = detector.detect(frame)
+			det_cache[frame_idx] = detections
 		else:
 			# frames 1+: crop around predicted position for better resolution
 			roi_center = (float(target["cx"]), float(target["cy"]))
@@ -454,6 +474,7 @@ def solve_interval(
 			detections = detector.detect_roi(
 				frame, roi_center, roi_size,
 			)
+			det_cache[frame_idx] = detections
 
 		# generate competitors from new detections
 		if i == 0:
@@ -486,6 +507,11 @@ def solve_interval(
 
 		margin = hypothesis.compute_competitor_margin(target_with_id, competitors)
 		competitor_margins.append(margin)
+
+		# compute occlusion risk: target near any other detection
+		occlusion_flag = hypothesis.compute_occlusion_risk(target, detections)
+		# stamp occlusion_risk onto the forward track state for this frame
+		forward_track[i]["occlusion_risk"] = occlusion_flag
 
 		# update rich progress bar when active
 		if progress_ctx is not None:
@@ -541,6 +567,9 @@ def solve_interval(
 		"interval_score": interval_score,
 		"identity_scores": identity_scores,
 		"competitor_margins": competitor_margins,
+		# detection cache: {frame_index: [detection_dicts]}
+		# pass to subsequent solve_interval() calls to skip redundant YOLO
+		"detection_cache": det_cache,
 	}
 	return result
 
@@ -610,7 +639,7 @@ def _solve_interval_worker(
 	"""
 	# each worker creates its own VideoReader pair and detector
 	import encoder as _enc
-	import detection as _det
+	import tr_detection as _det
 	reader = _enc.VideoReader(video_path)
 	backward_reader = _enc.VideoReader(video_path)
 	detector = _det.create_detector(config)

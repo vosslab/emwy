@@ -27,6 +27,8 @@ PATCH_SEARCH_MARGIN = 20
 MIN_FLOW_FEATURES = 4
 # Maximum weight for fused-track soft prior in refinement pass
 PRIOR_WEIGHT_SCALE = 0.3
+# Forward-backward consistency: max round-trip error in pixels
+FB_CONSISTENCY_THRESHOLD = 1.0
 # LK optical flow parameters
 _LK_PARAMS = {
 	"winSize": (15, 15),
@@ -89,9 +91,26 @@ def build_appearance_model(frame: numpy.ndarray, bbox: dict) -> dict:
 	else:
 		hsv_mean = (0.0, 0.0, 0.0)
 
+	# compute 2D HS histogram for identity scoring (large runners)
+	hs_histogram = None
+	if patch.size > 0 and (x2 - x1) > 10 and (y2 - y1) > 10:
+		hsv_patch_full = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+		# 30 hue bins x 32 saturation bins
+		hs_histogram = cv2.calcHist(
+			[hsv_patch_full], [0, 1], None,
+			[30, 32], [0, 180, 0, 256],
+		)
+		cv2.normalize(hs_histogram, hs_histogram, alpha=1.0, norm_type=cv2.NORM_L1)
+		# check sparsity: count non-zero bins
+		nonzero_bins = int(numpy.count_nonzero(hs_histogram))
+		if nonzero_bins < 50:
+			# too sparse for reliable histogram comparison
+			hs_histogram = None
+
 	appearance = {
 		"template": patch,
 		"hsv_mean": hsv_mean,
+		"hs_histogram": hs_histogram,
 		"scale": h,
 		"cx": cx,
 		"cy": cy,
@@ -361,15 +380,34 @@ def _track_one_frame(
 	flow_conf = 0.0
 
 	if prev_pts is not None and len(prev_pts) >= MIN_FLOW_FEATURES:
-		# run pyramidal Lucas-Kanade optical flow
+		# convert frames to grayscale once for both passes
+		prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+		curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
+		# run forward pyramidal Lucas-Kanade optical flow
 		curr_pts, status, _ = cv2.calcOpticalFlowPyrLK(
-			cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY),
-			cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY),
-			prev_pts,
-			None,
-			**_LK_PARAMS,
+			prev_gray, curr_gray, prev_pts, None, **_LK_PARAMS,
 		)
 		if curr_pts is not None and status is not None:
+			# forward-backward consistency check: run backward LK
+			# from tracked points back to original frame
+			back_pts, back_status, _ = cv2.calcOpticalFlowPyrLK(
+				curr_gray, prev_gray, curr_pts, None, **_LK_PARAMS,
+			)
+			# reject points with round-trip error above threshold
+			if back_pts is not None and back_status is not None:
+				# compute per-point round-trip error
+				rt_error = numpy.sqrt(
+					numpy.sum((prev_pts - back_pts) ** 2, axis=2)
+				)
+				# keep only points that pass both forward status,
+				# backward status, and round-trip consistency
+				fb_mask = (
+					(status.ravel() == 1)
+					& (back_status.ravel() == 1)
+					& (rt_error.ravel() < FB_CONSISTENCY_THRESHOLD)
+				)
+				# apply FB consistency mask to the status array
+				status = fb_mask.reshape(-1, 1).astype(numpy.uint8)
 			good_count = int(numpy.sum(status))
 			if good_count >= MIN_FLOW_FEATURES:
 				dx_flow, dy_flow = _compute_median_flow(prev_pts, curr_pts, status)

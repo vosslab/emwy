@@ -17,7 +17,7 @@ import yaml
 
 # local repo modules
 import common_tools.tools_common as tools_common
-import crop
+import sb_crop
 
 #============================================
 
@@ -359,8 +359,8 @@ def motion_reliability_ok(width: int, height: int, transforms: list, rejection: 
 		return False, reasons, {"missing_fraction": missing_fraction}
 	max_abs_angle = max(abs(v) for v in angle_values) if len(angle_values) > 0 else 0.0
 	max_abs_zoom_percent = max(abs(v) for v in zoom_values) if len(zoom_values) > 0 else 0.0
-	mad_dx = crop.mad(dx_values)
-	mad_dy = crop.mad(dy_values)
+	mad_dx = sb_crop.mad(dx_values)
+	mad_dy = sb_crop.mad(dy_values)
 	mad_tx_fraction = mad_dx / float(width)
 	mad_ty_fraction = mad_dy / float(height)
 	if missing_fraction > float(rejection["max_missing_fraction"]):

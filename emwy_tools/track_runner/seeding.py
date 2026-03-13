@@ -78,6 +78,167 @@ def extract_color_histogram(frame: numpy.ndarray, box: list) -> numpy.ndarray:
 
 
 #============================================
+def detection_to_torso_box(bbox: list) -> list:
+	"""Extract upper 60% of detection bbox as torso region.
+
+	Args:
+		bbox: Bounding box as [x, y, w, h] in pixel coordinates.
+
+	Returns:
+		Torso box as [x, y, w, h] representing the upper 60% of bbox.
+	"""
+	x, y, w, h = bbox
+	torso_h = int(h * 0.6)
+	return [x, y, w, torso_h]
+
+
+#============================================
+def suggest_seed_candidates(
+	frame: numpy.ndarray,
+	detections: list,
+	confirmed_seeds: list,
+	frame_index: int,
+) -> dict:
+	"""Suggest seed candidates from YOLO detections.
+
+	Analyzes detections and confirmed seeds to suggest the best
+	candidate for seeding, or returns candidates for manual selection.
+
+	Args:
+		frame: BGR image as a numpy array (H, W, 3).
+		detections: List of detection dicts from YoloDetector with
+			keys: bbox, confidence, class_id.
+		confirmed_seeds: List of already-seeded dicts with jersey_hsv
+			and optionally histogram.
+		frame_index: Current frame index for reference.
+
+	Returns:
+		Dict with keys:
+			candidates: List of candidate dicts with keys bbox,
+				torso_box, histogram, detection_confidence.
+			suggestion_index: Index in candidates for auto-highlight
+				(None if manual mode).
+			mode: "none" (no detections), "manual" (no single best),
+				or "single" (exactly one detection).
+			scores: List of Bhattacharyya distances (lower = better match)
+				or None if no confirmed seeds.
+	"""
+	# no detections: return empty candidates
+	if not detections:
+		return {
+			"candidates": [],
+			"suggestion_index": None,
+			"mode": "none",
+			"scores": None,
+		}
+
+	# build candidate list with torso regions and histograms
+	candidates = []
+	for det in detections:
+		bbox = det["bbox"]
+		torso_box = detection_to_torso_box(bbox)
+		# extract histogram from torso region
+		hist = extract_color_histogram(frame, torso_box)
+		candidate = {
+			"bbox": bbox,
+			"torso_box": torso_box,
+			"histogram": hist,
+			"detection_confidence": det["confidence"],
+		}
+		candidates.append(candidate)
+
+	# if no confirmed seeds: return manual mode (let user pick)
+	if not confirmed_seeds:
+		return {
+			"candidates": candidates,
+			"suggestion_index": None,
+			"mode": "manual" if len(candidates) > 1 else "single",
+			"scores": None,
+		}
+
+	# exactly one detection: auto-suggest it
+	if len(candidates) == 1:
+		return {
+			"candidates": candidates,
+			"suggestion_index": 0,
+			"mode": "single",
+			"scores": [0.0],
+		}
+
+	# multiple detections with confirmed seeds: rank by histogram match
+	# build reference histogram from confirmed seeds
+	ref_hists = []
+	for seed in confirmed_seeds:
+		if "histogram" in seed:
+			# convert back to float32 ndarray if stored as Python list
+			hist_val = seed["histogram"]
+			if not isinstance(hist_val, numpy.ndarray):
+				hist_val = numpy.array(hist_val, dtype=numpy.float32)
+			elif hist_val.dtype != numpy.float32:
+				hist_val = hist_val.astype(numpy.float32)
+			ref_hists.append(hist_val)
+	# if no stored histograms in confirmed seeds, fall back to manual mode
+	if not ref_hists:
+		return {
+			"candidates": candidates,
+			"suggestion_index": None,
+			"mode": "manual",
+			"scores": None,
+		}
+
+	# average reference histograms
+	ref_hist = ref_hists[0]
+	if len(ref_hists) > 1:
+		avg_hist = numpy.zeros_like(ref_hists[0])
+		for h in ref_hists:
+			avg_hist += h
+		avg_hist = avg_hist / len(ref_hists)
+		ref_hist = avg_hist
+
+	# ensure ref_hist is float32 for compareHist
+	ref_hist = ref_hist.astype(numpy.float32)
+
+	# compute Bhattacharyya distances from each candidate to reference
+	scores = []
+	for candidate in candidates:
+		cand_hist = candidate["histogram"]
+		# ensure candidate histogram is float32 ndarray
+		if not isinstance(cand_hist, numpy.ndarray):
+			cand_hist = numpy.array(cand_hist, dtype=numpy.float32)
+		elif cand_hist.dtype != numpy.float32:
+			cand_hist = cand_hist.astype(numpy.float32)
+		distance = cv2.compareHist(
+			cand_hist, ref_hist, cv2.HISTCMP_BHATTACHARYYA
+		)
+		scores.append(distance)
+
+	# find best match (lowest distance)
+	best_idx = int(numpy.argmin(scores))
+	best_score = scores[best_idx]
+
+	# auto-suggest if best score is good AND gap to second-best is large
+	# thresholds: distance < 0.5 (strong match) and gap > 0.15
+	suggestion_idx = None
+	if len(candidates) > 1:
+		second_best = sorted(scores)[1]
+		gap = second_best - best_score
+		if best_score < 0.5 and gap > 0.15:
+			suggestion_idx = best_idx
+	elif best_score < 0.5:
+		# single candidate with good score
+		suggestion_idx = best_idx
+
+	mode_str = "auto" if suggestion_idx is not None else "manual"
+
+	return {
+		"candidates": candidates,
+		"suggestion_index": suggestion_idx,
+		"mode": mode_str,
+		"scores": scores,
+	}
+
+
+#============================================
 def normalize_seed_box(box: list, config: dict) -> list:
 	"""Normalize an inconsistently-drawn seed box.
 
@@ -118,6 +279,7 @@ def _build_seed_dict(
 	jersey_hsv: tuple,
 	pass_number: int,
 	mode: str,
+	histogram: numpy.ndarray | None = None,
 ) -> dict:
 	"""Build a v2 seed dict from collected fields.
 
@@ -128,10 +290,11 @@ def _build_seed_dict(
 		jersey_hsv: Tuple of (h, s, v) median HSV values.
 		pass_number: Which collection pass this seed came from (1 = initial).
 		mode: Seed collection mode string.
+		histogram: Optional 2D HS histogram for color matching.
 
 	Returns:
 		Seed dict in v2 format with frame, time_s, torso_box, jersey_hsv,
-		cx, cy, w, h, pass, source, and mode keys.
+		cx, cy, w, h, pass, source, mode, and optionally histogram keys.
 	"""
 	tx, ty, tw, th = torso_box
 	# compute center format for propagator compatibility
@@ -153,6 +316,9 @@ def _build_seed_dict(
 		"mode": mode,
 		"status": "visible",
 	}
+	# add histogram if provided (convert ndarray to list for JSON serialization)
+	if histogram is not None:
+		seed["histogram"] = histogram.tolist()
 	return seed
 
 

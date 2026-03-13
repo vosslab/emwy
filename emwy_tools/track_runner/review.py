@@ -160,11 +160,41 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 
 
 #============================================
+def _find_occlusion_exits(interval: dict) -> list:
+	"""Find frames where occlusion risk drops from True to False.
+
+	These are the best seed targets near occlusion events because
+	they are the first frame after the runner re-emerges cleanly.
+
+	Args:
+		interval: Interval dict with fused_track list of state dicts.
+
+	Returns:
+		List of absolute frame indices where occlusion exits.
+	"""
+	fused_track = interval.get("fused_track", [])
+	start_frame = int(interval["start_frame"])
+	exits = []
+	prev_risk = False
+	for i, state in enumerate(fused_track):
+		if not isinstance(state, dict):
+			prev_risk = False
+			continue
+		curr_risk = bool(state.get("occlusion_risk", False))
+		# transition from risk to no-risk = occlusion exit
+		if prev_risk and not curr_risk:
+			exits.append(start_frame + i)
+		prev_risk = curr_risk
+	return exits
+
+
+#============================================
 def identify_weak_spans(diagnostics: dict) -> list:
 	"""Walk interval results and return seed suggestions for weak intervals.
 
 	For each interval whose confidence is "low" or "fair", generates one or more
 	seed suggestions with a specific frame, time, reason, and competitor summary.
+	Also detects occlusion exits and generates targeted seed suggestions.
 
 	Args:
 		diagnostics: Dict returned by interval_solver.solve_all_intervals().
@@ -184,19 +214,72 @@ def identify_weak_spans(diagnostics: dict) -> list:
 		end_frame = int(interval["end_frame"])
 		score = interval["interval_score"]
 		confidence = score.get("confidence", "low")
-		failure_reasons = score.get("failure_reasons", [])
+		failure_reasons = list(score.get("failure_reasons", []))
+
+		# check for occlusion frames in the fused track
+		fused_track = interval.get("fused_track", [])
+		occlusion_count = sum(
+			1 for s in fused_track
+			if isinstance(s, dict) and s.get("occlusion_risk", False)
+		)
+		has_occlusion = occlusion_count > 0
+
+		# add likely_occlusion as a failure reason if not already present
+		if has_occlusion and "likely_occlusion" not in failure_reasons:
+			failure_reasons.append("likely_occlusion")
+			# promote severity when occlusion co-occurs with low agreement
+			agreement = float(score.get("agreement_score", 0.0))
+			if agreement < 0.4 and confidence not in ("high", "good"):
+				# mark interval as high severity for occlusion + low agreement
+				score["_occlusion_high_severity"] = True
 
 		# only suggest seeds for low/fair confidence intervals
 		if confidence in ("high", "good"):
+			# still generate occlusion exit suggestions for good intervals
+			if has_occlusion:
+				exits = _find_occlusion_exits(interval)
+				for frame in exits:
+					time_s = frame / max(1.0, fps)
+					suggestion = {
+						"frame": frame,
+						"time_s": time_s,
+						"reason": "likely_occlusion",
+						"competitor_summary": (
+							"occlusion exit: runner re-emerges"
+						),
+					}
+					suggestions.append(suggestion)
 			continue
 
 		if failure_reasons:
 			# one suggestion per failure reason
 			for reason in failure_reasons:
-				suggestion = _reason_to_suggestion(
-					reason, start_frame, end_frame, fps,
-				)
-				suggestions.append(suggestion)
+				if reason == "likely_occlusion" and has_occlusion:
+					# for occlusion, place seeds at exit points
+					exits = _find_occlusion_exits(interval)
+					if exits:
+						for frame in exits:
+							time_s = frame / max(1.0, fps)
+							suggestion = {
+								"frame": frame,
+								"time_s": time_s,
+								"reason": "likely_occlusion",
+								"competitor_summary": (
+									"occlusion exit: runner re-emerges"
+								),
+							}
+							suggestions.append(suggestion)
+					else:
+						# no clean exit found, use midpoint
+						suggestion = _reason_to_suggestion(
+							reason, start_frame, end_frame, fps,
+						)
+						suggestions.append(suggestion)
+				else:
+					suggestion = _reason_to_suggestion(
+						reason, start_frame, end_frame, fps,
+					)
+					suggestions.append(suggestion)
 		else:
 			# no specific reason: suggest midpoint
 			frame = _midpoint_frame(start_frame, end_frame)

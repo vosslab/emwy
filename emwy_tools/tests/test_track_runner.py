@@ -136,7 +136,7 @@ def test_state_io_merge_seeds_no_duplicate_frames() -> None:
 #============================================
 def test_config_default_config_has_required_sections() -> None:
 	"""default_config has detection and processing sections."""
-	import track_runner.config as config_mod
+	import track_runner.tr_config as config_mod
 	cfg = config_mod.default_config()
 	for section in ("detection", "processing"):
 		assert section in cfg, f"missing section: {section}"
@@ -145,7 +145,7 @@ def test_config_default_config_has_required_sections() -> None:
 #============================================
 def test_config_default_config_has_header() -> None:
 	"""default_config includes the track_runner header key."""
-	import track_runner.config as config_mod
+	import track_runner.tr_config as config_mod
 	cfg = config_mod.default_config()
 	assert config_mod.TOOL_CONFIG_HEADER_KEY in cfg
 	assert cfg[config_mod.TOOL_CONFIG_HEADER_KEY] == config_mod.TOOL_CONFIG_HEADER_VALUE
@@ -154,7 +154,7 @@ def test_config_default_config_has_header() -> None:
 #============================================
 def test_config_validate_passes_on_valid() -> None:
 	"""validate_config(default_config()) does not raise."""
-	import track_runner.config as config_mod
+	import track_runner.tr_config as config_mod
 	cfg = config_mod.default_config()
 	config_mod.validate_config(cfg)
 
@@ -162,7 +162,7 @@ def test_config_validate_passes_on_valid() -> None:
 #============================================
 def test_config_validate_fails_on_missing_header() -> None:
 	"""validate_config({}) raises RuntimeError."""
-	import track_runner.config as config_mod
+	import track_runner.tr_config as config_mod
 	with pytest.raises(RuntimeError):
 		config_mod.validate_config({})
 
@@ -170,7 +170,7 @@ def test_config_validate_fails_on_missing_header() -> None:
 #============================================
 def test_config_validate_fails_on_wrong_version() -> None:
 	"""validate_config with wrong version raises RuntimeError."""
-	import track_runner.config as config_mod
+	import track_runner.tr_config as config_mod
 	bad = {config_mod.TOOL_CONFIG_HEADER_KEY: 99, "detection": {}, "processing": {}}
 	with pytest.raises(RuntimeError):
 		config_mod.validate_config(bad)
@@ -179,7 +179,7 @@ def test_config_validate_fails_on_wrong_version() -> None:
 #============================================
 def test_config_merge_overrides_scalar() -> None:
 	"""merge_config replaces scalar values from override."""
-	import track_runner.config as config_mod
+	import track_runner.tr_config as config_mod
 	base = {"a": 1, "b": 2}
 	override = {"a": 99}
 	merged = config_mod.merge_config(base, override)
@@ -190,7 +190,7 @@ def test_config_merge_overrides_scalar() -> None:
 #============================================
 def test_config_merge_deep_merges_dicts() -> None:
 	"""merge_config deep-merges nested dicts."""
-	import track_runner.config as config_mod
+	import track_runner.tr_config as config_mod
 	base = config_mod.default_config()
 	override = {"processing": {"crf": 28}}
 	merged = config_mod.merge_config(base, override)
@@ -203,7 +203,7 @@ def test_config_merge_deep_merges_dicts() -> None:
 #============================================
 def test_config_write_and_load_round_trip() -> None:
 	"""write_config then load_config returns equivalent config."""
-	import track_runner.config as config_mod
+	import track_runner.tr_config as config_mod
 	cfg = config_mod.default_config()
 	with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as tmp:
 		tmp_path = tmp.name
@@ -690,14 +690,14 @@ def test_review_format_review_summary_is_string() -> None:
 #============================================
 def test_crop_parse_aspect_ratio_1_1() -> None:
 	"""'1:1' -> 1.0."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 	assert crop_mod.parse_aspect_ratio("1:1") == 1.0
 
 
 #============================================
 def test_crop_parse_aspect_ratio_16_9() -> None:
 	"""'16:9' -> close to 1.778."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 	result = crop_mod.parse_aspect_ratio("16:9")
 	assert abs(result - 16.0 / 9.0) < 0.001
 
@@ -705,7 +705,7 @@ def test_crop_parse_aspect_ratio_16_9() -> None:
 #============================================
 def test_crop_parse_aspect_ratio_invalid() -> None:
 	"""'abc' raises RuntimeError."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 	with pytest.raises(RuntimeError):
 		crop_mod.parse_aspect_ratio("abc")
 
@@ -719,7 +719,7 @@ def _make_crop_state(cx: float, cy: float, h: float, conf: float = 1.0) -> dict:
 #============================================
 def test_crop_controller_first_update_snaps_to_target() -> None:
 	"""First update sets crop position near the target."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 	ctrl = crop_mod.CropController(1920, 1080, aspect_ratio=1.0)
 	state = _make_crop_state(cx=960.0, cy=540.0, h=100.0, conf=1.0)
 	result = ctrl.update(state)
@@ -733,7 +733,7 @@ def test_crop_controller_first_update_snaps_to_target() -> None:
 #============================================
 def test_crop_controller_second_update_smooths() -> None:
 	"""Second update does not jump fully to new position."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 	ctrl = crop_mod.CropController(1920, 1080, aspect_ratio=1.0)
 	state1 = _make_crop_state(cx=500.0, cy=540.0, h=100.0, conf=1.0)
 	ctrl.update(state1)
@@ -749,7 +749,7 @@ def test_crop_controller_second_update_smooths() -> None:
 #============================================
 def test_crop_controller_low_confidence_holds_position() -> None:
 	"""Low confidence causes minimal movement."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 	ctrl = crop_mod.CropController(1920, 1080, aspect_ratio=1.0)
 	state1 = _make_crop_state(cx=500.0, cy=540.0, h=100.0, conf=1.0)
 	ctrl.update(state1)
@@ -765,7 +765,7 @@ def test_crop_controller_low_confidence_holds_position() -> None:
 #============================================
 def test_crop_controller_clamps_to_frame_bounds() -> None:
 	"""Crop rectangle stays within frame dimensions."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 	ctrl = crop_mod.CropController(1920, 1080, aspect_ratio=1.0)
 	# target near the very edge of the frame
 	state = _make_crop_state(cx=1900.0, cy=1060.0, h=100.0, conf=1.0)
@@ -780,7 +780,7 @@ def test_crop_controller_clamps_to_frame_bounds() -> None:
 #============================================
 def test_crop_fill_ratio_always_applied() -> None:
 	"""crop_fill_ratio is used directly, not overridden by tiered system."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 	# target_fill_ratio=0.10 means bbox_h / 0.10 = 10x the bbox height
 	ctrl = crop_mod.CropController(
 		1920, 1080, aspect_ratio=16/9, target_fill_ratio=0.10,
@@ -817,7 +817,7 @@ def test_crop_output_resolution_median() -> None:
 #============================================
 def test_crop_apply_crop_shape() -> None:
 	"""apply_crop returns expected dimensions."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 	frame = numpy.zeros((300, 200, 3), dtype=numpy.uint8)
 	result = crop_mod.apply_crop(frame, (10, 20, 50, 60))
 	assert result.shape == (60, 50, 3)
@@ -826,7 +826,7 @@ def test_crop_apply_crop_shape() -> None:
 #============================================
 def test_crop_apply_crop_padding() -> None:
 	"""Crop extending past frame edge gets black padding."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 	frame = numpy.ones((100, 100, 3), dtype=numpy.uint8) * 255
 	result = crop_mod.apply_crop(frame, (80, 80, 40, 40))
 	assert result.shape == (40, 40, 3)
@@ -925,7 +925,7 @@ def test_encoder_draw_debug_overlay_with_state() -> None:
 def test_detection_yolo_returns_list() -> None:
 	"""YoloDetector.detect returns list of dicts with expected keys."""
 	import cv2
-	import track_runner.detection as det_mod
+	import track_runner.tr_detection as det_mod
 	detector = det_mod.YoloDetector(YOLO_WEIGHTS_PATH)
 	cap = cv2.VideoCapture(TEST_VIDEO)
 	ret, frame = cap.read()
@@ -1481,7 +1481,7 @@ def test_refine_low_conf_prior_has_small_effect() -> None:
 #============================================
 def test_post_smooth_passthrough() -> None:
 	"""All params 0 returns input unchanged."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 
 	# Create a list of 20 crop rects with some variation
 	rects = [
@@ -1504,7 +1504,7 @@ def test_post_smooth_passthrough() -> None:
 #============================================
 def test_post_smooth_reduces_jitter() -> None:
 	"""Synthetic jittery trajectory has lower velocity_std after smoothing."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 
 	# Seed for reproducibility
 	numpy.random.seed(42)
@@ -1537,7 +1537,7 @@ def test_post_smooth_reduces_jitter() -> None:
 #============================================
 def test_post_smooth_clamps_to_bounds() -> None:
 	"""Smoothed rects stay within frame bounds."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 
 	frame_width = 1920
 	frame_height = 1080
@@ -1569,7 +1569,7 @@ def test_post_smooth_clamps_to_bounds() -> None:
 #============================================
 def test_post_smooth_preserves_constant_velocity() -> None:
 	"""Constant velocity trajectory is preserved in shape (not amplitude)."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 
 	# Create 50 rects with constant velocity (linearly increasing x)
 	rects = []
@@ -1610,7 +1610,7 @@ def test_post_smooth_preserves_constant_velocity() -> None:
 #============================================
 def test_post_smooth_direction_change() -> None:
 	"""Trajectory with sharp turn does not produce giant overshoot."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 
 	# Create 40 rects: first 20 move right, next 20 move left
 	rects = []
@@ -1650,7 +1650,7 @@ def test_post_smooth_direction_change() -> None:
 #============================================
 def test_post_smooth_final_velocity_cap() -> None:
 	"""Velocity cap limits per-frame center displacement."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 
 	# Create 30 rects: frames 0-14 at x=500, frames 15-29 at x=800
 	rects = []
@@ -1685,7 +1685,7 @@ def test_post_smooth_final_velocity_cap() -> None:
 #============================================
 def test_forward_backward_ema_short_sequence() -> None:
 	"""Explicit edge behavior on short input."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 
 	signal = numpy.array([10.0, 50.0, 10.0, 50.0, 10.0])
 	alpha = 0.3
@@ -1701,7 +1701,7 @@ def test_forward_backward_ema_short_sequence() -> None:
 #============================================
 def test_forward_backward_ema_interior_symmetry() -> None:
 	"""Reversing input yields approximately matching reversed output."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 
 	signal = numpy.array([0.0, 0.0, 100.0, 0.0, 0.0])
 	reversed_signal = signal[::-1]
@@ -1715,7 +1715,7 @@ def test_forward_backward_ema_interior_symmetry() -> None:
 #============================================
 def test_compute_crop_metrics() -> None:
 	"""Verify metrics dict has expected keys and sane values."""
-	import track_runner.crop as crop_mod
+	import track_runner.tr_crop as crop_mod
 
 	# Test with small jitter
 	numpy.random.seed(42)
@@ -1744,3 +1744,362 @@ def test_compute_crop_metrics() -> None:
 	assert single_metrics["velocity_std"] == 0.0
 	assert single_metrics["acceleration_std"] == 0.0
 	assert single_metrics["p95_step_distance"] == 0.0
+
+
+# ============================================================
+# direct_center crop mode tests
+# ============================================================
+
+
+#============================================
+def _make_synthetic_trajectory(
+	n_frames: int,
+	cx_func: callable,
+	cy_func: callable,
+	h_val: float = 100.0,
+) -> list:
+	"""Helper to build a dense trajectory list for direct-center tests.
+
+	Args:
+		n_frames: Number of frames to generate.
+		cx_func: Callable(i) -> float for center x at frame i.
+		cy_func: Callable(i) -> float for center y at frame i.
+		h_val: Constant bounding box height.
+
+	Returns:
+		List of tracking state dicts.
+	"""
+	trajectory = []
+	for i in range(n_frames):
+		state = {
+			"cx": cx_func(i),
+			"cy": cy_func(i),
+			"w": h_val * 0.5,
+			"h": h_val,
+			"conf": 0.9,
+			"source": "propagated",
+		}
+		trajectory.append(state)
+	return trajectory
+
+
+#============================================
+def _make_direct_center_config(overrides: dict = None) -> dict:
+	"""Helper to build a config dict for direct-center tests.
+
+	Args:
+		overrides: Optional dict of processing keys to override.
+
+	Returns:
+		Config dict with crop_mode='direct_center'.
+	"""
+	processing = {
+		"crop_mode": "direct_center",
+		"crop_aspect": "16:9",
+		"crop_fill_ratio": 0.30,
+		"crop_min_size": 50,
+		"crop_post_smooth_strength": 0.0,
+		"crop_post_smooth_size_strength": 0.0,
+		"crop_post_smooth_max_velocity": 0.0,
+	}
+	if overrides:
+		processing.update(overrides)
+	config = {"processing": processing}
+	return config
+
+
+#============================================
+def test_direct_center_basic() -> None:
+	"""Direct-center with smoothing off: crop center matches trajectory center."""
+	import track_runner.tr_crop as crop_mod
+
+	# constant position trajectory
+	trajectory = _make_synthetic_trajectory(
+		30,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+	config = _make_direct_center_config()
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	assert len(rects) == 30
+	# check crop center matches trajectory center within 1px (round tolerance)
+	for i, (x, y, w, h) in enumerate(rects):
+		crop_cx = x + w / 2.0
+		crop_cy = y + h / 2.0
+		assert abs(crop_cx - 640.0) <= 1.0, f"Frame {i}: cx off by {abs(crop_cx - 640.0)}"
+		assert abs(crop_cy - 360.0) <= 1.0, f"Frame {i}: cy off by {abs(crop_cy - 360.0)}"
+
+
+#============================================
+def test_direct_center_with_smoothing() -> None:
+	"""With alpha > 0, output has lower velocity_std than raw positions."""
+	import track_runner.tr_crop as crop_mod
+
+	# jittery trajectory
+	numpy.random.seed(99)
+	trajectory = _make_synthetic_trajectory(
+		100,
+		cx_func=lambda i: 640.0 + numpy.random.uniform(-30, 30),
+		cy_func=lambda i: 360.0 + numpy.random.uniform(-30, 30),
+		h_val=100.0,
+	)
+	# without smoothing
+	config_raw = _make_direct_center_config()
+	rects_raw = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_raw,
+	)
+	# with smoothing
+	config_smooth = _make_direct_center_config({
+		"crop_post_smooth_strength": 0.10,
+	})
+	# re-seed for same trajectory
+	numpy.random.seed(99)
+	trajectory2 = _make_synthetic_trajectory(
+		100,
+		cx_func=lambda i: 640.0 + numpy.random.uniform(-30, 30),
+		cy_func=lambda i: 360.0 + numpy.random.uniform(-30, 30),
+		h_val=100.0,
+	)
+	rects_smooth = crop_mod.direct_center_crop_trajectory(
+		trajectory2, 1920, 1080, config_smooth,
+	)
+	metrics_raw = crop_mod.compute_crop_metrics(rects_raw)
+	metrics_smooth = crop_mod.compute_crop_metrics(rects_smooth)
+	assert metrics_smooth["velocity_std"] < metrics_raw["velocity_std"]
+
+
+#============================================
+def test_direct_center_clamps_to_bounds() -> None:
+	"""All rects stay within frame bounds."""
+	import track_runner.tr_crop as crop_mod
+
+	frame_w = 1280
+	frame_h = 720
+	# trajectory near frame edges
+	trajectory = _make_synthetic_trajectory(
+		20,
+		cx_func=lambda i: 50.0 + i * 60.0,
+		cy_func=lambda i: 50.0 + i * 35.0,
+		h_val=120.0,
+	)
+	config = _make_direct_center_config()
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, frame_w, frame_h, config,
+	)
+	for i, (x, y, w, h) in enumerate(rects):
+		assert x >= 0, f"Frame {i}: x={x} < 0"
+		assert y >= 0, f"Frame {i}: y={y} < 0"
+		assert x + w <= frame_w, f"Frame {i}: x+w={x + w} > {frame_w}"
+		assert y + h <= frame_h, f"Frame {i}: y+h={y + h} > {frame_h}"
+
+
+#============================================
+def test_direct_center_velocity_cap() -> None:
+	"""With max_velocity set, no step exceeds the cap (within 1px tolerance)."""
+	import track_runner.tr_crop as crop_mod
+
+	# trajectory with a sudden jump at frame 15
+	def cx_func(i: int) -> float:
+		return 400.0 if i < 15 else 700.0
+
+	trajectory = _make_synthetic_trajectory(
+		30,
+		cx_func=cx_func,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+	config = _make_direct_center_config({
+		"crop_post_smooth_max_velocity": 10.0,
+	})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	# check max step
+	for i in range(1, len(rects)):
+		x1, y1, w1, h1 = rects[i - 1]
+		x2, y2, w2, h2 = rects[i]
+		c1x = x1 + w1 / 2.0
+		c1y = y1 + h1 / 2.0
+		c2x = x2 + w2 / 2.0
+		c2y = y2 + h2 / 2.0
+		step = ((c2x - c1x) ** 2 + (c2y - c1y) ** 2) ** 0.5
+		# 1px tolerance for rounding
+		assert step <= 11.0, f"Frame {i}: step {step:.2f} exceeds cap"
+
+
+#============================================
+def test_direct_center_reclamp_after_velocity_cap() -> None:
+	"""Rects remain in bounds after velocity cap is applied."""
+	import track_runner.tr_crop as crop_mod
+
+	frame_w = 800
+	frame_h = 600
+	# trajectory that jumps near the edge
+	trajectory = _make_synthetic_trajectory(
+		20,
+		cx_func=lambda i: 100.0 if i < 10 else 750.0,
+		cy_func=lambda i: 100.0 if i < 10 else 550.0,
+		h_val=80.0,
+	)
+	config = _make_direct_center_config({
+		"crop_post_smooth_max_velocity": 8.0,
+	})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, frame_w, frame_h, config,
+	)
+	for i, (x, y, w, h) in enumerate(rects):
+		assert x >= 0, f"Frame {i}: x={x} < 0"
+		assert y >= 0, f"Frame {i}: y={y} < 0"
+		assert x + w <= frame_w, f"Frame {i}: x+w={x + w} > {frame_w}"
+		assert y + h <= frame_h, f"Frame {i}: y+h={y + h} > {frame_h}"
+
+
+#============================================
+def test_direct_center_empty_trajectory() -> None:
+	"""Empty input returns empty output."""
+	import track_runner.tr_crop as crop_mod
+
+	config = _make_direct_center_config()
+	rects = crop_mod.direct_center_crop_trajectory([], 1920, 1080, config)
+	assert rects == []
+
+
+#============================================
+def test_direct_center_min_size_guard() -> None:
+	"""Crop dimensions never go below crop_min_size from config."""
+	import track_runner.tr_crop as crop_mod
+
+	# trajectory with very small bbox height
+	trajectory = _make_synthetic_trajectory(
+		20,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=5.0,
+	)
+	config = _make_direct_center_config({"crop_min_size": 100})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	for i, (x, y, w, h) in enumerate(rects):
+		assert h >= 100, f"Frame {i}: h={h} < min_size 100"
+
+
+#============================================
+def test_direct_center_invalid_mode() -> None:
+	"""Invalid crop_mode value raises RuntimeError."""
+	import track_runner.tr_crop as crop_mod
+
+	trajectory = _make_synthetic_trajectory(
+		10,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+	)
+	config = {
+		"processing": {
+			"crop_mode": "bogus_mode",
+			"crop_aspect": "16:9",
+			"crop_fill_ratio": 0.30,
+		},
+	}
+	video_info = {
+		"width": 1920,
+		"height": 1080,
+		"frame_count": 10,
+	}
+	with pytest.raises(RuntimeError, match="Unknown crop_mode"):
+		crop_mod.trajectory_to_crop_rects(trajectory, video_info, config)
+
+
+#============================================
+def test_direct_center_steady_motion() -> None:
+	"""Constant velocity, no jitter: crop center matches trajectory exactly."""
+	import track_runner.tr_crop as crop_mod
+
+	# linear motion across the frame
+	trajectory = _make_synthetic_trajectory(
+		50,
+		cx_func=lambda i: 300.0 + i * 8.0,
+		cy_func=lambda i: 360.0 + i * 2.0,
+		h_val=100.0,
+	)
+	config = _make_direct_center_config()
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	# every crop center should match trajectory center within 1px
+	for i, (x, y, w, h) in enumerate(rects):
+		expected_cx = 300.0 + i * 8.0
+		expected_cy = 360.0 + i * 2.0
+		crop_cx = x + w / 2.0
+		crop_cy = y + h / 2.0
+		assert abs(crop_cx - expected_cx) <= 1.0, (
+			f"Frame {i}: cx {crop_cx:.1f} vs expected {expected_cx:.1f}"
+		)
+		assert abs(crop_cy - expected_cy) <= 1.0, (
+			f"Frame {i}: cy {crop_cy:.1f} vs expected {expected_cy:.1f}"
+		)
+		# bounds check
+		assert x >= 0 and y >= 0
+		assert x + w <= 1920 and y + h <= 1080
+
+
+#============================================
+def test_crop_mode_default_dispatch() -> None:
+	"""Config without crop_mode key routes to smooth mode."""
+	import track_runner.tr_crop as crop_mod
+
+	# build trajectory and config without crop_mode
+	trajectory = _make_synthetic_trajectory(
+		20,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+	config = {
+		"processing": {
+			"crop_aspect": "16:9",
+			"crop_fill_ratio": 0.30,
+			"crop_min_size": 50,
+		},
+	}
+	video_info = {
+		"width": 1920,
+		"height": 1080,
+		"frame_count": 20,
+	}
+	# should run without error (smooth mode)
+	rects = crop_mod.trajectory_to_crop_rects(trajectory, video_info, config)
+	assert len(rects) == 20
+	# verify output matches what compute_crop_trajectory produces (smooth path)
+	rects_smooth = crop_mod.compute_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	assert rects == rects_smooth
+
+
+#============================================
+def test_direct_center_malformed_trajectory() -> None:
+	"""Trajectory entry missing required key raises RuntimeError at dispatch."""
+	import track_runner.tr_crop as crop_mod
+
+	# entry missing 'h' key
+	trajectory = [
+		{"cx": 640.0, "cy": 360.0, "w": 50.0, "conf": 0.9, "source": "test"},
+	]
+	config = {
+		"processing": {
+			"crop_mode": "direct_center",
+			"crop_aspect": "16:9",
+			"crop_fill_ratio": 0.30,
+		},
+	}
+	video_info = {
+		"width": 1920,
+		"height": 1080,
+		"frame_count": 1,
+	}
+	with pytest.raises(RuntimeError, match="missing required keys"):
+		crop_mod.trajectory_to_crop_rects(trajectory, video_info, config)

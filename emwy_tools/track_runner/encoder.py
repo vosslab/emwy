@@ -19,7 +19,7 @@ import overlay_config
 import rich.progress
 
 # local repo modules
-import crop
+import tr_crop
 import common_tools.frame_filters as frame_filters
 
 
@@ -368,7 +368,7 @@ def encode_cropped_video(
 				break
 			# crop the frame using the crop module
 			crop_rect = crop_rects[frame_idx]
-			cropped = crop.apply_crop(frame, crop_rect)
+			cropped = tr_crop.apply_crop(frame, crop_rect)
 			# resize to the exact output dimensions for consistency
 			resized = cv2.resize(cropped, (crop_width, crop_height), interpolation=interp)
 			# apply opencv encode filters after resize
@@ -818,7 +818,7 @@ def _encode_segment(
 				break
 			# crop and resize
 			crop_rect = crop_rects_chunk[local_idx]
-			cropped = crop.apply_crop(frame, crop_rect)
+			cropped = tr_crop.apply_crop(frame, crop_rect)
 			resized = cv2.resize(cropped, (crop_width, crop_height), interpolation=interp)
 			# apply opencv encode filters after resize
 			if encode_filters:

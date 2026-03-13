@@ -65,6 +65,8 @@ class CropController:
 		max_crop_velocity: float = 30.0,
 		min_crop_size: int = 200,
 		deadband_fraction: float = 0.02,
+		velocity_scale: float = 2.0,
+		displacement_alpha: float = 0.1,
 	):
 		"""Initialize the crop controller.
 
@@ -78,6 +80,8 @@ class CropController:
 			max_crop_velocity: Maximum pixels the crop center can move per frame.
 			min_crop_size: Minimum crop height in pixels.
 			deadband_fraction: Fraction of crop size below which errors are ignored.
+			velocity_scale: Multiplier for adaptive velocity cap in smooth mode.
+			displacement_alpha: EMA smoothing factor for subject displacement.
 		"""
 		self.frame_width = frame_width
 		self.frame_height = frame_height
@@ -88,10 +92,16 @@ class CropController:
 		self.max_crop_velocity = max_crop_velocity
 		self.min_crop_size = min_crop_size
 		self.deadband_fraction = deadband_fraction
+		self.velocity_scale = velocity_scale
+		self.displacement_alpha = displacement_alpha
 		# Smoothed crop state, initialized on first update
 		self.smooth_cx = None
 		self.smooth_cy = None
 		self.smooth_size = None
+		# Adaptive velocity state
+		self._ema_displacement = 0.0
+		self._prev_desired_cx = None
+		self._prev_desired_cy = None
 
 	#============================================
 	def update(
@@ -138,6 +148,29 @@ class CropController:
 		desired_cx = tcx
 		desired_cy = tcy
 
+		# Step 2.5: compute adaptive velocity cap based on subject displacement
+		if self._prev_desired_cx is not None:
+			# compute frame-to-frame displacement of the subject
+			disp_x = desired_cx - self._prev_desired_cx
+			disp_y = desired_cy - self._prev_desired_cy
+			displacement = math.sqrt(disp_x * disp_x + disp_y * disp_y)
+			# update EMA of displacement
+			self._ema_displacement = (
+				self.displacement_alpha * displacement +
+				(1.0 - self.displacement_alpha) * self._ema_displacement
+			)
+			# compute adaptive cap: at least max_crop_velocity, scales with EMA
+			adaptive_cap = max(
+				self.max_crop_velocity,
+				self.velocity_scale * self._ema_displacement
+			)
+		else:
+			adaptive_cap = self.max_crop_velocity
+
+		# track desired center for next frame
+		self._prev_desired_cx = desired_cx
+		self._prev_desired_cy = desired_cy
+
 		# Step 3: first frame snaps directly to desired values
 		if self.smooth_cx is None:
 			self.smooth_cx = desired_cx
@@ -178,15 +211,15 @@ class CropController:
 				alpha = max(alpha, 0.02)
 				self.smooth_size += alpha * error_size
 
-			# Step 5: cap per-frame velocity on center
+			# Step 5: cap per-frame velocity on center using adaptive cap
 			delta_cx = self.smooth_cx - old_cx
-			if abs(delta_cx) > self.max_crop_velocity:
-				# clamp to max velocity, preserving sign
-				self.smooth_cx = old_cx + math.copysign(self.max_crop_velocity, delta_cx)
+			if abs(delta_cx) > adaptive_cap:
+				# clamp to adaptive cap, preserving sign
+				self.smooth_cx = old_cx + math.copysign(adaptive_cap, delta_cx)
 
 			delta_cy = self.smooth_cy - old_cy
-			if abs(delta_cy) > self.max_crop_velocity:
-				self.smooth_cy = old_cy + math.copysign(self.max_crop_velocity, delta_cy)
+			if abs(delta_cy) > adaptive_cap:
+				self.smooth_cy = old_cy + math.copysign(adaptive_cap, delta_cy)
 
 		# Step 6: compute integer crop rectangle
 		crop_h = self.smooth_size
@@ -207,6 +240,9 @@ class CropController:
 		self.smooth_cx = None
 		self.smooth_cy = None
 		self.smooth_size = None
+		self._ema_displacement = 0.0
+		self._prev_desired_cx = None
+		self._prev_desired_cy = None
 
 	#============================================
 	def get_state(self) -> dict | None:
@@ -298,6 +334,8 @@ def create_crop_controller(
 	smoothing_release = float(processing.get("crop_smoothing_release", 0.05))
 	max_crop_velocity = float(processing.get("crop_max_velocity", 30.0))
 	min_crop_size = int(processing.get("crop_min_size", 200))
+	velocity_scale = float(processing.get("crop_velocity_scale", 2.0))
+	displacement_alpha = float(processing.get("crop_displacement_alpha", 0.1))
 
 	controller = CropController(
 		frame_width=frame_width,
@@ -308,8 +346,128 @@ def create_crop_controller(
 		smoothing_release=smoothing_release,
 		max_crop_velocity=max_crop_velocity,
 		min_crop_size=min_crop_size,
+		velocity_scale=velocity_scale,
+		displacement_alpha=displacement_alpha,
 	)
 	return controller
+
+
+#============================================
+def direct_center_crop_trajectory(
+	full_trajectory: list,
+	frame_width: int,
+	frame_height: int,
+	config: dict,
+) -> list:
+	"""Compute crop rectangles by centering directly on the solved trajectory.
+
+	Pure offline signal processing: no deadband, no attack/release alpha,
+	no online state. Centers the crop on the dense solved trajectory center,
+	smooths with forward-backward EMA, and applies bounds clamping and
+	optional velocity capping.
+
+	Args:
+		full_trajectory: Dense list of tracking state dicts (gap-filled,
+			one per frame). Required keys: 'cx', 'cy', 'h'.
+		frame_width: Source video frame width in pixels.
+		frame_height: Source video frame height in pixels.
+		config: Project configuration dict with 'processing' section.
+
+	Returns:
+		List of (x, y, w, h) integer crop rectangles, one per frame.
+	"""
+	n = len(full_trajectory)
+	if n == 0:
+		return []
+
+	processing = config.get("processing", {})
+	# parse aspect ratio
+	aspect_str = processing.get("crop_aspect", "1:1")
+	aspect_ratio = parse_aspect_ratio(aspect_str)
+	# fill ratio: subject height / crop height
+	fill_ratio = float(processing.get("crop_fill_ratio", 0.30))
+	# minimum crop dimension from config
+	min_crop_size = int(processing.get("crop_min_size", 200))
+	# smoothing alphas (0 = disabled)
+	alpha_pos = float(processing.get("crop_post_smooth_strength", 0.0))
+	alpha_size = float(processing.get("crop_post_smooth_size_strength", 0.0))
+	# final velocity cap on center (0 = no cap)
+	max_velocity = float(processing.get("crop_post_smooth_max_velocity", 0.0))
+
+	# Step 1: extract raw signals from trajectory
+	raw_cx = numpy.empty(n, dtype=float)
+	raw_cy = numpy.empty(n, dtype=float)
+	raw_h = numpy.empty(n, dtype=float)
+	for i in range(n):
+		state = full_trajectory[i]
+		raw_cx[i] = state["cx"]
+		raw_cy[i] = state["cy"]
+		raw_h[i] = state["h"]
+
+	# compute desired crop height from bbox height and fill ratio
+	desired_crop_h = raw_h / fill_ratio
+
+	# Step 2: apply forward-backward EMA to position and size
+	if alpha_pos > 0:
+		smoothed_cx = _forward_backward_ema(raw_cx, alpha_pos)
+		smoothed_cy = _forward_backward_ema(raw_cy, alpha_pos)
+	else:
+		smoothed_cx = raw_cx.copy()
+		smoothed_cy = raw_cy.copy()
+
+	if alpha_size > 0:
+		smoothed_h = _forward_backward_ema(desired_crop_h, alpha_size)
+	else:
+		smoothed_h = desired_crop_h.copy()
+
+	# Step 3: guard minimum positive size
+	smoothed_h = numpy.maximum(smoothed_h, float(min_crop_size))
+	# recompute width from smoothed height
+	smoothed_w = smoothed_h * aspect_ratio
+	# floor width at 1.0
+	smoothed_w = numpy.maximum(smoothed_w, 1.0)
+
+	# Step 4: reconstruct rectangles from center + size
+	x = smoothed_cx - smoothed_w / 2.0
+	y = smoothed_cy - smoothed_h / 2.0
+
+	# Step 5: clamp to frame bounds
+	x = numpy.clip(x, 0.0, numpy.maximum(frame_width - smoothed_w, 0.0))
+	y = numpy.clip(y, 0.0, numpy.maximum(frame_height - smoothed_h, 0.0))
+
+	# Step 6: apply final velocity cap on center only
+	if max_velocity > 0:
+		# recompute centers from clamped rects
+		cx = x + smoothed_w / 2.0
+		cy = y + smoothed_h / 2.0
+		for i in range(1, n):
+			dx = cx[i] - cx[i - 1]
+			dy = cy[i] - cy[i - 1]
+			dist = math.sqrt(dx * dx + dy * dy)
+			if dist > max_velocity:
+				# rescale displacement to max_velocity preserving direction
+				scale = max_velocity / dist
+				cx[i] = cx[i - 1] + dx * scale
+				cy[i] = cy[i - 1] + dy * scale
+		# rebuild x, y from capped centers
+		x = cx - smoothed_w / 2.0
+		y = cy - smoothed_h / 2.0
+
+		# Step 7: re-clamp to frame bounds after velocity cap
+		x = numpy.clip(x, 0.0, numpy.maximum(frame_width - smoothed_w, 0.0))
+		y = numpy.clip(y, 0.0, numpy.maximum(frame_height - smoothed_h, 0.0))
+
+	# Step 8: convert to integer tuples using round() for stability
+	result = []
+	for i in range(n):
+		rect = (
+			round(x[i]),
+			round(y[i]),
+			round(smoothed_w[i]),
+			round(smoothed_h[i]),
+		)
+		result.append(rect)
+	return result
 
 
 #============================================
@@ -399,24 +557,45 @@ def trajectory_to_crop_rects(
 			}
 			full_trajectory.append(fallback)
 
-	# compute smoothed crop trajectory (online pass)
-	crop_rects = compute_crop_trajectory(
-		full_trajectory, frame_width, frame_height, config,
-	)
-
-	# optional offline post-smoothing (forward-backward EMA)
+	# read crop mode from config (default: smooth for backward compatibility)
 	processing = config.get("processing", {})
-	alpha_pos = float(processing.get("crop_post_smooth_strength", 0.0))
-	alpha_size = float(processing.get("crop_post_smooth_size_strength", 0.0))
-	final_velocity = float(processing.get("crop_post_smooth_max_velocity", 0.0))
-	if alpha_pos > 0 or alpha_size > 0:
-		# default size alpha to half of position alpha (heavier smoothing)
-		effective_alpha_size = alpha_size if alpha_size > 0 else alpha_pos / 2.0
-		crop_rects = smooth_crop_trajectory(
-			crop_rects, frame_width, frame_height,
-			alpha_position=alpha_pos,
-			alpha_size=effective_alpha_size,
-			max_velocity=final_velocity,
+	crop_mode = str(processing.get("crop_mode", "smooth"))
+
+	if crop_mode == "direct_center":
+		# validate trajectory entries have required keys before dispatch
+		required_keys = {"cx", "cy", "h"}
+		for i, entry in enumerate(full_trajectory):
+			if not isinstance(entry, dict) or not required_keys.issubset(entry):
+				missing = required_keys - set(entry.keys()) if isinstance(entry, dict) else required_keys
+				raise RuntimeError(
+					f"Trajectory entry {i} missing required keys for "
+					f"direct_center mode: {missing}"
+				)
+		# direct-center mode: center on solved trajectory, skip CropController
+		crop_rects = direct_center_crop_trajectory(
+			full_trajectory, frame_width, frame_height, config,
+		)
+	elif crop_mode == "smooth":
+		# existing online CropController pass
+		crop_rects = compute_crop_trajectory(
+			full_trajectory, frame_width, frame_height, config,
+		)
+		# optional offline post-smoothing (forward-backward EMA)
+		alpha_pos = float(processing.get("crop_post_smooth_strength", 0.0))
+		alpha_size = float(processing.get("crop_post_smooth_size_strength", 0.0))
+		final_velocity = float(processing.get("crop_post_smooth_max_velocity", 0.0))
+		if alpha_pos > 0 or alpha_size > 0:
+			# default size alpha to half of position alpha (heavier smoothing)
+			effective_alpha_size = alpha_size if alpha_size > 0 else alpha_pos / 2.0
+			crop_rects = smooth_crop_trajectory(
+				crop_rects, frame_width, frame_height,
+				alpha_position=alpha_pos,
+				alpha_size=effective_alpha_size,
+				max_velocity=final_velocity,
+			)
+	else:
+		raise RuntimeError(
+			f"Unknown crop_mode '{crop_mode}', expected 'smooth' or 'direct_center'"
 		)
 
 	return crop_rects

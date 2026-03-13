@@ -8,6 +8,7 @@ mouse drawing for seed collection.
 # (none)
 
 # PIP3 modules
+import cv2
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton
 
@@ -77,6 +78,11 @@ class SeedController(BaseAnnotationController):
 		# scrub step in seconds, adjustable via [ and ]
 		self._scrub_step_s: float = 0.2
 		self._step_value_label: QLabel | None = None
+
+		# auto-seed suggestion state
+		self._suggestion: dict | None = None
+		self._detector: object = None
+		self._detection_cache: dict = {}
 
 	#============================================
 
@@ -191,6 +197,17 @@ class SeedController(BaseAnnotationController):
 			"LR=scrub  []=step  SPACE=skip  N=not-in-frame  "
 			"F=avg  P=part  A=approx  V=hide preds  Z=zoom"
 		)
+		# add ENTER hint if suggestion available
+		if self._suggestion is not None:
+			suggestion_idx = self._suggestion.get(
+				"suggestion_index"
+			)
+			if suggestion_idx is not None:
+				hints += "  ENTER=accept"
+			# add number keys hint if candidates available
+			candidates = self._suggestion.get("candidates", [])
+			if len(candidates) > 1:
+				hints += "  1-9=select"
 		if self._return_callback is not None:
 			hints += "  ESC=return"
 		else:
@@ -219,6 +236,8 @@ class SeedController(BaseAnnotationController):
 			self._update_scale_bar()
 			# Recenter on prediction center when zoomed in
 			self._recenter_on_prediction()
+			# compute auto-seed suggestion for this frame
+			self._compute_suggestion()
 
 		# update progress bar
 		self._window.set_progress(
@@ -230,7 +249,142 @@ class SeedController(BaseAnnotationController):
 
 	#============================================
 
-	def _refresh_frame_title(self) -> None:
+	def _get_detector(self) -> object | None:
+		"""Get or create a YOLO detector instance.
+
+		Lazy-loads the detector on first call. Returns None if YOLO
+		weights are not available.
+
+		Returns:
+			YoloDetector instance or None if weights unavailable.
+		"""
+		if self._detector is None:
+			# lazy import to avoid circular dependencies
+			import tr_detection as detection_module
+
+			# ensure weights exist before creating detector
+			weights_path = (
+				detection_module.ensure_yolo_weights()
+			)
+			if not weights_path:
+				# weights unavailable, silently degrade
+				return None
+
+			# create detector directly without create_detector()
+			# to avoid config structure issues
+			self._detector = detection_module.YoloDetector(
+				weights_path,
+				confidence_threshold=0.25,
+				nms_threshold=0.45,
+			)
+		return self._detector
+
+	#============================================
+
+	def _compute_suggestion(self) -> None:
+		"""Compute and store auto-seed suggestion for current frame.
+
+		Runs YOLO detection and calls suggest_seed_candidates().
+		Results cached per frame. Updates self._suggestion and
+		redraws frame overlay.
+		"""
+		# check cache first
+		if self._current_frame in self._detection_cache:
+			self._suggestion = self._detection_cache[self._current_frame]
+			return
+
+		# try to get detector
+		detector = self._get_detector()
+		if detector is None or self._current_bgr is None:
+			# detector unavailable, no suggestions
+			self._suggestion = {
+				"candidates": [],
+				"suggestion_index": None,
+				"mode": "none",
+				"scores": None,
+			}
+			self._detection_cache[self._current_frame] = self._suggestion
+			return
+
+		# run YOLO detection on current frame
+		try:
+			detections = detector.detect(self._current_bgr)
+		except (RuntimeError, cv2.error):
+			# ONNX inference or OpenCV DNN failure, no suggestions
+			self._suggestion = {
+				"candidates": [],
+				"suggestion_index": None,
+				"mode": "none",
+				"scores": None,
+			}
+			self._detection_cache[self._current_frame] = self._suggestion
+			return
+
+		# import seeding module for suggestion function
+		import seeding as seeding_module
+
+		# get confirmed seeds from all_seeds + new_seeds
+		confirmed_seeds = self._all_seeds + self._new_seeds
+
+		# compute suggestion
+		suggestion = seeding_module.suggest_seed_candidates(
+			self._current_bgr,
+			detections,
+			confirmed_seeds,
+			self._current_frame,
+		)
+		self._suggestion = suggestion
+		self._detection_cache[self._current_frame] = suggestion
+
+	#============================================
+
+	def _draw_candidate_overlays(self, frame: object) -> None:
+		"""Draw numbered candidate boxes on the frame overlay.
+
+		Draws all candidates as rectangles with numbers 1-9.
+		The suggested candidate (if any) uses thicker/brighter color.
+
+		Args:
+			frame: Frame viewer object with draw_rectangle/draw_text.
+		"""
+		if self._suggestion is None:
+			return
+
+		candidates = self._suggestion.get("candidates", [])
+		suggestion_idx = self._suggestion.get("suggestion_index")
+
+		# colors: green for suggested, cyan for others
+		suggested_color = (0, 255, 0)  # bright green
+		other_color = (255, 255, 0)  # cyan
+
+		for idx, candidate in enumerate(candidates):
+			if idx >= 9:
+				# limit to 9 candidates (1-9 keys)
+				break
+
+			bbox = candidate["bbox"]
+			x, y, w, h = bbox
+			x2 = x + w
+			y2 = y + h
+
+			is_suggested = (idx == suggestion_idx)
+			color = suggested_color if is_suggested else other_color
+			thickness = 3 if is_suggested else 1
+
+			# draw rectangle
+			frame.draw_rectangle(
+				(x, y), (x2, y2), color, thickness
+			)
+
+			# draw number label (1-9) at top-left of bbox
+			label_text = str(idx + 1)
+			frame.draw_text(
+				label_text, (x + 5, y + 20), color
+			)
+
+	#============================================
+
+	def _refresh_frame_title(self) -> str:
 		"""Update window title with frame, step, zoom, and interval quality info."""
 		step_frames = max(1, int(round(self._fps * self._scrub_step_s)))
 		zoom = self._window.get_frame_view().get_zoom_factor()
@@ -311,7 +465,16 @@ class SeedController(BaseAnnotationController):
 		if result is not None:
 			return result
 
-		if key == Qt.Key.Key_Space:
+		# ENTER/RETURN: accept current suggestion if available
+		if key == Qt.Key.Key_Return or key == Qt.Key.Key_Enter:
+			self._accept_suggestion_if_available()
+			return True
+		# number keys 1-9: select candidate by index
+		elif key >= Qt.Key.Key_1 and key <= Qt.Key.Key_9:
+			candidate_idx = int(key) - int(Qt.Key.Key_1)
+			self._accept_candidate(candidate_idx)
+			return True
+		elif key == Qt.Key.Key_Space:
 			self._on_skip()
 			return True
 		elif key == Qt.Key.Key_Left:
@@ -342,6 +505,78 @@ class SeedController(BaseAnnotationController):
 			return True
 
 		return False
+
+	#============================================
+
+	def _accept_suggestion_if_available(self) -> None:
+		"""Accept current suggestion if available.
+
+		Calls _accept_candidate() with the suggestion_index if
+		suggestion_index is not None.
+		"""
+		if self._suggestion is None:
+			return
+		suggestion_idx = self._suggestion.get("suggestion_index")
+		if suggestion_idx is not None:
+			self._accept_candidate(suggestion_idx)
+
+	#============================================
+
+	def _accept_candidate(self, candidate_idx: int) -> None:
+		"""Accept a candidate from suggestion and create a seed.
+
+		Args:
+			candidate_idx: Index into candidates list (0-based).
+		"""
+		if self._suggestion is None:
+			return
+		candidates = self._suggestion.get("candidates", [])
+		if candidate_idx < 0 or candidate_idx >= len(candidates):
+			return
+
+		candidate = candidates[candidate_idx]
+		# check for duplicate seed at this frame first
+		for seed in self._all_seeds:
+			if int(seed["frame_index"]) == self._current_frame:
+				if self._window is not None:
+					self._window.statusBar().showMessage(
+						"seed already exists at this frame"
+					)
+				return
+		for seed in self._new_seeds:
+			if int(seed["frame_index"]) == self._current_frame:
+				if self._window is not None:
+					self._window.statusBar().showMessage(
+						"seed already exists at this frame"
+					)
+				return
+
+		# extract torso_box and compute jersey color
+		torso_box = candidate["torso_box"]
+		import seeding as seeding_module
+
+		jersey_hsv = seeding_module.extract_jersey_color(
+			self._current_bgr, torso_box
+		)
+		# use candidate's histogram if available, or extract new one
+		hist = candidate.get("histogram")
+		if hist is None:
+			hist = seeding_module.extract_color_histogram(
+				self._current_bgr, torso_box
+			)
+
+		# build seed dict
+		seed = seeding_module._build_seed_dict(
+			self._current_frame,
+			self._current_frame / self._fps,
+			torso_box,
+			jersey_hsv,
+			self._pass_number,
+			self._mode_str,
+			histogram=hist,
+		)
+		self._commit_seed(seed)
+		self._advance()
 
 	#============================================
 
@@ -404,20 +639,7 @@ class SeedController(BaseAnnotationController):
 			jersey_hsv = seeding_module.extract_jersey_color(
 				self._current_bgr, norm_box
 			)
-			seed = seeding_module._build_seed_dict(
-				self._current_frame,
-				self._current_frame / self._fps,
-				norm_box,
-				jersey_hsv,
-				self._pass_number,
-				self._mode_str,
-			)
-			seed["status"] = "partial"
-			self._commit_seed(seed)
-			self._advance()
-		else:
-			norm_box = seeding_module.normalize_seed_box(box, self._config)
-			jersey_hsv = seeding_module.extract_jersey_color(
+			hist = seeding_module.extract_color_histogram(
 				self._current_bgr, norm_box
 			)
 			seed = seeding_module._build_seed_dict(
@@ -427,6 +649,27 @@ class SeedController(BaseAnnotationController):
 				jersey_hsv,
 				self._pass_number,
 				self._mode_str,
+				histogram=hist,
+			)
+			seed["status"] = "partial"
+			self._commit_seed(seed)
+			self._advance()
+		else:
+			norm_box = seeding_module.normalize_seed_box(box, self._config)
+			jersey_hsv = seeding_module.extract_jersey_color(
+				self._current_bgr, norm_box
+			)
+			hist = seeding_module.extract_color_histogram(
+				self._current_bgr, norm_box
+			)
+			seed = seeding_module._build_seed_dict(
+				self._current_frame,
+				self._current_frame / self._fps,
+				norm_box,
+				jersey_hsv,
+				self._pass_number,
+				self._mode_str,
+				histogram=hist,
 			)
 			self._commit_seed(seed)
 			self._advance()

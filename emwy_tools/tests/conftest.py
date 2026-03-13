@@ -20,7 +20,7 @@ if TESTS_DIR not in sys.path:
 	sys.path.insert(0, TESTS_DIR)
 
 # add sub-package directories so sibling imports work when loaded via package paths
-# (e.g. track_runner.encoder doing "import crop" needs track_runner/ on sys.path)
+# (e.g. track_runner.encoder doing "import tr_crop" needs track_runner/ on sys.path)
 for subpkg in ("track_runner", "silence_annotator", "stabilize_building"):
 	subpkg_dir = os.path.join(EMWY_TOOLS_DIR, subpkg)
 	if os.path.isdir(subpkg_dir) and subpkg_dir not in sys.path:

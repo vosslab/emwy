@@ -208,15 +208,19 @@ class AnnotationWindow(AppShell):
 		# Store new controller
 		self._active_controller = controller
 
-		# Reset progress bar between controller swaps
-		self._progress_bar.setValue(0)
-		self._progress_bar.setMaximum(0)
+		# Reset progress bar between controller swaps (guard for early init)
+		if hasattr(self, "_progress_bar"):
+			self._progress_bar.setValue(0)
+			self._progress_bar.setMaximum(0)
 
-		# Reset overlay toggles to all-visible on mode switch
-		for action in self._overlay_actions.values():
-			action.setChecked(True)
+		# Reset overlay toggles to all-visible on mode switch (guard for early init)
+		if hasattr(self, "_overlay_actions"):
+			for action in self._overlay_actions.values():
+				action.setChecked(True)
 
 		# Clear annotation toolbar and re-add persistent widgets (no recreation)
+		if not hasattr(self, "_annotation_toolbar"):
+			return
 		self._annotation_toolbar.clear()
 		self._mode_label.setText(f"MODE: {self._current_mode.upper()}")
 		self._annotation_toolbar.addWidget(self._mode_label)

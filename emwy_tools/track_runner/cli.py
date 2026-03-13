@@ -25,16 +25,16 @@ import subprocess
 import time
 
 # local repo modules
-import config
+import tr_config
 import state_io
-import detection
+import tr_detection
 import encoder
 import seeding
 import scoring
 import seed_editor
 import interval_solver
 import review
-import crop
+import tr_crop
 import common_tools.frame_filters as frame_filters
 
 
@@ -719,7 +719,7 @@ def _run_solve(
 	with encoder.VideoReader(args.input_file) as reader:
 		diagnostics = interval_solver.solve_all_intervals(
 			reader, seeds,
-			detection.create_detector(cfg),
+			tr_detection.create_detector(cfg),
 			cfg, **solve_kwargs,
 		)
 	diagnostics["fps"] = fps
@@ -1098,7 +1098,7 @@ def _mode_refine(
 
 #============================================
 def _resolve_encode_filters(args: argparse.Namespace, proc_cfg: dict) -> list:
-	"""Resolve the encode filter list from CLI and config.
+	"""Resolve the encode filter list from CLI and tr_config.
 
 	CLI --encode-filters overrides config processing.encode_filters.
 	Validates each filter name against the known filter list.
@@ -1229,7 +1229,7 @@ def _mode_encode(
 
 	# compute crop trajectory
 	print("computing crop trajectory...")
-	crop_rects = crop.trajectory_to_crop_rects(trajectory, video_info, cfg)
+	crop_rects = tr_crop.trajectory_to_crop_rects(trajectory, video_info, cfg)
 
 	# resolve output path
 	output_file = getattr(args, "output_file", None)
@@ -1372,7 +1372,7 @@ def _mode_run(
 
 	# initialize YOLO detector
 	print("initializing YOLO detector...")
-	det = detection.create_detector(cfg)
+	det = tr_detection.create_detector(cfg)
 
 	# load saved seeds (or start fresh)
 	seeds_data = state_io.load_seeds(seeds_path)
@@ -1652,7 +1652,7 @@ def main() -> None:
 	# resolve config path
 	config_path = args.config_file
 	if config_path is None:
-		config_path = config.default_config_path(args.input_file)
+		config_path = tr_config.default_config_path(args.input_file)
 
 	# paths for seeds, diagnostics, and solved intervals
 	seeds_path = state_io.default_seeds_path(args.input_file)
@@ -1661,19 +1661,19 @@ def main() -> None:
 
 	# handle --write-default-config: write and exit
 	if args.write_default_config:
-		cfg = config.default_config()
-		config.write_config(config_path, cfg)
+		cfg = tr_config.default_config()
+		tr_config.write_config(config_path, cfg)
 		print(f"wrote default config: {config_path}")
 		return
 
 	# load or create config
 	if os.path.isfile(config_path):
-		cfg = config.load_config(config_path)
+		cfg = tr_config.load_config(config_path)
 	else:
-		cfg = config.default_config()
-		config.write_config(config_path, cfg)
+		cfg = tr_config.default_config()
+		tr_config.write_config(config_path, cfg)
 		print(f"wrote default config: {config_path}")
-	config.validate_config(cfg)
+	tr_config.validate_config(cfg)
 
 	# probe video metadata
 	print(f"probing video: {args.input_file}")

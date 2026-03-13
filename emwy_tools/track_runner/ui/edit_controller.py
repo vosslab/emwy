@@ -47,7 +47,7 @@ class _YoloLoaderThread(QThread):
 
 	def run(self) -> None:
 		"""Load YOLO detector in background thread."""
-		import detection as detection_module
+		import tr_detection as detection_module
 		det = detection_module.create_detector(self._config)
 		self._detector_list[0] = det
 

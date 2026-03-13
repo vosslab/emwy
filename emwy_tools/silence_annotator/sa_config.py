@@ -11,7 +11,7 @@ import os
 import yaml
 
 # local repo modules
-import detection
+import sa_detection
 import common_tools.emwy_yaml_writer as emwy_yaml_writer
 
 #============================================
@@ -180,9 +180,9 @@ def default_config() -> dict:
 			},
 			'auto_threshold': {
 				'enabled': False,
-				'step_db': detection.AUTO_THRESHOLD_STEP_DB,
-				'max_db': detection.AUTO_THRESHOLD_MAX_DB,
-				'max_tries': detection.AUTO_THRESHOLD_MAX_TRIES,
+				'step_db': sa_detection.AUTO_THRESHOLD_STEP_DB,
+				'max_db': sa_detection.AUTO_THRESHOLD_MAX_DB,
+				'max_tries': sa_detection.AUTO_THRESHOLD_MAX_TRIES,
 			},
 		},
 	}
@@ -286,10 +286,10 @@ def build_config_text(config: dict) -> str:
 	lines.append(
 		f"    enabled: {str(bool(auto_threshold.get('enabled', False))).lower()}"
 	)
-	lines.append(f"    step_db: {auto_threshold.get('step_db', detection.AUTO_THRESHOLD_STEP_DB)}")
-	lines.append(f"    max_db: {auto_threshold.get('max_db', detection.AUTO_THRESHOLD_MAX_DB)}")
+	lines.append(f"    step_db: {auto_threshold.get('step_db', sa_detection.AUTO_THRESHOLD_STEP_DB)}")
+	lines.append(f"    max_db: {auto_threshold.get('max_db', sa_detection.AUTO_THRESHOLD_MAX_DB)}")
 	lines.append(
-		f"    max_tries: {auto_threshold.get('max_tries', detection.AUTO_THRESHOLD_MAX_TRIES)}"
+		f"    max_tries: {auto_threshold.get('max_tries', sa_detection.AUTO_THRESHOLD_MAX_TRIES)}"
 	)
 	lines.append("")
 	return "\n".join(lines)

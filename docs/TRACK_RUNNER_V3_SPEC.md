@@ -454,14 +454,15 @@ trajectories from the confidence-weighted tracker output.
 
 | Parameter | Default | Description |
 | --- | --- | --- |
+| `crop_mode` | `smooth` | Crop algorithm: `smooth` (online lag-based) or `direct_center` (offline centering) |
 | `target_fill_ratio` | 0.30 | Subject height / crop height |
-| `smoothing_attack` | 0.15 | Alpha for large position errors |
-| `smoothing_release` | 0.05 | Alpha for small position errors |
-| `max_crop_velocity` | 30.0 | Max px/frame crop movement |
+| `smoothing_attack` | 0.15 | Alpha for large position errors (smooth mode only) |
+| `smoothing_release` | 0.05 | Alpha for small position errors (smooth mode only) |
+| `max_crop_velocity` | 30.0 | Max px/frame crop movement (smooth mode only) |
 | `min_crop_size` | 200 | Minimum crop dimension in pixels |
-| `deadband_fraction` | 0.02 | Fraction of crop size for deadband |
-| `crop_post_smooth_strength` | 0.0 | EMA alpha for post-smoothing crop center (0 = disabled) |
-| `crop_post_smooth_size_strength` | 0.0 | EMA alpha for post-smoothing crop size (0 = auto) |
+| `deadband_fraction` | 0.02 | Fraction of crop size for deadband (smooth mode only) |
+| `crop_post_smooth_strength` | 0.0 | EMA alpha for position smoothing (0 = disabled) |
+| `crop_post_smooth_size_strength` | 0.0 | EMA alpha for size smoothing (0 = auto in smooth mode) |
 | `crop_post_smooth_max_velocity` | 0.0 | Final center velocity cap after smoothing (0 = no cap) |
 
 **Alpha floor**: smoothing alpha is clamped to `max(alpha, 0.02)` so the
@@ -469,6 +470,34 @@ crop always responds, even at low confidence.
 
 **Velocity capping**: per-frame crop displacement clamped to 30 px with sign
 preservation.
+
+### Direct-center crop mode
+
+`crop_mode: direct_center` replaces the online `CropController` with a pure
+offline signal-processing pipeline. It centers the crop directly on the dense
+solved trajectory (post-propagation, post-fusion, post-refinement,
+post-anchoring), then smooths with forward-backward EMA. No deadband, no
+attack/release alpha, no online state.
+
+This mode treats telephoto crop generation as a reframing problem: the operator
+already kept the runner roughly centered, and the system refines that framing.
+Recommended for telephoto footage where the runner fills most of the frame.
+
+Pipeline:
+
+1. Extract `cx`, `cy`, `h` from solved trajectory
+2. Compute crop size from `h / fill_ratio` and aspect ratio
+3. Apply forward-backward EMA to position (`crop_post_smooth_strength`) and
+   size (`crop_post_smooth_size_strength`)
+4. Guard minimum positive size from `crop_min_size`
+5. Reconstruct and clamp rectangles to frame bounds
+6. Optional final velocity cap on center
+   (`crop_post_smooth_max_velocity`)
+7. Re-clamp to frame bounds
+8. Convert to integer tuples using `round()` for crop stability
+
+The `smooth` mode (existing `CropController`) remains the default in M1.
+Set `crop_mode: direct_center` explicitly in config to use the new mode.
 
 ### Post-smoothing (offline)
 
@@ -497,6 +526,7 @@ For tight-zoom footage (e.g., 600mm lens), add these values to the
 
 ```yaml
 processing:
+  crop_mode: direct_center
   crop_post_smooth_strength: 0.10
   crop_post_smooth_size_strength: 0.05
   crop_post_smooth_max_velocity: 12.0

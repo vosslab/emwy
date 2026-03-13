@@ -16,8 +16,8 @@ import os
 import numpy
 
 # local repo modules
-import config
-import detection
+import sa_config
+import sa_detection
 import common_tools.emwy_yaml_writer as emwy_yaml_writer
 import common_tools.tools_common as tools_common
 
@@ -518,8 +518,8 @@ def print_debug_summary(args: argparse.Namespace, audio_path: str,
 	print(f"Normalized silence ranges: {len(silences)}")
 	print(f"Content ranges: {len(contents)}")
 	if scan_stats is not None:
-		rms_db = detection.amplitude_to_db(scan_stats.get('rms_amp'))
-		max_db = detection.amplitude_to_db(scan_stats.get('max_amp'))
+		rms_db = sa_detection.amplitude_to_db(scan_stats.get('rms_amp'))
+		max_db = sa_detection.amplitude_to_db(scan_stats.get('max_amp'))
 		if rms_db is not None:
 			print(f"RMS amplitude dB: {rms_db:.2f}")
 		if max_db is not None:
@@ -605,12 +605,12 @@ def main() -> None:
 		tools_common.ensure_file_exists(args.audio_file)
 	config_path = args.config_file
 	if config_path is None:
-		config_path = config.default_config_path(args.input_file)
+		config_path = sa_config.default_config_path(args.input_file)
 	if not os.path.exists(config_path):
-		config.write_config_file(config_path, config.default_config())
+		sa_config.write_config_file(config_path, sa_config.default_config())
 		print(f"Wrote default config: {config_path}")
-	loaded_config = config.load_config(config_path)
-	settings = config.build_settings(loaded_config, config_path)
+	loaded_config = sa_config.load_config(config_path)
+	settings = sa_config.build_settings(loaded_config, config_path)
 	if args.trim_edge_silence is not None:
 		if args.trim_leading_silence is None:
 			settings['trim_leading_silence'] = args.trim_edge_silence
@@ -667,14 +667,14 @@ def main() -> None:
 	temp_wav = None
 	audio_path = args.audio_file
 	if audio_path is None:
-		temp_wav = detection.make_temp_wav()
-		audio_path = detection.extract_audio(args.input_file, temp_wav)
+		temp_wav = sa_detection.make_temp_wav()
+		audio_path = sa_detection.extract_audio(args.input_file, temp_wav)
 	else:
 		audio_ext = os.path.splitext(audio_path)[1].lower()
 		if audio_ext not in ('.wav', '.wave'):
 			raise RuntimeError("audio_file must be wav when using --audio")
-	audio_duration = detection.get_wav_duration_seconds(audio_path)
-	raw_silences, scan_stats = detection.scan_wav_for_silence(
+	audio_duration = sa_detection.get_wav_duration_seconds(audio_path)
+	raw_silences, scan_stats = sa_detection.scan_wav_for_silence(
 		audio_path, settings['threshold_db'], settings['min_silence'],
 		settings['frame_seconds'], settings['hop_seconds'],
 		settings['smooth_frames'], include_series=args.debug
@@ -687,7 +687,7 @@ def main() -> None:
 	threshold_used = settings['threshold_db']
 	auto_attempts = []
 	if settings['auto_threshold'] and len(silences) == 0:
-		auto_result = detection.auto_find_silence(audio_path, audio_duration,
+		auto_result = sa_detection.auto_find_silence(audio_path, audio_duration,
 			settings['threshold_db'], settings['min_silence'],
 			settings['min_content'], settings['frame_seconds'],
 			settings['hop_seconds'], settings['smooth_frames'],
@@ -700,7 +700,7 @@ def main() -> None:
 			scan_stats = auto_result['scan_stats']
 			threshold_used = auto_result['threshold_db']
 			if args.debug and 'frame_db' not in scan_stats:
-				raw_silences, scan_stats = detection.scan_wav_for_silence(
+				raw_silences, scan_stats = sa_detection.scan_wav_for_silence(
 					audio_path, threshold_used, settings['min_silence'],
 					settings['frame_seconds'], settings['hop_seconds'],
 					settings['smooth_frames'],
@@ -713,7 +713,7 @@ def main() -> None:
 	if args.debug:
 		debug_file = default_debug_path(args.input_file)
 		plot_file = default_plot_path(args.input_file)
-		debug_text = detection.build_debug_report(audio_path, settings['threshold_db'],
+		debug_text = sa_detection.build_debug_report(audio_path, settings['threshold_db'],
 			settings['min_silence'], scan_stats, auto_attempts, threshold_used)
 		write_text_report(debug_file, debug_text)
 		write_debug_plot(plot_file, scan_stats.get('frame_db', numpy.array([])),
@@ -732,7 +732,7 @@ def main() -> None:
 		display_name = base_name.replace("_", " ")
 		intro_title = settings['title_card_text'].replace("{name}", display_name)
 	video_meta = tools_common.probe_video_stream(args.input_file)
-	audio_meta = detection.probe_audio_stream(args.input_file)
+	audio_meta = sa_detection.probe_audio_stream(args.input_file)
 	profile = {
 		'fps': video_meta['fps'],
 		'width': video_meta['width'],

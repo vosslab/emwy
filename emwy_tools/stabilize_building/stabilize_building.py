@@ -18,8 +18,8 @@ import math
 import os
 
 # local repo modules
-import config
-import crop
+import sb_config
+import sb_crop
 import stabilize
 import common_tools.tools_common as tools_common
 
@@ -104,10 +104,10 @@ def main() -> None:
 	if args.use_default_config and args.write_default_config:
 		raise RuntimeError("use --use-default-config or --write-default-config, not both")
 	if args.write_default_config:
-		config_path = config.default_config_path(args.input_file)
+		config_path = sb_config.default_config_path(args.input_file)
 		if os.path.exists(config_path):
 			raise RuntimeError(f"default config already exists: {config_path}")
-		config.write_config_file(config_path, config.default_config())
+		sb_config.write_config_file(config_path, sb_config.default_config())
 		print(f"Wrote default config: {config_path}")
 		return
 	if args.output_file is None or str(args.output_file).strip() == "":
@@ -132,26 +132,26 @@ def main() -> None:
 	config_path_file = None
 	config_path_for_errors = "<code defaults>"
 	config_source = "code_defaults"
-	config_data = config.default_config()
+	config_data = sb_config.default_config()
 	if args.use_default_config:
-		config_path_file = config.default_config_path(args.input_file)
+		config_path_file = sb_config.default_config_path(args.input_file)
 		if not os.path.exists(config_path_file):
 			raise RuntimeError(f"default config not found: {config_path_file}")
-		config_data = config.load_config(config_path_file)
+		config_data = sb_config.load_config(config_path_file)
 		config_path_for_errors = config_path_file
 		config_source = "default_config"
 	elif args.config_file is not None:
 		config_path_file = args.config_file
 		config_path_for_errors = config_path_file
 		if os.path.exists(config_path_file):
-			config_data = config.load_config(config_path_file)
+			config_data = sb_config.load_config(config_path_file)
 			config_source = "explicit_config"
 		else:
-			config.write_config_file(config_path_file, config.default_config())
+			sb_config.write_config_file(config_path_file, sb_config.default_config())
 			print(f"Wrote default config: {config_path_file}")
-			config_data = config.load_config(config_path_file)
+			config_data = sb_config.load_config(config_path_file)
 			config_source = "explicit_config_written"
-	settings = config.build_settings(config_data, config_path_for_errors, args.input_file)
+	settings = sb_config.build_settings(config_data, config_path_for_errors, args.input_file)
 	video = tools_common.probe_video_stream(args.input_file)
 	width = int(video["width"])
 	height = int(video["height"])
@@ -301,14 +301,14 @@ def main() -> None:
 		stabilize.write_report(report_path, report, settings["io"]["report_format"])
 		stabilize.print_unreliable_motion_summary(motion_stats, motion_thresholds, motion_reasons, fps, start_seconds)
 		raise RuntimeError(failure_code)
-	crop_rect = crop.compute_static_crop(width, height, transforms)
+	crop_rect = sb_crop.compute_static_crop(width, height, transforms)
 	report["crop"]["crop_to_content_rect"] = crop_rect
 	if crop_rect["w"] > 0 and crop_rect["h"] > 0:
 		report["crop"]["crop_to_content_area_ratio"] = (
 			(float(crop_rect["w"]) * float(crop_rect["h"])) / (float(width) * float(height))
 		)
 		report["crop"]["crop_to_content_zoom_factor"] = float(width) / float(crop_rect["w"])
-	ok_crop, crop_reasons = crop.crop_constraints_ok(
+	ok_crop, crop_reasons = sb_crop.crop_constraints_ok(
 		width, height, crop_rect,
 		settings["crop"]["min_area_ratio"],
 		effective_min_height_px,
@@ -326,7 +326,7 @@ def main() -> None:
 			raise RuntimeError("global stabilization unsuitable for this material (crop infeasible)")
 		fill = settings["border"]["fill"]
 		fill_crop_rect = crop_rect
-		ok_fill_crop, fill_crop_reasons = crop.crop_basic_constraints_ok(
+		ok_fill_crop, fill_crop_reasons = sb_crop.crop_basic_constraints_ok(
 			width,
 			height,
 			fill_crop_rect,
@@ -334,13 +334,13 @@ def main() -> None:
 			effective_min_height_px,
 		)
 		if not ok_fill_crop:
-			fill_crop_rect = crop.compute_minimum_centered_crop(
+			fill_crop_rect = sb_crop.compute_minimum_centered_crop(
 				width,
 				height,
 				settings["crop"]["min_area_ratio"],
 				effective_min_height_px,
 			)
-			ok_fill_crop, fill_crop_reasons = crop.crop_basic_constraints_ok(
+			ok_fill_crop, fill_crop_reasons = sb_crop.crop_basic_constraints_ok(
 				width,
 				height,
 				fill_crop_rect,
@@ -355,7 +355,7 @@ def main() -> None:
 			report["crop"]["fill_crop_reasons"] = fill_crop_reasons
 			stabilize.write_report(report_path, report, settings["io"]["report_format"])
 			raise RuntimeError("global stabilization unsuitable for this material (fill crop infeasible)")
-		fill_stats = crop.compute_fill_budget(
+		fill_stats = sb_crop.compute_fill_budget(
 			transforms,
 			width,
 			height,
@@ -379,7 +379,7 @@ def main() -> None:
 			report["result"]["message"] = "fill budget exceeded"
 			stabilize.write_report(report_path, report, settings["io"]["report_format"])
 			raise RuntimeError("global stabilization unsuitable for this material (fill budget exceeded)")
-		fill_color_info = crop.compute_center_patch_median_color(
+		fill_color_info = sb_crop.compute_center_patch_median_color(
 			args.input_file,
 			width,
 			height,

@@ -571,33 +571,42 @@ class BaseAnnotationController(QObject):
 	#============================================
 
 	def _on_zoom_toggle(self) -> None:
-		"""Cycle through zoom levels (1x -> 1.5x -> 2.25x -> 3.375x -> 1x).
+		"""Cycle zoom: fit -> 1x -> 1.5x -> 2.25x -> 3.375x -> 5x -> 8x -> 12x -> fit.
 
 		Centers zoom on predictions or seed position when available,
 		otherwise centers on the frame center.
 		"""
-		zoom_levels = [1.0, 1.5, 2.25, 3.375]
+		zoom_levels = [1.0, 1.5, 2.25, 3.375, 5.0, 8.0, 12.0]
 		frame_view = self._window.get_frame_view()
-		current = frame_view.get_zoom_factor()
-		# find the next zoom level in the cycle
-		next_zoom = zoom_levels[0]
-		for zf in zoom_levels:
-			if zf > current + 0.01:
-				next_zoom = zf
-				break
 
-		# determine zoom center
+		# If currently in fit mode, advance to the first fixed level
+		if frame_view.is_fit_zoom():
+			next_zoom = zoom_levels[0]
+		else:
+			current = frame_view.get_zoom_factor()
+			# find the next zoom level above current
+			next_zoom = None
+			for zf in zoom_levels:
+				if zf > current + 0.01:
+					next_zoom = zf
+					break
+			# wrap around to fit if we passed the last level
+			if next_zoom is None:
+				frame_view.fit_to_view()
+				self._update_scale_bar()
+				return
+
+		# determine zoom center for non-fit levels
 		center_x = -1.0
 		center_y = -1.0
-		if next_zoom > 1.0:
-			center = self._get_zoom_center()
-			if center is not None:
-				center_x, center_y = center
-			# fallback to frame center
-			if center_x < 0 and self._current_bgr is not None:
-				h, w = self._current_bgr.shape[:2]
-				center_x = w / 2.0
-				center_y = h / 2.0
+		center = self._get_zoom_center()
+		if center is not None:
+			center_x, center_y = center
+		# fallback to frame center
+		if center_x < 0 and self._current_bgr is not None:
+			h, w = self._current_bgr.shape[:2]
+			center_x = w / 2.0
+			center_y = h / 2.0
 
 		frame_view.set_zoom(next_zoom, center_x, center_y)
 		self._update_scale_bar()

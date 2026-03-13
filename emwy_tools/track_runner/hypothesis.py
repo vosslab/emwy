@@ -19,6 +19,8 @@ MAX_COMPETITORS = 3
 TARGET_OVERLAP_IOU = 0.3
 # IoU threshold for matching a competitor to a new detection
 COMPETITOR_MATCH_IOU = 0.2
+# IoU threshold for occlusion risk: target near any competitor triggers flag
+OCCLUSION_RISK_IOU = 0.15
 
 
 #============================================
@@ -98,6 +100,49 @@ def _detection_to_state(detection: dict) -> dict:
 
 
 #============================================
+def _compute_mean_hsv_score(
+	candidate_patch: numpy.ndarray,
+	appearance_model: dict,
+) -> float:
+	"""Compute identity score using mean HSV comparison.
+
+	Fallback method for small runners or when histogram is unavailable.
+
+	Args:
+		candidate_patch: BGR image patch of the candidate region.
+		appearance_model: Appearance model with hsv_mean key.
+
+	Returns:
+		Identity score in [0, 1]. Higher means better match.
+	"""
+	candidate_hsv = cv2.cvtColor(candidate_patch, cv2.COLOR_BGR2HSV)
+	candidate_mean = (
+		float(numpy.mean(candidate_hsv[:, :, 0])),
+		float(numpy.mean(candidate_hsv[:, :, 1])),
+		float(numpy.mean(candidate_hsv[:, :, 2])),
+	)
+	model_mean = appearance_model.get("hsv_mean", (0.0, 0.0, 0.0))
+	# hue distance (circular, range 0-180 in OpenCV)
+	hue_diff = abs(candidate_mean[0] - model_mean[0])
+	hue_diff = min(hue_diff, 180.0 - hue_diff)
+	# normalize to [0, 1] where 0 is perfect match
+	hue_score = 1.0 - hue_diff / 90.0
+	# saturation and value distance (range 0-255)
+	sat_diff = abs(candidate_mean[1] - model_mean[1]) / 255.0
+	val_diff = abs(candidate_mean[2] - model_mean[2]) / 255.0
+	sv_score = 1.0 - (sat_diff + val_diff) / 2.0
+	# weighted combination: hue is more discriminative for jersey colors
+	hsv_score = 0.6 * hue_score + 0.4 * sv_score
+	hsv_score = max(0.0, min(1.0, hsv_score))
+	return hsv_score
+
+
+#============================================
+# Minimum non-zero histogram bins for reliable comparison
+MIN_HISTOGRAM_BINS = 50
+
+
+#============================================
 def compute_identity_score(
 	frame: numpy.ndarray,
 	state: dict,
@@ -105,9 +150,10 @@ def compute_identity_score(
 ) -> float:
 	"""Compare a candidate region to the seeded appearance model.
 
-	Uses HSV histogram comparison and, for large runners, template
-	normalized cross-correlation. Scale-gated: below 30px returns 0.5
-	(uninformative); above 60px uses full appearance; 30-60px interpolates.
+	For runners >60px, uses cv2.compareHist with Bhattacharyya distance
+	on 2D HS histograms. Falls back to mean-HSV when histogram is
+	unavailable, too sparse, or seed has approximate status.
+	Below 30px returns 0.5 (uninformative). 30-60px uses mean-HSV only.
 
 	Args:
 		frame: BGR image as a numpy array (H, W, 3).
@@ -137,61 +183,87 @@ def compute_identity_score(
 	if x2 <= x1 or y2 <= y1:
 		return 0.5
 
-	# extract candidate patch and convert to HSV
+	# extract candidate patch
 	candidate_patch = frame[y1:y2, x1:x2]
 	if candidate_patch.size == 0:
 		return 0.5
 
-	candidate_hsv = cv2.cvtColor(candidate_patch, cv2.COLOR_BGR2HSV)
-	candidate_mean = (
-		float(numpy.mean(candidate_hsv[:, :, 0])),
-		float(numpy.mean(candidate_hsv[:, :, 1])),
-		float(numpy.mean(candidate_hsv[:, :, 2])),
-	)
-
-	# compare HSV means to appearance model
-	model_mean = appearance_model.get("hsv_mean", (0.0, 0.0, 0.0))
-
-	# hue distance (circular, range 0-180 in OpenCV)
-	hue_diff = abs(candidate_mean[0] - model_mean[0])
-	hue_diff = min(hue_diff, 180.0 - hue_diff)
-	# normalize to [0, 1] where 0 is perfect match
-	hue_score = 1.0 - hue_diff / 90.0
-
-	# saturation and value distance (range 0-255)
-	sat_diff = abs(candidate_mean[1] - model_mean[1]) / 255.0
-	val_diff = abs(candidate_mean[2] - model_mean[2]) / 255.0
-	sv_score = 1.0 - (sat_diff + val_diff) / 2.0
-
-	# weighted combination: hue is more discriminative for jersey colors
-	hsv_score = 0.6 * hue_score + 0.4 * sv_score
-	hsv_score = max(0.0, min(1.0, hsv_score))
-
 	if h >= 60.0:
-		# large runner: also use template correlation for richer comparison
+		# large runner: prefer histogram-based Bhattacharyya comparison
+		model_hist = appearance_model.get("hs_histogram")
+		# check if seed status suggests unreliable appearance
+		seed_status = str(appearance_model.get("seed_status", ""))
+		use_histogram = (
+			model_hist is not None
+			and seed_status not in ("approximate", "not_in_frame")
+		)
+		if use_histogram:
+			# compute candidate 2D HS histogram
+			cand_hsv = cv2.cvtColor(candidate_patch, cv2.COLOR_BGR2HSV)
+			cand_hist = cv2.calcHist(
+				[cand_hsv], [0, 1], None,
+				[30, 32], [0, 180, 0, 256],
+			)
+			cv2.normalize(
+				cand_hist, cand_hist, alpha=1.0, norm_type=cv2.NORM_L1,
+			)
+			# check sparsity of candidate histogram
+			nonzero_bins = int(numpy.count_nonzero(cand_hist))
+			if nonzero_bins < MIN_HISTOGRAM_BINS:
+				# too sparse, fall back to mean-HSV
+				use_histogram = False
+		if use_histogram:
+			# Bhattacharyya distance: 0 = identical, 1 = no overlap
+			bhatt_dist = cv2.compareHist(
+				model_hist, cand_hist, cv2.HISTCMP_BHATTACHARYYA,
+			)
+			# convert distance to score: 0 dist -> 1.0 score
+			hist_score = max(0.0, min(1.0, 1.0 - bhatt_dist))
+			# blend histogram score with template correlation
+			template = appearance_model.get("template")
+			if template is not None and template.size > 0:
+				tmpl_h, tmpl_w = template.shape[:2]
+				if tmpl_h > 0 and tmpl_w > 0:
+					resized = cv2.resize(
+						candidate_patch, (tmpl_w, tmpl_h),
+					)
+					tmpl_gray = cv2.cvtColor(
+						template, cv2.COLOR_BGR2GRAY,
+					)
+					cand_gray = cv2.cvtColor(
+						resized, cv2.COLOR_BGR2GRAY,
+					)
+					result = cv2.matchTemplate(
+						cand_gray, tmpl_gray, cv2.TM_CCOEFF_NORMED,
+					)
+					_, max_val, _, _ = cv2.minMaxLoc(result)
+					# map NCC [-1, 1] to [0, 1]
+					corr_score = float((max_val + 1.0) / 2.0)
+					# 60% histogram + 40% template for large runners
+					identity = 0.6 * hist_score + 0.4 * corr_score
+					return max(0.0, min(1.0, identity))
+			return hist_score
+		# fallback: mean-HSV + template for large runners
+		mean_score = _compute_mean_hsv_score(candidate_patch, appearance_model)
 		template = appearance_model.get("template")
 		if template is not None and template.size > 0:
-			# resize candidate patch to match template size
 			tmpl_h, tmpl_w = template.shape[:2]
 			if tmpl_h > 0 and tmpl_w > 0:
 				resized = cv2.resize(candidate_patch, (tmpl_w, tmpl_h))
 				tmpl_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
 				cand_gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-				# compute normalized cross-correlation via matchTemplate on same size
 				result = cv2.matchTemplate(
 					cand_gray, tmpl_gray, cv2.TM_CCOEFF_NORMED,
 				)
 				_, max_val, _, _ = cv2.minMaxLoc(result)
-				# max_val in [-1, 1]; map to [0, 1]
 				corr_score = float((max_val + 1.0) / 2.0)
-				# blend with hsv_score
-				identity = 0.5 * hsv_score + 0.5 * corr_score
+				identity = 0.5 * mean_score + 0.5 * corr_score
 				return max(0.0, min(1.0, identity))
+		return mean_score
 
-		return hsv_score
-
-	# medium runner (30-60px): HSV only
-	return hsv_score
+	# medium runner (30-60px): mean-HSV only
+	mean_score = _compute_mean_hsv_score(candidate_patch, appearance_model)
+	return mean_score
 
 
 #============================================
@@ -241,6 +313,37 @@ def compute_competitor_margin(
 	# margin is the minimum combined distance clamped to [0, 1]
 	margin = min(1.0, max(0.0, min_distance))
 	return margin
+
+
+#============================================
+def compute_occlusion_risk(
+	target_state: dict,
+	detections: list,
+) -> bool:
+	"""Check whether the target overlaps with any detection above threshold.
+
+	A proxy for occlusion risk: when another person detection shares
+	significant area with the target, the target may be partially or
+	fully obscured. This is a diagnostic signal only; it does not
+	change blending weights or tracker behavior.
+
+	Args:
+		target_state: Target tracking state dict with cx, cy, w, h.
+		detections: List of YOLO detection dicts from the detector.
+
+	Returns:
+		True if any detection overlaps the target above OCCLUSION_RISK_IOU.
+	"""
+	for det in detections:
+		candidate = _detection_to_state(det)
+		iou = _compute_iou(candidate, target_state)
+		# skip the detection that IS the target (very high IoU)
+		if iou >= TARGET_OVERLAP_IOU:
+			continue
+		# check the overlap-risk band: significant but not the target
+		if iou >= OCCLUSION_RISK_IOU:
+			return True
+	return False
 
 
 #============================================
