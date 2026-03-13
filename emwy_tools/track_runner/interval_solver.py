@@ -6,12 +6,14 @@ stitches results into a full trajectory.
 """
 
 # Standard Library
+import math
 import time
 import multiprocessing
 import concurrent.futures
 
 # PIP3 modules
 import numpy
+import scipy.interpolate
 import rich.progress
 
 # local repo modules
@@ -212,6 +214,85 @@ def _detect_cyclical_prior(
 		"correlation": best_corr,
 	}
 	return prior
+
+
+#============================================
+def refine_interval(
+	reader: object,
+	start_frame: int,
+	end_frame: int,
+	start_state: dict,
+	end_state: dict,
+	fused_track: list,
+	appearance_model: dict,
+	backward_reader: object = None,
+	debug: bool = False,
+) -> list:
+	"""Re-propagate an interval using the first-pass fused track as soft prior.
+
+	Converts fused_track into a dict keyed by absolute frame index, then
+	re-runs forward and backward propagation with prior_track so that each
+	frame's position is gently pulled toward the fused reference. Re-fuses
+	the refined passes and returns the result.
+
+	This does NOT re-run competitor/identity scoring (preserves first-pass
+	diagnostic signal for seed recommendation).
+
+	Args:
+		reader: VideoReader with read_frame() and get_info().
+		start_frame: First frame index of the interval.
+		end_frame: Last frame index of the interval.
+		start_state: Propagator seed state at start_frame.
+		end_state: Propagator seed state at end_frame.
+		fused_track: First-pass fused track list (index 0 = start_frame).
+		appearance_model: Appearance model from propagator.build_appearance_model().
+		backward_reader: Optional second VideoReader for concurrent backward pass.
+		debug: If True, print propagation heartbeats.
+
+	Returns:
+		Refined fused track list, same length and indexing as fused_track.
+	"""
+	# build prior dict keyed by absolute frame index
+	prior_dict = {}
+	for i, state in enumerate(fused_track):
+		if state is not None:
+			prior_dict[start_frame + i] = state
+
+	# re-propagate with fused track as soft prior
+	if backward_reader is not None:
+		# concurrent forward + backward
+		with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+			fwd_future = pool.submit(
+				propagator.propagate_forward,
+				reader, start_frame, start_state, end_frame, appearance_model,
+				debug, prior_track=prior_dict,
+			)
+			bwd_future = pool.submit(
+				propagator.propagate_backward,
+				backward_reader, end_frame, end_state, start_frame,
+				appearance_model, debug, prior_track=prior_dict,
+			)
+			refined_fwd = fwd_future.result()
+			refined_bwd_raw = bwd_future.result()
+	else:
+		# sequential
+		refined_fwd = propagator.propagate_forward(
+			reader, start_frame, start_state, end_frame, appearance_model,
+			debug=debug, prior_track=prior_dict,
+		)
+		refined_bwd_raw = propagator.propagate_backward(
+			reader, end_frame, end_state, start_frame, appearance_model,
+			debug=debug, prior_track=prior_dict,
+		)
+
+	# align lengths
+	n = min(len(refined_fwd), len(refined_bwd_raw))
+	refined_fwd = refined_fwd[:n]
+	refined_bwd = refined_bwd_raw[:n]
+
+	# re-fuse the refined passes
+	refined_fused = fuse_tracks(refined_fwd, refined_bwd)
+	return refined_fused
 
 
 #============================================
@@ -430,7 +511,8 @@ def solve_interval(
 	# fuse forward and backward tracks
 	fused_track = fuse_tracks(forward_track, backward_aligned)
 
-	# score the interval using the scoring module
+	# score the FIRST-PASS fused track (diagnostic: raw uncertainty)
+	# this preserves FWD/BWD disagreement signal for seed recommendation
 	interval_score = scoring.score_interval(
 		forward_track,
 		backward_aligned,
@@ -438,12 +520,22 @@ def solve_interval(
 		competitor_margins,
 	)
 
+	# refinement pass: re-propagate with fused track as soft prior
+	refined_track = refine_interval(
+		reader, start_frame, end_frame,
+		start_state, end_state, fused_track, appearance_model,
+		backward_reader=backward_reader, debug=debug,
+	)
+
 	result = {
 		"start_frame": start_frame,
 		"end_frame": end_frame,
-		"fused_track": fused_track,
+		# refined fused track used for crop/output
+		"fused_track": refined_track,
+		# first-pass tracks preserved for diagnostics
 		"forward_track": forward_track,
 		"backward_track": backward_aligned,
+		# interval_score from first-pass (diagnostic, not refined)
 		"interval_score": interval_score,
 		"identity_scores": identity_scores,
 		"competitor_margins": competitor_margins,
@@ -725,6 +817,436 @@ def _apply_trajectory_erasure(
 				trajectory[fi] = None
 	if erase_count > 0:
 		print(f"  erasing trajectory near {erase_count} seeds")
+	return trajectory
+
+
+# anchor interpolation constants
+ANCHOR_PROXIMITY_SKIP = 7        # frames near seeds to skip (~0.23s at 30fps)
+ANCHOR_BLEND_SCALE_XY = 0.5     # max blend for cx/cy at zero confidence
+ANCHOR_BLEND_SCALE_WH = 0.3     # max blend for w/h (weaker, avoid zoom pumping)
+ANCHOR_MAX_DISP_XY = 0.25       # fraction of box dimension for cx/cy cap
+ANCHOR_MAX_DISP_WH = 0.15       # fraction of dimension for w/h cap
+ANCHOR_WINDOW_SEEDS = 4         # max seeds to include on each side of target
+
+
+#============================================
+def _collect_anchor_knots(
+	seeds: list,
+) -> list:
+	"""Collect trusted knots from seeds for anchor interpolation.
+
+	Filters to visible/partial seeds with valid torso_box, extracts
+	(frame_index, cx, cy, w, h, status) tuples, deduplicates by
+	frame_index preferring visible over partial and larger area.
+
+	Args:
+		seeds: List of all seed dicts.
+
+	Returns:
+		List of knot tuples sorted by frame_index, deduplicated.
+	"""
+	raw_knots = []
+	for seed in seeds:
+		status = seed.get("status", "")
+		if status not in ("visible", "partial"):
+			continue
+		torso_box = seed.get("torso_box")
+		if torso_box is None:
+			continue
+		# torso_box is [cx, cy, w, h]
+		cx = float(torso_box[0])
+		cy = float(torso_box[1])
+		w = float(torso_box[2])
+		h = float(torso_box[3])
+		# skip invalid dimensions
+		if w <= 0 or h <= 0:
+			continue
+		fi = int(seed["frame_index"])
+		raw_knots.append((fi, cx, cy, w, h, status))
+
+	# sort by frame_index
+	raw_knots.sort(key=lambda k: k[0])
+
+	# deduplicate by frame_index:
+	# prefer visible over partial; among same status, prefer larger area
+	deduped = {}
+	for knot in raw_knots:
+		fi = knot[0]
+		status = knot[5]
+		area = knot[3] * knot[4]
+		if fi not in deduped:
+			deduped[fi] = knot
+		else:
+			existing = deduped[fi]
+			existing_status = existing[5]
+			existing_area = existing[3] * existing[4]
+			# prefer visible over partial
+			if status == "visible" and existing_status != "visible":
+				deduped[fi] = knot
+			elif status == existing_status and area > existing_area:
+				deduped[fi] = knot
+
+	# return sorted list
+	result = sorted(deduped.values(), key=lambda k: k[0])
+	return result
+
+
+#============================================
+def _build_local_fit(
+	knots: list,
+	center_frame: int,
+	window_seeds: int,
+) -> tuple:
+	"""Build local interpolators from a subset of knots near center_frame.
+
+	Selects up to window_seeds knots on each side of center_frame.
+	Builds CubicSpline for cx/cy and PchipInterpolator for log(w)/log(h).
+	Falls back to numpy.interp (linear) when only 2 knots are available.
+
+	Args:
+		knots: Full sorted list of knot tuples (fi, cx, cy, w, h, status).
+		center_frame: Frame index to center the window around.
+		window_seeds: Max seeds to include on each side.
+
+	Returns:
+		Tuple of (interpolators_dict, knot_frame_tuple) or None if < 2 knots.
+		interpolators_dict has keys: cx_interp, cy_interp, logw_interp, logh_interp.
+		Each value is either a callable or a tuple (frames, values) for linear fallback.
+	"""
+	# find knots before and after center_frame
+	before = []
+	after = []
+	for knot in knots:
+		if knot[0] < center_frame:
+			before.append(knot)
+		elif knot[0] > center_frame:
+			after.append(knot)
+		else:
+			# knot at center_frame goes to both sides conceptually
+			before.append(knot)
+			after.append(knot)
+
+	# take nearest window_seeds from each side
+	selected_before = before[-window_seeds:]
+	selected_after = after[:window_seeds]
+
+	# combine and deduplicate by frame index
+	combined = {}
+	for knot in selected_before + selected_after:
+		combined[knot[0]] = knot
+	local_knots = sorted(combined.values(), key=lambda k: k[0])
+
+	if len(local_knots) < 2:
+		return None
+
+	frames = numpy.array([k[0] for k in local_knots], dtype=float)
+	cx_vals = numpy.array([k[1] for k in local_knots], dtype=float)
+	cy_vals = numpy.array([k[2] for k in local_knots], dtype=float)
+	w_vals = numpy.array([k[3] for k in local_knots], dtype=float)
+	h_vals = numpy.array([k[4] for k in local_knots], dtype=float)
+
+	# log-space for w and h
+	logw_vals = numpy.array([math.log(v) for v in w_vals], dtype=float)
+	logh_vals = numpy.array([math.log(v) for v in h_vals], dtype=float)
+
+	interps = {}
+	knot_frames = tuple(int(k[0]) for k in local_knots)
+
+	if len(local_knots) == 2:
+		# linear fallback: store arrays for numpy.interp
+		interps["cx_interp"] = (frames, cx_vals)
+		interps["cy_interp"] = (frames, cy_vals)
+		interps["logw_interp"] = (frames, logw_vals)
+		interps["logh_interp"] = (frames, logh_vals)
+	else:
+		# CubicSpline for cx, cy
+		interps["cx_interp"] = scipy.interpolate.CubicSpline(
+			frames, cx_vals, bc_type="natural",
+		)
+		interps["cy_interp"] = scipy.interpolate.CubicSpline(
+			frames, cy_vals, bc_type="natural",
+		)
+		# PCHIP for log(w), log(h) to avoid overshoot
+		interps["logw_interp"] = scipy.interpolate.PchipInterpolator(
+			frames, logw_vals,
+		)
+		interps["logh_interp"] = scipy.interpolate.PchipInterpolator(
+			frames, logh_vals,
+		)
+
+	return (interps, knot_frames)
+
+
+#============================================
+def _eval_fit(interps: dict, frame: float) -> tuple:
+	"""Evaluate interpolators at a given frame index.
+
+	Handles both callable (CubicSpline/PCHIP) and tuple (linear) forms.
+
+	Args:
+		interps: Dict with cx_interp, cy_interp, logw_interp, logh_interp.
+		frame: Frame index to evaluate at.
+
+	Returns:
+		Tuple of (ref_cx, ref_cy, ref_w, ref_h).
+	"""
+	# evaluate cx
+	cx_obj = interps["cx_interp"]
+	if callable(cx_obj):
+		ref_cx = float(cx_obj(frame))
+	else:
+		ref_cx = float(numpy.interp(frame, cx_obj[0], cx_obj[1]))
+
+	# evaluate cy
+	cy_obj = interps["cy_interp"]
+	if callable(cy_obj):
+		ref_cy = float(cy_obj(frame))
+	else:
+		ref_cy = float(numpy.interp(frame, cy_obj[0], cy_obj[1]))
+
+	# evaluate w in log-space, exponentiate
+	logw_obj = interps["logw_interp"]
+	if callable(logw_obj):
+		ref_w = math.exp(float(logw_obj(frame)))
+	else:
+		ref_w = math.exp(float(numpy.interp(frame, logw_obj[0], logw_obj[1])))
+
+	# evaluate h in log-space, exponentiate
+	logh_obj = interps["logh_interp"]
+	if callable(logh_obj):
+		ref_h = math.exp(float(logh_obj(frame)))
+	else:
+		ref_h = math.exp(float(numpy.interp(frame, logh_obj[0], logh_obj[1])))
+
+	return (ref_cx, ref_cy, ref_w, ref_h)
+
+
+#============================================
+def _segment_by_knot_window(
+	frame_range: range,
+	knots: list,
+	window_seeds: int,
+) -> list:
+	"""Group consecutive frames into segments sharing the same knot window.
+
+	For each frame, determines which knots fall in the local window.
+	Consecutive frames with identical knot sets are grouped into segments.
+
+	Args:
+		frame_range: Range of frame indices to segment.
+		knots: Full sorted list of knot tuples.
+		window_seeds: Max seeds on each side of each frame.
+
+	Returns:
+		List of (start_frame, end_frame, knot_subset) tuples.
+		end_frame is inclusive.
+	"""
+	if not knots:
+		return []
+
+	segments = []
+	current_key = None
+	current_start = None
+	current_knots = None
+
+	for fi in frame_range:
+		# find nearest window_seeds knots on each side
+		before = []
+		after = []
+		for knot in knots:
+			if knot[0] < fi:
+				before.append(knot)
+			elif knot[0] > fi:
+				after.append(knot)
+			else:
+				before.append(knot)
+				after.append(knot)
+
+		selected_before = before[-window_seeds:]
+		selected_after = after[:window_seeds]
+
+		# combine and deduplicate
+		combined = {}
+		for knot in selected_before + selected_after:
+			combined[knot[0]] = knot
+		local_knots = sorted(combined.values(), key=lambda k: k[0])
+		# key is the tuple of frame indices in this window
+		key = tuple(k[0] for k in local_knots)
+
+		if key != current_key:
+			# start a new segment
+			if current_key is not None:
+				segments.append((current_start, fi - 1, current_knots))
+			current_key = key
+			current_start = fi
+			current_knots = local_knots
+		# else: extend current segment
+
+	# close the last segment
+	if current_key is not None:
+		last_frame = frame_range[-1] if frame_range else current_start
+		segments.append((current_start, last_frame, current_knots))
+
+	return segments
+
+
+#============================================
+def anchor_to_seeds(
+	trajectory: list,
+	seeds: list,
+) -> list:
+	"""Apply multi-seed anchored interpolation to a stitched trajectory.
+
+	Corrects drift in fused trajectories by fitting local splines through
+	seed positions and blending corrections toward the reference path.
+	Visible seeds are hard-pinned; partial seeds guide the fit but are
+	not forced to exact values.
+
+	This is a weak kinematic prior: runners move smoothly over short
+	windows. Confidence-modulated blending improves tracking stability
+	without hiding real motion.
+
+	Args:
+		trajectory: List of tracking state dicts indexed by frame number.
+		seeds: List of all seed dicts.
+
+	Returns:
+		The corrected trajectory list (same length).
+	"""
+	# guard: check if already applied
+	first_state = None
+	for state in trajectory:
+		if state is not None:
+			first_state = state
+			break
+	if first_state is None:
+		return trajectory
+	if first_state.get("_anchor_applied"):
+		return trajectory
+
+	# collect trusted knots from seeds
+	knots = _collect_anchor_knots(seeds)
+	if len(knots) < 2:
+		return trajectory
+
+	# correction range: first knot frame to last knot frame
+	first_knot_frame = knots[0][0]
+	last_knot_frame = knots[-1][0]
+
+	# build set of all knot frame indices for proximity check
+	knot_frame_set = set(k[0] for k in knots)
+
+	# build dict of visible seed knots for hard-pinning
+	visible_knots = {}
+	for knot in knots:
+		if knot[5] == "visible":
+			visible_knots[knot[0]] = knot
+
+	# segment the correction range by knot window
+	correction_range = range(first_knot_frame, last_knot_frame + 1)
+	segments = _segment_by_knot_window(
+		correction_range, knots, ANCHOR_WINDOW_SEEDS,
+	)
+
+	n = len(trajectory)
+	corrected_count = 0
+
+	for seg_start, seg_end, seg_knots in segments:
+		# build one fit for this segment
+		# use the midpoint of the segment as center_frame for the fit
+		seg_mid = (seg_start + seg_end) // 2
+		fit_result = _build_local_fit(knots, seg_mid, ANCHOR_WINDOW_SEEDS)
+		if fit_result is None:
+			continue
+		interps, _ = fit_result
+
+		for fi in range(seg_start, seg_end + 1):
+			if fi < 0 or fi >= n:
+				continue
+			state = trajectory[fi]
+			if state is None:
+				continue
+
+			# proximity skip: do not correct frames near any knot
+			near_seed = False
+			for kf in knot_frame_set:
+				if abs(fi - kf) <= ANCHOR_PROXIMITY_SKIP:
+					near_seed = True
+					break
+			if near_seed:
+				continue
+
+			# current tracker values
+			cur_cx = float(state["cx"])
+			cur_cy = float(state["cy"])
+			cur_w = float(state["w"])
+			cur_h = float(state["h"])
+			conf = float(state.get("conf", 0.5))
+
+			# evaluate reference from fit
+			ref_cx, ref_cy, ref_w, ref_h = _eval_fit(interps, float(fi))
+
+			# compute blend factors (stronger correction at low confidence)
+			blend_xy = ANCHOR_BLEND_SCALE_XY * (1.0 - conf) ** 2
+			blend_wh = ANCHOR_BLEND_SCALE_WH * (1.0 - conf) ** 2
+
+			# compute raw displacements
+			dx = ref_cx - cur_cx
+			dy = ref_cy - cur_cy
+			dw = ref_w - cur_w
+			dh = ref_h - cur_h
+
+			# clamp displacements by axis-appropriate caps
+			max_dx = ANCHOR_MAX_DISP_XY * cur_w
+			max_dy = ANCHOR_MAX_DISP_XY * cur_h
+			max_dw = ANCHOR_MAX_DISP_WH * cur_w
+			max_dh = ANCHOR_MAX_DISP_WH * cur_h
+
+			dx = max(-max_dx, min(max_dx, dx))
+			dy = max(-max_dy, min(max_dy, dy))
+			dw = max(-max_dw, min(max_dw, dw))
+			dh = max(-max_dh, min(max_dh, dh))
+
+			# apply blended corrections
+			new_cx = cur_cx + blend_xy * dx
+			new_cy = cur_cy + blend_xy * dy
+			new_w = cur_w + blend_wh * dw
+			new_h = cur_h + blend_wh * dh
+
+			# ensure positive dimensions
+			if new_w > 0 and new_h > 0:
+				state["cx"] = new_cx
+				state["cy"] = new_cy
+				state["w"] = new_w
+				state["h"] = new_h
+				corrected_count += 1
+
+	# hard-pin visible seed frames to exact seed positions
+	pinned_count = 0
+	for fi, knot in visible_knots.items():
+		if fi < 0 or fi >= n:
+			continue
+		state = trajectory[fi]
+		if state is None:
+			continue
+		state["cx"] = knot[1]
+		state["cy"] = knot[2]
+		state["w"] = knot[3]
+		state["h"] = knot[4]
+		pinned_count += 1
+
+	if corrected_count > 0 or pinned_count > 0:
+		print(
+			f"  anchor_to_seeds: corrected {corrected_count} frames, "
+			f"pinned {pinned_count} visible seeds"
+		)
+
+	# stamp guard flag on first non-None state
+	for state in trajectory:
+		if state is not None:
+			state["_anchor_applied"] = True
+			break
+
 	return trajectory
 
 
@@ -1080,6 +1602,9 @@ def solve_all_intervals(
 
 	# stitch all intervals into full trajectory
 	trajectory = stitch_trajectories(interval_results)
+
+	# apply multi-seed anchored interpolation to reduce drift
+	trajectory = anchor_to_seeds(trajectory, seeds)
 
 	# stamp seed confidence onto trajectory at seed frames
 	# must happen before erasure so approx seeds get correct conf first

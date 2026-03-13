@@ -1,5 +1,42 @@
 # Changelog
 
+## 2026-03-13
+
+### Additions and New Features
+- Created [docs/TRACK_RUNNER_DESIGN.md](docs/TRACK_RUNNER_DESIGN.md): design philosophy document covering core principles (human identity / machine geometry), signal hierarchy, dual scoring, separation of concerns, annotation UI principles, and trajectory erasure philosophy.
+- Created [docs/TRACK_RUNNER_HISTORY.md](docs/TRACK_RUNNER_HISTORY.md): evolution timeline from v1 Kalman-based tracker through v2 interval solver to v3 PySide6 UI. Preserves key design decisions and rationale extracted from implementation plans.
+
+### Behavior or Interface Changes
+- Archived superseded track runner specs to `docs/archive/` via `git mv`: [docs/archive/TRACK_RUNNER_TOOL_PLAN.md](docs/archive/TRACK_RUNNER_TOOL_PLAN.md) (v1 plan), [docs/archive/TRACK_RUNNER_SPEC.md](docs/archive/TRACK_RUNNER_SPEC.md) (v1 as-built), [docs/archive/TRACK_RUNNER_V2_SPEC.md](docs/archive/TRACK_RUNNER_V2_SPEC.md) (v2 spec), [docs/archive/SEED_VARIABILITY_FINDINGS.md](docs/archive/SEED_VARIABILITY_FINDINGS.md) (measurement study).
+- Rewrote [docs/TRACK_RUNNER_V3_SPEC.md](docs/TRACK_RUNNER_V3_SPEC.md) to match the current codebase: added all 25 modules (including `common_tools/`), all 7 CLI subcommands, all 9 seed modes, propagator details (optical flow + patch correlation, stationary lock), hypothesis competitor tracking, cyclical prior detection, encode filter pipeline, post-fuse refinement, multi-seed anchored interpolation, and complete key constants table.
+- Updated terminology throughout docs: drawing mode name "approx" is now "approximate" for clarity; "absence erasure" replaced with "trajectory erasure".
+
+### Fixes and Maintenance
+- Fixed stale comment in [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py):1157: changed "absence erasure" to "trajectory erasure" to match the renamed function `_apply_trajectory_erasure()`.
+
+### Additions and New Features
+- Added optional `output_resolution` config key under `processing` in track_runner: `[width, height]` list that controls final output dimensions independently of the crop window. When absent, output resolution defaults to the median of all crop rectangle dimensions (previously used first-frame dimensions).
+
+### Behavior or Interface Changes
+- Fixed `crop_fill_ratio` being overridden by tiered adaptive fill system for all practical bounding box heights. The user's configured fill ratio is now always used directly. A setting of 0.10 now produces a wide shot with the runner at 10% of frame height, as expected.
+- Output resolution now defaults to the median of all crop rectangle dimensions instead of the first frame's crop dimensions. This is more stable across videos where the runner's distance varies.
+
+### Fixes and Maintenance
+- Removed tiered fill ratio system from `CropController` in [emwy_tools/track_runner/crop.py](emwy_tools/track_runner/crop.py): the `far_fill_ratio`, `far_threshold_px`, `very_far_fill_ratio`, and `very_far_threshold_px` parameters made the user-facing `crop_fill_ratio` setting effectively unreachable for typical footage. Existing YAML files with these keys will have them silently ignored.
+
+### Developer Tests and Notes
+- Added `test_crop_fill_ratio_always_applied` and `test_crop_output_resolution_median` to [emwy_tools/tests/test_track_runner.py](emwy_tools/tests/test_track_runner.py).
+
+### Additions and New Features
+- Added post-fuse refinement pass to interval solver in [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py): after the first-pass independent FWD/BWD propagation and fusion, `refine_interval()` re-propagates each interval using the fused track as a soft spatial prior, then re-fuses. Reduces mid-interval wobble where both directions had decayed confidence. Always-on, no opt-in flag.
+- Added `soft_prior` parameter to `_track_one_frame()` in [emwy_tools/track_runner/propagator.py](emwy_tools/track_runner/propagator.py): optional dict with `cx`, `cy`, `weight` keys that blends estimated position toward a reference center. Only affects `cx`/`cy`, not `w`/`h`.
+- Added `prior_track` parameter to `propagate_forward()` and `propagate_backward()` in [emwy_tools/track_runner/propagator.py](emwy_tools/track_runner/propagator.py): optional dict keyed by absolute frame index. Prior weight is `min(PRIOR_WEIGHT_SCALE, fused_conf * PRIOR_WEIGHT_SCALE)` where `PRIOR_WEIGHT_SCALE = 0.3`. When None, behavior is unchanged from first pass.
+- Added 6 refinement unit tests in [emwy_tools/tests/test_track_runner.py](emwy_tools/tests/test_track_runner.py): soft_prior None unchanged, pulls position, does not affect w/h, weight capped, short interval no crash, low confidence has small effect.
+- Added "Post-fuse refinement pass" subsection to [docs/TRACK_RUNNER_V3_SPEC.md](docs/TRACK_RUNNER_V3_SPEC.md): documents prior weight formula, pipeline order, and cx/cy-only blending.
+
+### Decisions and Failures
+- Interval scoring preserves first-pass FWD/BWD diagnostic signal. Refinement only affects output geometry (`fused_track`), not identity scores or competitor margins. This prevents refinement from hiding real identity ambiguity under smooth geometry.
+
 ## 2026-03-12
 
 ### Additions and New Features
@@ -17,6 +54,7 @@
 - Added obstructed seed support in [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py): obstructed seeds with an approx area are now included as weak interval endpoints (conf=0.3). Seeds without an approx area remain excluded. Added `_prepare_usable_seed()` helper.
 - Added interval-length-aware confidence scoring in [emwy_tools/track_runner/scoring.py](emwy_tools/track_runner/scoring.py): `classify_confidence()` accepts `interval_length` parameter. Intervals of 5 frames or fewer get bumped one confidence tier (low->fair, fair->good, never to high). `score_interval()` passes `interval_length=len(forward_track)`.
 - Added 7 new tests in [emwy_tools/tests/test_track_runner.py](emwy_tools/tests/test_track_runner.py): short-interval promotion (4 tests), obstructed seed filter inclusion/exclusion (2 tests), absence erasure all statuses (1 test).
+- Added `anchor_to_seeds()` multi-seed anchored interpolation filter in [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py). Post-stitch correction fits local windowed splines through seed positions: CubicSpline for cx/cy and PCHIP in log-space for w/h. Separate blend gains (0.5 for position, 0.3 for size) with squared confidence curve. Visible seeds hard-pinned; partial seeds guide fit but are not pinned. Axis-appropriate displacement caps and proximity skip zone (7 frames). Called in both `solve_all_intervals()` and `_mode_encode()`. Spec update in [docs/TRACK_RUNNER_V3_SPEC.md](docs/TRACK_RUNNER_V3_SPEC.md). 14 unit tests added.
 
 ### Fixes and Maintenance
 - Fixed partial and approx seeds not driving crop during encode in [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py) and [emwy_tools/track_runner/crop.py](emwy_tools/track_runner/crop.py). Three compounding issues: (1) `fuse_tracks()` Dice overlap degraded confidence at seed frames, fixed by stamping seed confidence (1.0 for visible/partial, 0.3 for approx) onto trajectory after stitching via new `_stamp_seed_confidence()`. (2) `CropController.update()` multiplied smoothing alpha by confidence, causing near-zero response at low confidence, fixed by adding `alpha = max(alpha, 0.02)` floor. (3) Approx trajectory erasure replaced position with `None` which became center-frame fallback, fixed by inserting the approx seed's own position at low confidence instead. Also changed `trajectory_to_crop_rects()` to hold last known position with decaying confidence instead of center-frame snap when trajectory gaps occur. Seed status is now propagated into trajectory states via `seed_status` key.

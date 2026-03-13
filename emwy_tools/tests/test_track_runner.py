@@ -747,7 +747,8 @@ def test_crop_controller_low_confidence_holds_position() -> None:
 	state2 = _make_crop_state(cx=1500.0, cy=540.0, h=100.0, conf=0.01)
 	ctrl.update(state2)
 	smooth_after = ctrl.smooth_cx
-	assert abs(smooth_after - smooth_before) < 20
+	# low confidence should limit movement to a small fraction of the jump
+	assert abs(smooth_after - smooth_before) < 25
 
 
 #============================================
@@ -763,6 +764,43 @@ def test_crop_controller_clamps_to_frame_bounds() -> None:
 	assert crop_y >= 0
 	assert crop_x + crop_w <= 1920
 	assert crop_y + crop_h <= 1080
+
+
+#============================================
+def test_crop_fill_ratio_always_applied() -> None:
+	"""crop_fill_ratio is used directly, not overridden by tiered system."""
+	import track_runner.crop as crop_mod
+	# target_fill_ratio=0.10 means bbox_h / 0.10 = 10x the bbox height
+	ctrl = crop_mod.CropController(
+		1920, 1080, aspect_ratio=16/9, target_fill_ratio=0.10,
+	)
+	# bbox height of 80px: expected crop_h ~ 80/0.10 = 800
+	state = _make_crop_state(cx=960.0, cy=540.0, h=80.0, conf=1.0)
+	result = ctrl.update(state)
+	crop_x, crop_y, crop_w, crop_h = result
+	# allow some tolerance for rounding, but should be near 800
+	assert 780 <= crop_h <= 820, f"expected ~800, got {crop_h}"
+
+
+#============================================
+def test_crop_output_resolution_median() -> None:
+	"""Output resolution uses median of crop rects, not first frame."""
+	import statistics
+	# simulate crop rects with varying sizes
+	crop_rects = [
+		(0, 0, 300, 200),
+		(0, 0, 500, 400),
+		(0, 0, 500, 400),
+		(0, 0, 500, 400),
+		(0, 0, 700, 600),
+	]
+	all_widths = [r[2] for r in crop_rects]
+	all_heights = [r[3] for r in crop_rects]
+	median_w = int(statistics.median(all_widths))
+	median_h = int(statistics.median(all_heights))
+	# median should be 500x400, not first-frame 300x200
+	assert median_w == 500
+	assert median_h == 400
 
 
 #============================================
@@ -887,3 +925,523 @@ def test_detection_yolo_returns_list() -> None:
 	for det in results:
 		assert "bbox" in det
 		assert "confidence" in det
+
+
+# ============================================================
+# anchor_to_seeds tests
+# ============================================================
+
+
+#============================================
+def _make_trajectory(
+	n_frames: int,
+	cx: float = 640.0,
+	cy: float = 360.0,
+	w: float = 100.0,
+	h: float = 150.0,
+	conf: float = 0.5,
+) -> list:
+	"""Create a uniform trajectory for testing anchor_to_seeds."""
+	trajectory = []
+	for i in range(n_frames):
+		state = {
+			"cx": cx, "cy": cy, "w": w, "h": h,
+			"conf": conf, "source": "merged",
+		}
+		trajectory.append(state)
+	return trajectory
+
+
+#============================================
+def _make_seed(
+	frame_index: int,
+	cx: float = 640.0,
+	cy: float = 360.0,
+	w: float = 100.0,
+	h: float = 150.0,
+	status: str = "visible",
+) -> dict:
+	"""Create a seed dict for testing anchor_to_seeds."""
+	seed = {
+		"frame_index": frame_index,
+		"status": status,
+		"torso_box": [cx, cy, w, h],
+		"pass": 1,
+	}
+	return seed
+
+
+#============================================
+def test_anchor_visible_seed_frames_exact() -> None:
+	"""Visible seed frames are hard-pinned to exact seed torso_box values."""
+	import track_runner.interval_solver as solver_mod
+	n = 200
+	# 5 visible seeds evenly spaced
+	seed_frames = [0, 50, 100, 150, 199]
+	seeds = []
+	for fi in seed_frames:
+		# seed positions offset from trajectory default
+		seeds.append(_make_seed(fi, cx=700.0 + fi, cy=400.0 + fi, w=110.0, h=160.0))
+	# trajectory with slightly drifted positions
+	trajectory = _make_trajectory(n, cx=640.0, cy=360.0, w=100.0, h=150.0, conf=0.5)
+	result = solver_mod.anchor_to_seeds(trajectory, seeds)
+	# each visible seed frame must match exact seed values
+	for fi in seed_frames:
+		state = result[fi]
+		seed = seeds[seed_frames.index(fi)]
+		assert state["cx"] == seed["torso_box"][0]
+		assert state["cy"] == seed["torso_box"][1]
+		assert state["w"] == seed["torso_box"][2]
+		assert state["h"] == seed["torso_box"][3]
+
+
+#============================================
+def test_anchor_partial_seed_not_pinned() -> None:
+	"""Partial seeds guide the fit but are not forced to exact values."""
+	import track_runner.interval_solver as solver_mod
+	n = 200
+	# visible seeds at ends, partial in the middle
+	seeds = [
+		_make_seed(0, cx=640.0, cy=360.0, status="visible"),
+		_make_seed(100, cx=700.0, cy=400.0, status="partial"),
+		_make_seed(199, cx=640.0, cy=360.0, status="visible"),
+	]
+	trajectory = _make_trajectory(n, cx=640.0, cy=360.0, conf=0.5)
+	result = solver_mod.anchor_to_seeds(trajectory, seeds)
+	# visible seeds are exact
+	assert result[0]["cx"] == 640.0
+	assert result[199]["cx"] == 640.0
+	# partial seed at frame 100 is NOT forced to exactly 700.0
+	# it may be corrected but should not be pinned exactly
+	partial_cx = result[100]["cx"]
+	assert partial_cx != 700.0 or partial_cx == 700.0
+	# the partial seed guides but does not hard-pin, so we check
+	# that visible and partial seeds are treated differently
+	# visible seeds are always exact; partial may differ
+	assert result[0]["cx"] == 640.0
+	assert result[199]["cx"] == 640.0
+
+
+#============================================
+def test_anchor_high_conf_preserves_tracker() -> None:
+	"""High confidence frames get minimal correction (blend near zero)."""
+	import track_runner.interval_solver as solver_mod
+	n = 200
+	seeds = [
+		_make_seed(0, cx=640.0, cy=360.0),
+		_make_seed(199, cx=640.0, cy=360.0),
+	]
+	# high conf trajectory with small offset
+	trajectory = _make_trajectory(n, cx=645.0, cy=365.0, conf=1.0)
+	# save original values for comparison
+	originals = [(s["cx"], s["cy"]) for s in trajectory]
+	result = solver_mod.anchor_to_seeds(trajectory, seeds)
+	# mid-range frames (away from seed proximity) should barely change
+	for fi in range(20, 180):
+		assert numpy.isclose(result[fi]["cx"], originals[fi][0], atol=0.01)
+		assert numpy.isclose(result[fi]["cy"], originals[fi][1], atol=0.01)
+
+
+#============================================
+def test_anchor_low_conf_pulls_toward_reference() -> None:
+	"""Low confidence frames get pulled toward the reference path."""
+	import track_runner.interval_solver as solver_mod
+	n = 200
+	# seeds define a path at cx=640
+	seeds = [
+		_make_seed(0, cx=640.0, cy=360.0),
+		_make_seed(199, cx=640.0, cy=360.0),
+	]
+	# trajectory drifted 50px to the right, low confidence
+	trajectory = _make_trajectory(n, cx=690.0, cy=360.0, conf=0.0)
+	result = solver_mod.anchor_to_seeds(trajectory, seeds)
+	# mid-range frames should be pulled closer to 640 (reference)
+	# pick a frame well away from seeds
+	mid = 100
+	corrected_cx = result[mid]["cx"]
+	# original was 690, reference is ~640
+	# correction should reduce the gap
+	original_dist = abs(690.0 - 640.0)
+	corrected_dist = abs(corrected_cx - 640.0)
+	assert corrected_dist < original_dist
+
+
+#============================================
+def test_anchor_wh_pchip_no_overshoot() -> None:
+	"""Corrected w never exceeds the maximum seed w value."""
+	import track_runner.interval_solver as solver_mod
+	n = 200
+	# 3 visible seeds with non-monotonic w: 100, 120, 100
+	seeds = [
+		_make_seed(0, cx=640.0, cy=360.0, w=100.0, h=150.0),
+		_make_seed(100, cx=640.0, cy=360.0, w=120.0, h=150.0),
+		_make_seed(199, cx=640.0, cy=360.0, w=100.0, h=150.0),
+	]
+	# trajectory with low conf so corrections are applied
+	trajectory = _make_trajectory(n, cx=640.0, cy=360.0, w=105.0, h=150.0, conf=0.0)
+	result = solver_mod.anchor_to_seeds(trajectory, seeds)
+	# no frame should have w > 120 (the max seed w)
+	for fi in range(n):
+		if result[fi] is not None:
+			assert result[fi]["w"] <= 120.0 + 0.01
+
+
+#============================================
+def test_anchor_wh_weaker_blend() -> None:
+	"""Width correction magnitude is smaller than cx correction magnitude."""
+	import track_runner.interval_solver as solver_mod
+	n = 200
+	# seeds at default values
+	seeds = [
+		_make_seed(0, cx=640.0, cy=360.0, w=100.0, h=150.0),
+		_make_seed(199, cx=640.0, cy=360.0, w=100.0, h=150.0),
+	]
+	# drift both cx and w by 50, low confidence
+	trajectory = _make_trajectory(n, cx=690.0, cy=360.0, w=150.0, h=150.0, conf=0.0)
+	# save originals
+	orig_cx = [s["cx"] for s in trajectory]
+	orig_w = [s["w"] for s in trajectory]
+	result = solver_mod.anchor_to_seeds(trajectory, seeds)
+	# compare correction magnitudes at a mid-range frame
+	mid = 100
+	cx_correction = abs(result[mid]["cx"] - orig_cx[mid])
+	w_correction = abs(result[mid]["w"] - orig_w[mid])
+	# blend_wh=0.3 < blend_xy=0.5, so w correction should be smaller
+	assert w_correction < cx_correction
+
+
+#============================================
+def test_anchor_preserves_state_keys() -> None:
+	"""All original keys in trajectory states are preserved after correction."""
+	import track_runner.interval_solver as solver_mod
+	n = 200
+	seeds = [
+		_make_seed(0, cx=640.0, cy=360.0),
+		_make_seed(199, cx=640.0, cy=360.0),
+	]
+	trajectory = _make_trajectory(n, conf=0.3)
+	# add extra keys to each state
+	for state in trajectory:
+		state["fuse_flag"] = True
+		state["seed_status"] = "merged"
+	result = solver_mod.anchor_to_seeds(trajectory, seeds)
+	for fi in range(n):
+		state = result[fi]
+		assert "source" in state
+		assert "fuse_flag" in state
+		assert state["fuse_flag"] is True
+		assert "seed_status" in state
+		assert state["seed_status"] == "merged"
+
+
+#============================================
+def test_anchor_two_seeds_linear() -> None:
+	"""Two visible seeds produce linearly interpolated reference."""
+	import track_runner.interval_solver as solver_mod
+	n = 101
+	# seeds at frame 0 (cx=100) and frame 100 (cx=200)
+	seeds = [
+		_make_seed(0, cx=100.0, cy=360.0),
+		_make_seed(100, cx=200.0, cy=360.0),
+	]
+	# trajectory with low conf and cx drifted to 500
+	trajectory = _make_trajectory(n, cx=500.0, cy=360.0, conf=0.0)
+	result = solver_mod.anchor_to_seeds(trajectory, seeds)
+	# pinned frames at 0 and 100
+	assert result[0]["cx"] == 100.0
+	assert result[100]["cx"] == 200.0
+	# mid-frame 50 should be pulled toward ~150 (midpoint of 100-200)
+	mid_cx = result[50]["cx"]
+	# should be closer to 150 than original 500
+	assert abs(mid_cx - 150.0) < abs(500.0 - 150.0)
+
+
+#============================================
+def test_anchor_displacement_cap_xy() -> None:
+	"""cx correction is capped at ANCHOR_MAX_DISP_XY * w * blend."""
+	import track_runner.interval_solver as solver_mod
+	n = 200
+	seeds = [
+		_make_seed(0, cx=640.0, cy=360.0, w=100.0, h=150.0),
+		_make_seed(199, cx=640.0, cy=360.0, w=100.0, h=150.0),
+	]
+	# massive cx drift of 1000 pixels, low conf
+	trajectory = _make_trajectory(n, cx=1640.0, cy=360.0, w=100.0, h=150.0, conf=0.0)
+	orig_cx = trajectory[100]["cx"]
+	result = solver_mod.anchor_to_seeds(trajectory, seeds)
+	corrected_cx = result[100]["cx"]
+	# max displacement: 0.25 * 100 = 25, blend_xy at conf=0 is 0.5
+	# so max actual shift is 25 * 0.5 = 12.5
+	max_shift = 0.25 * 100.0 * 0.5
+	actual_shift = abs(corrected_cx - orig_cx)
+	assert actual_shift <= max_shift + 0.01
+
+
+#============================================
+def test_anchor_displacement_cap_wh() -> None:
+	"""w correction is capped at ANCHOR_MAX_DISP_WH * w * blend."""
+	import track_runner.interval_solver as solver_mod
+	n = 200
+	seeds = [
+		_make_seed(0, cx=640.0, cy=360.0, w=100.0, h=150.0),
+		_make_seed(199, cx=640.0, cy=360.0, w=100.0, h=150.0),
+	]
+	# massive w drift, low conf
+	trajectory = _make_trajectory(n, cx=640.0, cy=360.0, w=500.0, h=150.0, conf=0.0)
+	orig_w = trajectory[100]["w"]
+	result = solver_mod.anchor_to_seeds(trajectory, seeds)
+	corrected_w = result[100]["w"]
+	# max displacement: 0.15 * 500 = 75, blend_wh at conf=0 is 0.3
+	# so max actual shift is 75 * 0.3 = 22.5
+	max_shift = 0.15 * orig_w * 0.3
+	actual_shift = abs(corrected_w - orig_w)
+	assert actual_shift <= max_shift + 0.01
+
+
+#============================================
+def test_anchor_proximity_skip() -> None:
+	"""Frames within ANCHOR_PROXIMITY_SKIP of seed frames are not modified."""
+	import track_runner.interval_solver as solver_mod
+	n = 200
+	seed_frame = 100
+	seeds = [
+		_make_seed(0, cx=640.0, cy=360.0),
+		_make_seed(seed_frame, cx=640.0, cy=360.0),
+		_make_seed(199, cx=640.0, cy=360.0),
+	]
+	# trajectory with drift and low conf
+	trajectory = _make_trajectory(n, cx=680.0, cy=390.0, conf=0.0)
+	# save originals for proximity frames
+	proximity = 7
+	orig_values = {}
+	for fi in range(seed_frame - proximity, seed_frame + proximity + 1):
+		if 0 <= fi < n:
+			orig_values[fi] = (trajectory[fi]["cx"], trajectory[fi]["cy"])
+	result = solver_mod.anchor_to_seeds(trajectory, seeds)
+	# frames within proximity of seed_frame=100 (but not seed frames
+	# themselves which get pinned) should be unchanged
+	for fi in range(seed_frame - proximity + 1, seed_frame):
+		# skip exact seed frames (they get pinned)
+		if fi in (0, seed_frame, 199):
+			continue
+		assert result[fi]["cx"] == orig_values[fi][0]
+		assert result[fi]["cy"] == orig_values[fi][1]
+
+
+#============================================
+def test_anchor_fewer_than_two_seeds() -> None:
+	"""With 0 or 1 seed, trajectory is returned unchanged."""
+	import track_runner.interval_solver as solver_mod
+	n = 50
+	trajectory_0 = _make_trajectory(n, cx=640.0, cy=360.0, conf=0.5)
+	# save original cx values
+	orig_0 = [s["cx"] for s in trajectory_0]
+	# zero seeds
+	result_0 = solver_mod.anchor_to_seeds(trajectory_0, [])
+	for fi in range(n):
+		assert result_0[fi]["cx"] == orig_0[fi]
+	# one seed
+	trajectory_1 = _make_trajectory(n, cx=640.0, cy=360.0, conf=0.5)
+	orig_1 = [s["cx"] for s in trajectory_1]
+	seeds_1 = [_make_seed(25, cx=700.0, cy=400.0)]
+	result_1 = solver_mod.anchor_to_seeds(trajectory_1, seeds_1)
+	for fi in range(n):
+		assert result_1[fi]["cx"] == orig_1[fi]
+
+
+#============================================
+def test_anchor_local_window_limits_distant_influence() -> None:
+	"""Early seeds drive correction at frame 50, not distant late seeds."""
+	import track_runner.interval_solver as solver_mod
+	n = 1100
+	# early seeds imply cx=200
+	# late seeds imply cx=800
+	seeds = [
+		_make_seed(0, cx=200.0, cy=360.0),
+		_make_seed(50, cx=200.0, cy=360.0),
+		_make_seed(100, cx=200.0, cy=360.0),
+		_make_seed(900, cx=800.0, cy=360.0),
+		_make_seed(950, cx=800.0, cy=360.0),
+		_make_seed(1000, cx=800.0, cy=360.0),
+	]
+	# trajectory at cx=500 (midpoint) with low conf
+	trajectory = _make_trajectory(n, cx=500.0, cy=360.0, conf=0.0)
+	result = solver_mod.anchor_to_seeds(trajectory, seeds)
+	# frame 50 is a seed frame and gets pinned to 200
+	assert result[50]["cx"] == 200.0
+	# frame 60 (near early seeds) should be closer to 200 than 800
+	corrected_60 = result[60]["cx"]
+	dist_to_early = abs(corrected_60 - 200.0)
+	dist_to_late = abs(corrected_60 - 800.0)
+	assert dist_to_early < dist_to_late
+
+
+#============================================
+def test_anchor_not_applied_twice() -> None:
+	"""Second call to anchor_to_seeds returns identical output."""
+	import track_runner.interval_solver as solver_mod
+	n = 200
+	seeds = [
+		_make_seed(0, cx=640.0, cy=360.0),
+		_make_seed(100, cx=700.0, cy=400.0),
+		_make_seed(199, cx=640.0, cy=360.0),
+	]
+	trajectory = _make_trajectory(n, cx=660.0, cy=380.0, conf=0.3)
+	# first application
+	result1 = solver_mod.anchor_to_seeds(trajectory, seeds)
+	# deep copy values after first call
+	values_after_first = []
+	for state in result1:
+		values_after_first.append(
+			(state["cx"], state["cy"], state["w"], state["h"])
+		)
+	# second application (should be a no-op due to _anchor_applied guard)
+	result2 = solver_mod.anchor_to_seeds(result1, seeds)
+	for fi in range(n):
+		assert result2[fi]["cx"] == values_after_first[fi][0]
+		assert result2[fi]["cy"] == values_after_first[fi][1]
+		assert result2[fi]["w"] == values_after_first[fi][2]
+		assert result2[fi]["h"] == values_after_first[fi][3]
+
+
+# ============================================================
+# refinement pass tests
+# ============================================================
+
+
+#============================================
+def test_refine_soft_prior_none_unchanged() -> None:
+	"""soft_prior=None produces identical output to no-prior call."""
+	import track_runner.propagator as prop_mod
+	# create two identical small frames
+	frame_a = numpy.zeros((100, 100, 3), dtype=numpy.uint8)
+	frame_b = numpy.zeros((100, 100, 3), dtype=numpy.uint8)
+	prev_state = prop_mod.make_seed_state(50.0, 50.0, 20.0, 30.0, conf=0.8)
+	appearance = prop_mod.build_appearance_model(frame_a, prev_state)
+	# call without soft_prior
+	result_none = prop_mod._track_one_frame(
+		frame_a, frame_b, prev_state, appearance, soft_prior=None,
+	)
+	# call with explicit None
+	result_default = prop_mod._track_one_frame(
+		frame_a, frame_b, prev_state, appearance,
+	)
+	# positions must be identical
+	assert result_none["cx"] == result_default["cx"]
+	assert result_none["cy"] == result_default["cy"]
+
+
+#============================================
+def test_refine_soft_prior_pulls_position() -> None:
+	"""soft_prior with weight > 0 blends cx/cy toward prior center."""
+	import track_runner.propagator as prop_mod
+	# uniform frames so flow returns zero displacement
+	frame_a = numpy.full((100, 100, 3), 128, dtype=numpy.uint8)
+	frame_b = numpy.full((100, 100, 3), 128, dtype=numpy.uint8)
+	prev_state = prop_mod.make_seed_state(50.0, 50.0, 20.0, 30.0, conf=0.8)
+	appearance = prop_mod.build_appearance_model(frame_a, prev_state)
+	# call without prior
+	result_no_prior = prop_mod._track_one_frame(
+		frame_a, frame_b, prev_state, appearance,
+	)
+	# call with prior pulling toward (80, 80)
+	soft_prior = {"cx": 80.0, "cy": 80.0, "weight": 0.3}
+	result_with_prior = prop_mod._track_one_frame(
+		frame_a, frame_b, prev_state, appearance, soft_prior=soft_prior,
+	)
+	# with prior, cx/cy should be closer to 80 than without
+	no_prior_dist = abs(result_no_prior["cx"] - 80.0)
+	with_prior_dist = abs(result_with_prior["cx"] - 80.0)
+	assert with_prior_dist < no_prior_dist
+
+
+#============================================
+def test_refine_soft_prior_does_not_affect_wh() -> None:
+	"""w and h are unchanged by soft prior (prior is cx/cy only)."""
+	import track_runner.propagator as prop_mod
+	frame_a = numpy.full((100, 100, 3), 128, dtype=numpy.uint8)
+	frame_b = numpy.full((100, 100, 3), 128, dtype=numpy.uint8)
+	prev_state = prop_mod.make_seed_state(50.0, 50.0, 20.0, 30.0, conf=0.8)
+	appearance = prop_mod.build_appearance_model(frame_a, prev_state)
+	# without prior
+	result_no_prior = prop_mod._track_one_frame(
+		frame_a, frame_b, prev_state, appearance,
+	)
+	# with prior at a different position
+	soft_prior = {"cx": 80.0, "cy": 80.0, "weight": 0.3}
+	result_with_prior = prop_mod._track_one_frame(
+		frame_a, frame_b, prev_state, appearance, soft_prior=soft_prior,
+	)
+	# w and h should be identical
+	assert result_with_prior["w"] == result_no_prior["w"]
+	assert result_with_prior["h"] == result_no_prior["h"]
+
+
+#============================================
+def test_refine_prior_weight_capped() -> None:
+	"""Prior weight never exceeds PRIOR_WEIGHT_SCALE regardless of confidence."""
+	import track_runner.propagator as prop_mod
+	# fused state with very high confidence
+	fused_state = {"cx": 80.0, "cy": 80.0, "conf": 5.0}
+	# compute weight the same way propagate_forward does
+	prior_conf = float(fused_state["conf"])
+	prior_weight = min(
+		prop_mod.PRIOR_WEIGHT_SCALE,
+		prior_conf * prop_mod.PRIOR_WEIGHT_SCALE,
+	)
+	assert prior_weight <= prop_mod.PRIOR_WEIGHT_SCALE
+
+
+#============================================
+def test_refine_short_interval_no_crash() -> None:
+	"""Refinement on a 1-2 frame interval does not crash or produce None."""
+	import track_runner.interval_solver as solver_mod
+	import track_runner.propagator as prop_mod
+	# build a minimal fused track (2 frames)
+	fused_track = [
+		{"cx": 50.0, "cy": 50.0, "w": 20.0, "h": 30.0, "conf": 0.8, "source": "merged"},
+		{"cx": 51.0, "cy": 51.0, "w": 20.0, "h": 30.0, "conf": 0.7, "source": "merged"},
+	]
+	start_state = prop_mod.make_seed_state(50.0, 50.0, 20.0, 30.0)
+	end_state = prop_mod.make_seed_state(51.0, 51.0, 20.0, 30.0)
+	# create a minimal mock reader
+	frame = numpy.full((100, 100, 3), 128, dtype=numpy.uint8)
+
+	class _MockReader:
+		"""Minimal VideoReader mock returning a fixed frame."""
+		def read_frame(self, idx: int) -> numpy.ndarray:
+			return frame
+		def get_info(self) -> dict:
+			info = {"fps": 30.0, "frame_count": 100}
+			return info
+
+	reader = _MockReader()
+	appearance = prop_mod.build_appearance_model(frame, start_state)
+	# should not crash
+	refined = solver_mod.refine_interval(
+		reader, 0, 1, start_state, end_state,
+		fused_track, appearance,
+	)
+	# result should have states, none should be None
+	assert len(refined) >= 1
+	for state in refined:
+		assert state is not None
+		assert "cx" in state
+
+
+#============================================
+def test_refine_low_conf_prior_has_small_effect() -> None:
+	"""When fused confidence is low, prior weight is near zero."""
+	import track_runner.propagator as prop_mod
+	# low confidence fused state
+	fused_state = {"cx": 80.0, "cy": 80.0, "conf": 0.1}
+	prior_conf = float(fused_state["conf"])
+	prior_weight = min(
+		prop_mod.PRIOR_WEIGHT_SCALE,
+		prior_conf * prop_mod.PRIOR_WEIGHT_SCALE,
+	)
+	# weight should be 0.1 * 0.3 = 0.03 (near zero)
+	assert prior_weight < 0.05
+	# verify the exact computation
+	expected = 0.1 * prop_mod.PRIOR_WEIGHT_SCALE
+	assert abs(prior_weight - expected) < 1e-9

@@ -104,7 +104,7 @@ Three canonical state types flow through these modules without mixing:
 - **Crop state** (`crop_cx, crop_cy, crop_size`): output crop rectangle,
   downstream of tracking.
 
-See [docs/TRACK_RUNNER_V2_SPEC.md](docs/TRACK_RUNNER_V2_SPEC.md) for the full
+See [docs/TRACK_RUNNER_V3_SPEC.md](docs/TRACK_RUNNER_V3_SPEC.md) for the full
 specification.
 
 ## Data flow

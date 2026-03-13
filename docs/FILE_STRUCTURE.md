@@ -237,13 +237,14 @@ Documentation lives in [docs/](docs/):
 - [docs/TODO.md](docs/TODO.md): Backlog tasks.
 - [docs/SECURITY.md](docs/SECURITY.md): Security notes.
 - [docs/AUTHORS.md](docs/AUTHORS.md): Maintainers and contributors.
-- [docs/TRACK_RUNNER_SPEC.md](docs/TRACK_RUNNER_SPEC.md): Legacy v1 track runner spec.
-- [docs/TRACK_RUNNER_V2_SPEC.md](docs/TRACK_RUNNER_V2_SPEC.md): Current v2 track
-  runner spec (seed-driven interval solver).
-- [docs/TRACK_RUNNER_TOOL_PLAN.md](docs/TRACK_RUNNER_TOOL_PLAN.md): Track runner plan.
+- [docs/TRACK_RUNNER_V3_SPEC.md](docs/TRACK_RUNNER_V3_SPEC.md): Current v3 track
+  runner spec (seed-driven interval solver with PySide6 UI).
+- [docs/TRACK_RUNNER_DESIGN.md](docs/TRACK_RUNNER_DESIGN.md): Track runner design
+  philosophy and principles.
+- [docs/TRACK_RUNNER_HISTORY.md](docs/TRACK_RUNNER_HISTORY.md): Track runner evolution
+  from v1 through v3.
 - [docs/STABILIZATION_TOOL_PLAN.md](docs/STABILIZATION_TOOL_PLAN.md): Stabilization plan.
-- [docs/SEED_VARIABILITY_FINDINGS.md](docs/SEED_VARIABILITY_FINDINGS.md): Seed
-  variability measurement results that motivated the v2 rewrite.
+- Archived specs in `docs/archive/`: v1 plan, v1 spec, v2 spec, seed findings.
 
 Root-level docs:
 

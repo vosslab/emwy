@@ -20,6 +20,7 @@ import json
 import os
 import queue
 import shutil
+import statistics
 import subprocess
 import time
 
@@ -1147,11 +1148,13 @@ def _mode_encode(
 	)
 	trajectory = interval_solver.stitch_trajectories(interval_results)
 
-	# apply absence erasure from seeds (function decides which seeds to erase)
+	# apply multi-seed anchored interpolation to reduce drift
 	seeds_path = state_io.default_seeds_path(args.input_file)
 	if os.path.isfile(seeds_path):
 		seeds_data = state_io.load_seeds(seeds_path)
 		all_seeds = seeds_data.get("seeds", [])
+		trajectory = interval_solver.anchor_to_seeds(trajectory, all_seeds)
+		# apply trajectory erasure from seeds (function decides which seeds to erase)
 		fps = float(diag_data.get("fps", video_info["fps"]))
 		trajectory = interval_solver._apply_trajectory_erasure(
 			trajectory, all_seeds, fps,
@@ -1176,20 +1179,25 @@ def _mode_encode(
 		stem, ext = os.path.splitext(args.input_file)
 		output_path = f"{stem}_tracked{ext}"
 
-	# compute output crop dimensions from first crop rect
-	if crop_rects:
-		first_crop = crop_rects[0]
-		crop_w = first_crop[2]
-		crop_h = first_crop[3]
+	# compute output dimensions: explicit config > median of crop rects > fallback
+	proc_cfg = cfg.get("processing", {})
+	user_resolution = proc_cfg.get("output_resolution")
+	if user_resolution is not None:
+		# user-specified output resolution
+		crop_w = int(user_resolution[0])
+		crop_h = int(user_resolution[1])
+	elif crop_rects:
+		# derive from median of all crop rectangles for stability
+		all_widths = [r[2] for r in crop_rects]
+		all_heights = [r[3] for r in crop_rects]
+		crop_w = int(statistics.median(all_widths))
+		crop_h = int(statistics.median(all_heights))
 	else:
 		crop_h = video_info["height"] // 2
 		crop_w = crop_h
 	# ensure even dimensions for codec compatibility
 	crop_w = crop_w - (crop_w % 2)
 	crop_h = crop_h - (crop_h % 2)
-
-	# read output codec settings from config
-	proc_cfg = cfg.get("processing", {})
 	video_codec = proc_cfg.get("video_codec", "libx264")
 	crf_value = int(proc_cfg.get("crf", 18))
 

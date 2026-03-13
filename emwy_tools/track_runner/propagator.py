@@ -25,6 +25,8 @@ STATIONARY_DISP_FRACTION = 0.03
 PATCH_SEARCH_MARGIN = 20
 # Minimum feature points to trust flow result
 MIN_FLOW_FEATURES = 4
+# Maximum weight for fused-track soft prior in refinement pass
+PRIOR_WEIGHT_SCALE = 0.3
 # LK optical flow parameters
 _LK_PARAMS = {
 	"winSize": (15, 15),
@@ -307,6 +309,7 @@ def _track_one_frame(
 	curr_frame: numpy.ndarray,
 	prev_state: dict,
 	appearance_model: dict,
+	soft_prior: dict = None,
 ) -> dict:
 	"""Estimate the tracking state for curr_frame given the state in prev_frame.
 
@@ -320,6 +323,9 @@ def _track_one_frame(
 		curr_frame: BGR image of the current frame.
 		prev_state: Tracking state dict (cx, cy, w, h, conf, source).
 		appearance_model: Appearance model from build_appearance_model().
+		soft_prior: Optional dict with cx, cy, weight keys. When provided,
+			blends estimated position toward the prior center. Used by the
+			refinement pass to inject the fused track as a spatial prior.
 
 	Returns:
 		New tracking state dict for curr_frame.
@@ -418,6 +424,17 @@ def _track_one_frame(
 	# compute new center and size
 	new_cx = prev_cx + dx
 	new_cy = prev_cy + dy
+
+	# soft prior: blend toward reference position when provided
+	if soft_prior is not None:
+		prior_weight = float(soft_prior.get("weight", 0.0))
+		if prior_weight > 0.0:
+			prior_cx = float(soft_prior["cx"])
+			prior_cy = float(soft_prior["cy"])
+			# weighted average pulls position toward the fused prior
+			new_cx = (1.0 - prior_weight) * new_cx + prior_weight * prior_cx
+			new_cy = (1.0 - prior_weight) * new_cy + prior_weight * prior_cy
+
 	new_w = prev_w * scale_change
 	new_h = prev_h * scale_change
 
@@ -461,6 +478,7 @@ def propagate_forward(
 	end_frame: int,
 	appearance_model: dict,
 	debug: bool = False,
+	prior_track: dict = None,
 ) -> list:
 	"""Propagate a tracking state forward from start_frame to end_frame.
 
@@ -474,6 +492,9 @@ def propagate_forward(
 		end_frame: Last frame index to track to (inclusive).
 		appearance_model: Appearance model from build_appearance_model().
 		debug: If True, print a heartbeat every 30 seconds with progress.
+		prior_track: Optional dict keyed by absolute frame index, mapping
+			to fused state dicts. Used in refinement pass to inject the
+			first-pass fused track as a soft spatial prior.
 
 	Returns:
 		List of tracking state dicts, one per frame from start_frame to
@@ -493,7 +514,28 @@ def propagate_forward(
 		if curr_frame is None:
 			# end of video reached early
 			break
-		new_state = _track_one_frame(prev_frame, curr_frame, prev_state, appearance_model)
+
+		# build soft prior from fused track when available
+		soft_prior = None
+		if prior_track is not None:
+			prior_state = prior_track.get(frame_idx)
+			if prior_state is not None:
+				prior_conf = float(prior_state.get("conf", 0.0))
+				# scale weight by fused confidence, cap at PRIOR_WEIGHT_SCALE
+				prior_weight = min(
+					PRIOR_WEIGHT_SCALE,
+					prior_conf * PRIOR_WEIGHT_SCALE,
+				)
+				soft_prior = {
+					"cx": float(prior_state["cx"]),
+					"cy": float(prior_state["cy"]),
+					"weight": prior_weight,
+				}
+
+		new_state = _track_one_frame(
+			prev_frame, curr_frame, prev_state, appearance_model,
+			soft_prior=soft_prior,
+		)
 		states.append(new_state)
 		prev_state = new_state
 		prev_frame = curr_frame
@@ -520,6 +562,7 @@ def propagate_backward(
 	end_frame: int,
 	appearance_model: dict,
 	debug: bool = False,
+	prior_track: dict = None,
 ) -> list:
 	"""Propagate a tracking state backward from start_frame to end_frame.
 
@@ -534,6 +577,9 @@ def propagate_backward(
 		end_frame: Earliest frame index to track back to (inclusive).
 		appearance_model: Appearance model from build_appearance_model().
 		debug: If True, print a heartbeat every 30 seconds with progress.
+		prior_track: Optional dict keyed by absolute frame index, mapping
+			to fused state dicts. Used in refinement pass to inject the
+			first-pass fused track as a soft spatial prior.
 
 	Returns:
 		List of tracking state dicts from end_frame to start_frame inclusive.
@@ -553,8 +599,29 @@ def propagate_backward(
 		curr_frame = frames_reader.read_frame(frame_idx)
 		if curr_frame is None:
 			break
+
+		# build soft prior from fused track when available
+		soft_prior = None
+		if prior_track is not None:
+			prior_state = prior_track.get(frame_idx)
+			if prior_state is not None:
+				prior_conf = float(prior_state.get("conf", 0.0))
+				# scale weight by fused confidence, cap at PRIOR_WEIGHT_SCALE
+				prior_weight = min(
+					PRIOR_WEIGHT_SCALE,
+					prior_conf * PRIOR_WEIGHT_SCALE,
+				)
+				soft_prior = {
+					"cx": float(prior_state["cx"]),
+					"cy": float(prior_state["cy"]),
+					"weight": prior_weight,
+				}
+
 		# track "forward" in backward time (curr_frame is older)
-		new_state = _track_one_frame(prev_frame, curr_frame, prev_state, appearance_model)
+		new_state = _track_one_frame(
+			prev_frame, curr_frame, prev_state, appearance_model,
+			soft_prior=soft_prior,
+		)
 		reverse_states.append(new_state)
 		prev_state = new_state
 		prev_frame = curr_frame

@@ -1,6 +1,6 @@
 # Track runner v3 specification
 
-Status: v3, reflects implemented v3 modules as of 2026-03-12
+Status: v3, reflects implemented modules as of 2026-03-13
 
 This document describes the architecture of track_runner v3, a seed-driven
 interval solver for tracking a single runner in handheld video footage.
@@ -18,37 +18,59 @@ each inter-seed interval by how well the two directions agree. Weak intervals
 trigger a review pass that asks the user for more seeds. Refinement repeats
 until all intervals reach acceptable confidence or the user accepts the result.
 
-v3 adds support for obstructed seeds with approximate bounding boxes,
-interval-length-aware confidence scoring, and a PySide6-based annotation UI.
+v3 adds support for approximate seeds with uncertain bounding boxes,
+interval-length-aware confidence scoring, post-fuse refinement with soft
+spatial priors, multi-seed anchored interpolation, a PySide6-based annotation
+UI, and a configurable encode filter pipeline.
+
+See [docs/TRACK_RUNNER_DESIGN.md](docs/TRACK_RUNNER_DESIGN.md) for design
+philosophy. See [docs/TRACK_RUNNER_HISTORY.md](docs/TRACK_RUNNER_HISTORY.md)
+for evolution from v1 and v2.
 
 ## Module map
 
+### Core engine
+
+| Module | Lines | Purpose |
+| --- | --- | --- |
+| `track_runner.py` | ~8 | Thin entry point: `import cli; cli.main()` |
+| `cli.py` | ~1200 | Argument parsing, multi-pass orchestration, quality report |
+| `config.py` | ~350 | Config YAML loading, defaults, schema validation |
+| `state_io.py` | ~200 | JSON read/write for seeds, diagnostics, and intervals |
+| `detection.py` | ~300 | YOLOv8n ONNX person detection |
+| `propagator.py` | ~400 | Frame-to-frame optical flow + patch correlation tracking |
+| `hypothesis.py` | ~250 | Competing path generation for ambiguous intervals |
+| `scoring.py` | ~250 | Interval confidence: agreement, identity, competitor margin |
+| `interval_solver.py` | ~1400 | Per-interval bounded solving, fusion, refinement, anchoring |
+| `review.py` | ~200 | Weak span identification and seed target generation |
+| `seeding.py` | ~620 | Interactive seed UI, jersey color/histogram extraction |
+| `seed_editor.py` | ~100 | Seed review and editing UI entry point |
+| `crop.py` | ~340 | Adaptive crop trajectory from confidence-weighted positions |
+| `encoder.py` | ~470 | Video decode (OpenCV), crop apply, ffmpeg encode |
+
+### UI package (`ui/`)
+
 | Module | Purpose |
 | --- | --- |
-| `track_runner.py` | Thin entry point: `import cli; cli.main()` |
-| `cli.py` | Argument parsing, multi-pass orchestration, quality report |
-| `config.py` | Config YAML loading, defaults, validation |
-| `state_io.py` | JSON read/write for seeds and diagnostics files |
-| `detection.py` | YOLOv8n ONNX person detection (HOG removed in v2) |
-| `propagator.py` | Frame-to-frame local torso tracking between seeds |
-| `hypothesis.py` | Competing path generation for ambiguous intervals |
-| `scoring.py` | Interval confidence: agreement, identity, competitor margin |
-| `interval_solver.py` | Per-interval bounded solving using seeds as anchors |
-| `review.py` | Weak span identification and seed target generation |
-| `seeding.py` | Interactive seed UI, jersey color extraction |
-| `seed_editor.py` | Seed review and editing UI |
-| `crop.py` | Adaptive crop trajectory from confidence-weighted positions |
-| `encoder.py` | Video decode (OpenCV), crop apply, ffmpeg encode |
-| `ui/workspace.py` | `AnnotationWindow(AppShell)` Qt main window with mode toolbar |
-| `ui/frame_view.py` | `FrameView(QGraphicsView)` with cursor-anchored zoom |
-| `ui/seed_controller.py` | `SeedController(QObject)` for seed collection |
-| `ui/target_controller.py` | `TargetController(SeedController)` for targeted refinement |
-| `ui/edit_controller.py` | `EditController(QObject)` for seed review and editing |
-| `ui/overlay_items.py` | `RectItem`, `PreviewBoxItem`, `ScaleBarItem` overlays |
-| `ui/status_presenter.py` | `StatusPresenter` QLabel for seed status display |
-| `ui/theme.py` | Dark/light/system theme support |
-| `ui/actions.py` | `make_action()` factory for toolbar actions |
-| `ui/app_shell.py` | `AppShell(QMainWindow)` base class with theme toggle |
+| `workspace.py` | `AnnotationWindow(AppShell)` Qt main window with mode toolbar |
+| `frame_view.py` | `FrameView(QGraphicsView)` with cursor-anchored zoom |
+| `seed_controller.py` | `SeedController(QObject)` for seed collection |
+| `target_controller.py` | `TargetController(SeedController)` for targeted refinement |
+| `edit_controller.py` | `EditController(QObject)` for seed review and editing |
+| `overlay_items.py` | `RectItem`, `PreviewBoxItem`, `ScaleBarItem` overlays |
+| `status_presenter.py` | `StatusPresenter` QLabel for seed status display |
+| `theme.py` | Dark/light/system theme support |
+| `actions.py` | `make_action()` factory for toolbar actions |
+| `app_shell.py` | `AppShell(QMainWindow)` base class with theme toggle |
+
+### Shared utilities (`common_tools/`)
+
+| Module | Purpose |
+| --- | --- |
+| `tools_common.py` | Video metadata, time formatting, shared helpers |
+| `frame_reader.py` | OpenCV video frame reader with seek |
+| `emwy_yaml_writer.py` | EMWY YAML output writer |
+| `frame_filters.py` | Display-only and encode image filters |
 
 ### Dependency graph
 
@@ -63,13 +85,44 @@ review -> scoring, state_io
 seeding -> cv2, numpy, ui.seed_controller, ui.workspace
 seed_editor -> ui.edit_controller, ui.workspace
 crop -> numpy, math
-encoder -> cv2, numpy, crop
+encoder -> cv2, numpy, crop, common_tools.frame_filters
 config -> yaml, os
 state_io -> json, os
 ui.workspace -> ui.frame_view, ui.app_shell, ui.actions
 ui.seed_controller -> ui.overlay_items, ui.status_presenter
 ui.edit_controller -> ui.overlay_items, ui.status_presenter
 ```
+
+## CLI subcommands
+
+The tool supports 7 modes (default is `run`):
+
+| Mode | Purpose |
+| --- | --- |
+| `run` | Full pipeline: seed, solve, encode |
+| `seed` | Collect seeds interactively, save, exit |
+| `edit` | Review, fix, and delete existing seeds |
+| `target` | Add seeds at weak interval frames with FWD/BWD overlays |
+| `solve` | Full re-solve: clears prior results, solves all intervals |
+| `refine` | Re-solve only changed/new intervals, reuse prior results |
+| `encode` | Encode cropped video from existing trajectory |
+
+### CLI flags
+
+| Flag | Dest | Type | Default | Description |
+| --- | --- | --- | --- | --- |
+| `-i`, `--input` | `input_file` | str | required | Input video path |
+| `-o`, `--output` | `output_file` | str | `{stem}_tracked{ext}` | Output path |
+| `-c`, `--config` | `config_file` | str | `{input}.track_runner.config.yaml` | Config YAML |
+| `--seed-interval` | `seed_interval` | float | config value | Override seeding interval |
+| `--aspect` | `aspect` | str | config value | Override crop aspect ratio |
+| `-d`, `--debug` | `debug` | flag | False | Draw debug overlay on output |
+| `--refine` | `refine` | str | `suggested` | Refinement mode |
+| `--gap-threshold` | `gap_threshold` | float | 15.0 | Min seedless gap for gap mode |
+| `--time-range` | `time_range` | str | None | Restrict to `HH:MM:SS-HH:MM:SS` |
+| `--ignore-diagnostics` | `ignore_diagnostics` | flag | False | Re-solve from seeds |
+| `-F`, `--encode-filters` | `encode_filters` | str | config value | Comma-separated filter names |
+| `-s`, `--severity` | `severity` | str | None | Filter by severity (edit/target) |
 
 ## Data flow
 
@@ -97,60 +150,57 @@ Pass N: crop
   -> per-frame crop rectangles
 
 Pass N+1: encode
-  encoder.py: apply crop, resize, ffmpeg encode
+  encoder.py: apply crop, resize, optional filters, ffmpeg encode
   audio mux from original
   -> final output video
 ```
 
 ## Drawing modes and seed statuses
 
-The user annotates each seed frame using one of four drawing modes. Each mode
-produces a seed with a specific status value and data fields.
+The user annotates each seed frame using one of four drawing modes.
 
 ### The four drawing modes
 
 - **Visible**: the runner is fully visible. The user draws a precise torso box.
   Exact torso position and jersey color are known. Full tracking confidence.
-- **Partial**: the runner is partially hidden (another runner crossing in front,
-  a pole, etc.) but the torso position is still identifiable. The user draws a
-  precise torso box. Jersey hue is unreliable. Used as an interval endpoint but
-  excluded from the appearance model.
-- **Approx** (`a` key): the runner is fully hidden behind an obstruction and
-  the exact torso position cannot be determined. The user draws a larger area
-  (bigger than a torso box) indicating the general region where the runner is
-  believed to be. Stored as `status: "obstructed"` with `torso_box` holding
-  the drawn area. No `jersey_hsv`. Used as a weak interval endpoint (conf=0.3)
-  to guide the solver through the gap, but trajectory near the seed is erased
-  because the position is uncertain.
+- **Partial**: the runner is partially hidden (another runner crossing, a pole,
+  etc.) but the torso position is identifiable. Precise torso box drawn.
+  Jersey hue is unreliable. Used as an interval endpoint but excluded from the
+  appearance model.
+- **Approximate** (`a` key): the runner is fully hidden behind an obstruction
+  and the exact torso position cannot be determined. The user draws a larger
+  area indicating the general region. Stored as `status: "approximate"` with
+  `torso_box` holding the drawn area. No `jersey_hsv`. Used as a weak interval
+  endpoint (conf=0.3). Trajectory near the seed is erased because position is
+  uncertain.
 - **Not in frame** (`n` key): the runner has physically left the camera frame.
-  They are known to be off-screen past the edge of the visible area. This is a
-  definite determination by the user, not a "cannot find" status. No position
-  data exists. Triggers trajectory erasure within the erase radius.
+  Confirmed off-screen past the edge. No position data. Triggers trajectory
+  erasure within the erase radius.
 
-### Approx vs not_in_frame
+### Approximate vs not_in_frame
 
 These are distinct conditions. `not_in_frame` means the runner is confirmed
-outside the frame boundary (off-screen) -- there is no position to record.
-Approx means the runner is still within the frame but fully hidden, and the
-user draws a general area where they believe the runner to be. The approx area
-gives the solver a directional hint; `not_in_frame` has no location at all.
+outside the frame boundary (off-screen). Approximate means the runner is within
+the frame but fully hidden, and the user draws a general area. The approximate
+area gives the solver a directional hint; `not_in_frame` has no location at all.
 
 ### Properties by drawing mode
 
-| Property | visible | partial | approx | not_in_frame |
+| Property | visible | partial | approximate | not_in_frame |
 | --- | --- | --- | --- | --- |
-| Status value in data | `visible` | `partial` | `approximate` | `not_in_frame` |
-| Box type | precise torso box | precise torso box | larger approx area | none |
-| Has position data (cx/cy/w/h) | YES | YES | YES (uncertain) | NO |
+| Status value in JSON | `visible` | `partial` | `approximate` | `not_in_frame` |
+| Box type | precise torso | precise torso | larger approximate area | none |
 | Has `torso_box` | YES | YES | YES | NO |
 | Has `jersey_hsv` | YES | unreliable | NO | NO |
 | Runner in frame | YES | YES | YES (hidden) | NO (off-screen) |
-| Used as interval endpoint | YES | YES | YES (weak, conf=0.3) | NO |
-| Used for appearance model | YES | NO | NO | NO |
-| Triggers trajectory erasure | NO | NO | YES | YES |
+| Interval endpoint | YES | YES | YES (weak, conf=0.3) | NO |
+| Appearance model | YES | NO | NO | NO |
+| Trajectory erasure | NO | NO | YES (0.5 s) | YES (1.0 s) |
 | Default confidence | 1.0 | 1.0 | 0.3 | n/a |
 
 ## Valid seed modes
+
+Seeds carry a `mode` field recording how they were created.
 
 | Mode | Description |
 | --- | --- |
@@ -160,85 +210,217 @@ gives the solver a directional hint; `not_in_frame` has no location at all.
 | `gap_refine` | Refinement at midpoints of large seedless gaps |
 | `target_refine` | Targeted refinement via the target controller UI |
 | `bbox_polish` | YOLO or consensus polish applied during seed editing |
-
-## Confidence decision grid
-
-`scoring.py` scores each interval using three aggregate metrics.
-
-| Agreement | Separation (margin) | Confidence | Notes |
-| --- | --- | --- | --- |
-| > 0.5 | > 0.5 | `high` | Trusted |
-| > 0.5 | > 0.2 | `good` | Acceptable, reason: `low_separation` |
-| > 0.2 | > 0.1 | `fair` | Borderline |
-| everything else | | `low` | Needs seed |
-
-Additional flags appended to `failure_reasons` regardless of confidence:
-
-- `likely_identity_swap`: competitor margin < 0.2 (a strong competitor exists)
-- `weak_appearance`: identity score < 0.4 (jersey color match is poor)
-
-### Interval-length-aware scoring
-
-For intervals of 5 frames or fewer, the confidence tier is promoted by one
-level (low -> fair, fair -> good). This compensates for the inherent noise
-in FWD/BWD agreement on very short intervals where the propagator barely
-advances. The promotion never reaches "high" -- at most "good".
-
-This reduces false negatives on densely-seeded regions where 1-2 frame
-intervals dominate and agreement scores are meaningless.
-
-## Trajectory erasure
-
-When the runner is off-screen (not_in_frame) or fully hidden (approx), the
-solver erases trajectory data near that frame to prevent the propagator from
-tracking a wrong person through a gap. Approx seeds guide the solver as weak
-endpoints, but the trajectory near the seed is still erased because the
-position is uncertain. The erase radius differs by drawing mode:
-
-| Drawing mode | Erase radius | Endpoint | Reason |
-| --- | --- | --- | --- |
-| visible | no erasure | yes (accurate) | precise torso box, fully visible |
-| partial | no erasure | yes (accurate) | precise torso box, position known |
-| approx | 0.5 s | yes (weak) | larger area, uncertain position |
-| not_in_frame | 1.0 s | no | runner off-screen, no position |
+| `edit_redraw` | Seed redrawn by user during editing |
+| `solve_refine` | Solver-generated refinement |
+| `interactive_refine` | Interactive refinement during a session |
 
 ## Core algorithm: bounded interval solver
 
 The interval solver treats each inter-seed span as an independent bounded
-problem. Seeds are hard anchors. Within each interval the solver runs a
-forward propagation (from the left seed) and a backward propagation (from
-the right seed), then fuses the two tracks into a scored result.
+problem. Seeds are hard anchors. Within each interval the solver runs forward
+propagation (from the left seed) and backward propagation (from the right
+seed), then fuses the two tracks into a scored result.
 
 ### Forward and backward propagation
 
-`propagator.py` advances a bounding box one frame at a time using YOLO
-detections and a lightweight local-search matcher. There is no Kalman filter.
-The propagator returns a list of per-frame state dicts:
+`propagator.py` advances a bounding box one frame at a time using two
+complementary signals:
+
+1. **Lucas-Kanade optical flow**: Shi-Tomasi features (up to 50 corners,
+   quality 0.01, min distance 5, block size 5) tracked with LK pyramidal
+   flow (window 15x15, 3 pyramid levels, 30 iterations, epsilon 0.01).
+   Requires at least 4 valid flow vectors.
+
+2. **Patch correlation**: Template matching of the previous torso crop
+   against a search region (20 px margin around predicted position).
+
+The two estimates are blended using scale-gated weights:
+
+| Runner height | Flow weight | Correlation weight | Rationale |
+| --- | --- | --- | --- |
+| > 60 px (large) | 0.4 | 0.6 | Appearance reliable |
+| 30-60 px (medium) | 0.6 | 0.4 | Balanced |
+| < 30 px (small) | 1.0 | 0.0 | Appearance is noise |
+
+**Stationary lock**: When 5 consecutive frames show near-zero displacement
+(< 3% of box dimension), the propagator locks position to prevent drift
+from camera jitter.
+
+**Confidence decay**: Each propagated frame decays confidence by 0.97.
+Floor is 0.1. Seeds start at 1.0 (visible/partial) or 0.3 (approximate).
+
+**Per-frame state**:
 
 ```
-{"cx": float, "cy": float, "w": float, "h": float, "conf": float, "source": str}
+{"cx": float, "cy": float, "w": float, "h": float,
+ "conf": float, "source": str}
 ```
 
 `source` values: `seed`, `detected`, `propagated`, `absent`.
 
-### Hypothesis generation
-
-For intervals where the propagator confidence drops below a threshold,
-`hypothesis.py` generates competing path candidates. Each hypothesis
-represents an alternative runner trajectory through the interval. The
-solver selects the hypothesis with the best scoring outcome.
-
 ### Confidence-weighted fusion
 
 After forward and backward propagation the interval solver fuses the two
-tracks. At each frame the fused position is a confidence-weighted average:
+tracks. At each frame, if the Dice overlap coefficient >= 0.3 (boxes agree),
+the fused position is a confidence-weighted average:
 
 ```
 fused_cx = (fwd_conf * fwd_cx + bwd_conf * bwd_cx) / (fwd_conf + bwd_conf)
 ```
 
-Same formula for `cy`, `w`, and `h`. When one direction has zero confidence
-the other direction is used directly.
+Same for `cy`, `w`, `h`. Fused confidence = `Dice * max(fwd_conf, bwd_conf)`.
+
+When Dice < 0.3 (disagreement), the higher-confidence direction is used
+directly.
+
+### Post-fuse refinement pass
+
+After the first-pass independent FWD/BWD propagation and fusion, a refinement
+pass re-propagates each interval using the fused track as a soft spatial prior.
+This reduces mid-interval wobble where both passes had decayed confidence.
+
+Pipeline order:
+
+1. Independent FWD/BWD propagation (first pass)
+2. Fuse (first pass)
+3. **Refinement**: re-run FWD/BWD with fused track as soft prior, re-fuse
+4. Anchor-to-seeds regularization
+5. Stamp confidence + erasure
+6. Crop
+
+The refinement pass is always on. It does not affect identity scoring or
+seed recommendation, which use the first-pass diagnostic signal.
+
+Prior weight formula:
+
+```
+prior_weight = min(0.3, fused_conf * 0.3)
+```
+
+The prior only affects `cx`/`cy`, not `w`/`h`. Low-confidence fused frames
+produce near-zero prior weight, preventing error reinforcement.
+
+At each propagated frame:
+
+```
+new_cx = (1 - prior_weight) * flow_cx + prior_weight * prior_cx
+new_cy = (1 - prior_weight) * flow_cy + prior_weight * prior_cy
+```
+
+The prior is keyed by absolute frame index to eliminate alignment bugs
+between forward and backward passes.
+
+### Multi-seed anchored interpolation
+
+After stitching intervals, a post-stitch correction pass fits a local
+windowed curve through nearby seeds and nudges low-confidence frames toward
+the fit. This exploits the weak kinematic prior that distance runners exhibit
+locally smooth image-plane motion.
+
+**Seed window**: the nearest 4 seeds on each side of the current frame.
+`CubicSpline` with natural boundary conditions fits `cx`/`cy`; `PCHIP` in
+log-space fits `w`/`h` to avoid overshoot on scale changes. With only 2 knots,
+the fit degenerates to linear interpolation.
+
+**Blend gains** scale with uncertainty:
+
+- `cx`/`cy` blend: `0.5 * (1 - conf)^2`
+- `w`/`h` blend: `0.3 * (1 - conf)^2`
+
+Visible seeds are hard-pinned. Partial seeds guide the fit but are not pinned.
+
+**Displacement caps**:
+
+- `dx` capped at 25% of `w`
+- `dy` capped at 25% of `h`
+- `dw` capped at 15% of `w`
+- `dh` capped at 15% of `h`
+
+**Proximity skip**: frames within 7 of any seed (~0.23 s at 30 fps) are not
+corrected. No extrapolation past the first and last seed.
+
+**Deduplication**: when multiple seeds fall on the same frame, visible seeds
+are preferred over partial. Among same-status seeds, the larger `torso_box`
+area wins.
+
+### Hypothesis generation
+
+For intervals where propagator confidence drops below thresholds,
+`hypothesis.py` generates competing path candidates. Up to 3 competitor
+tracks are maintained. Competitors are YOLO detections that overlap the
+target by IoU >= 0.3, with minimum height 20 px. Each competitor is matched
+across frames by IoU >= 0.2.
+
+**Competitor identity scoring** is scale-gated:
+
+| Runner height | Method |
+| --- | --- |
+| < 30 px | return 0.5 (uninformative) |
+| 30-60 px | HSV comparison only |
+| >= 60 px | 60% HSV + 40% template correlation |
+
+**Competitor margin**: `0.7 * position_distance + 0.3 * appearance_distance`.
+A margin < 0.2 flags `likely_identity_swap`.
+
+### Trajectory erasure
+
+When the runner is off-screen or fully hidden, the solver erases trajectory
+data near that frame.
+
+| Drawing mode | Erase radius | Endpoint | Reason |
+| --- | --- | --- | --- |
+| visible | no erasure | yes (accurate) | precise torso box |
+| partial | no erasure | yes (accurate) | precise torso box |
+| approximate | 0.5 s | yes (weak) | uncertain position |
+| not_in_frame | 1.0 s | no | runner off-screen |
+
+Erasure decisions are centralized in `_apply_trajectory_erasure()`. Both
+solve and encode paths pass all seeds; the function decides what to erase.
+
+### Cyclical prior detection
+
+`_detect_cyclical_prior()` looks for repeating patterns in the trajectory
+(minimum 900 frames, period 25-40 s). When a cyclical period is detected, it
+can inform seed placement and gap analysis.
+
+## Confidence scoring
+
+`scoring.py` scores each interval using three aggregate metrics.
+
+### Confidence decision grid
+
+| Agreement | Separation (margin) | Confidence | Notes |
+| --- | --- | --- | --- |
+| > 0.5 | > 0.5 | `high` | Trusted |
+| > 0.5 | > 0.2 | `good` | Acceptable |
+| > 0.2 | > 0.1 | `fair` | Borderline |
+| else | | `low` | Needs seed |
+
+Additional failure reasons regardless of confidence:
+
+- `likely_identity_swap`: competitor margin < 0.2
+- `weak_appearance`: identity score < 0.4
+
+### Interval-length-aware scoring
+
+For intervals of 5 frames or fewer, the confidence tier is promoted by one
+level (low to fair, fair to good). The promotion never reaches high. This
+compensates for inherent noise in FWD/BWD agreement on very short intervals.
+
+### Interval severity classification
+
+`review.py` classifies intervals for refinement prioritization:
+
+- **high**: agreement < 0.2, or `likely_identity_swap`, or (margin < 0.2 and
+  agreement < 0.4)
+- **medium**: agreement < 0.4, or margin < 0.2 with good agreement
+- **low**: everything else
+
+Short-interval demotion: intervals under 10 frames are unconditionally
+demoted from high to medium.
+
+Duration-based promotion: intervals longer than 10 s are promoted one level
+(low to medium, medium to high).
 
 ## Refinement modes
 
@@ -246,56 +428,197 @@ The `--refine` flag controls which intervals trigger a new seeding round.
 
 ### suggested
 
-Default mode. The `review.py` module identifies the worst intervals by
-confidence and failure reason. Seed targets are placed at midpoints of
-low-confidence intervals. The user seeds only those frames.
+Default mode. `review.py` identifies the worst intervals by confidence and
+failure reason. Seed targets are placed at midpoints of low-confidence
+intervals. `likely_identity_swap` intervals get targets at `start + len // 3`.
 
 ### interval
 
-Re-seeds every inter-seed interval regardless of confidence. Useful for
-a first-pass review of a new video when overall quality is unknown.
+Re-seeds every inter-seed interval regardless of confidence.
 
 ### gap
 
-Re-seeds only the largest seedless gaps (controlled by `--gap-threshold`).
-Gap threshold defaults to 15 seconds; gaps shorter than this are skipped.
+Re-seeds only the largest seedless gaps (controlled by `--gap-threshold`,
+default 15 s).
 
-## CLI arguments
+## Crop controller
 
-| Flag | Dest | Type | Default | Description |
-| --- | --- | --- | --- | --- |
-| `-i`, `--input` | `input_file` | str | required | Input video path |
-| `-o`, `--output` | `output_file` | str | `{stem}_tracked{ext}` | Output path |
-| `-c`, `--config` | `config_file` | str | `{input}.track_runner.config.yaml` | Config YAML path |
-| `--seed-interval` | `seed_interval` | float | config value | Override `seeding.interval_seconds` |
-| `--aspect` | `aspect` | str | config value | Override crop aspect ratio (e.g. `1:1`) |
-| `-d`, `--debug` | `debug` | flag | False | Draw debug overlay on output video |
-| `--refine` | `refine` | str | `suggested` | Refinement mode: `suggested`, `interval`, or `gap` |
-| `--gap-threshold` | `gap_threshold` | float | 15.0 | Min seedless gap in seconds to trigger gap refinement |
-| `--time-range` | `time_range` | str | None | Restrict processing to `HH:MM:SS-HH:MM:SS` range |
-| `--ignore-diagnostics` | `ignore_diagnostics` | flag | False | Ignore existing diagnostics and re-solve from seeds |
+`crop.py` operates as a virtual camera operator, producing smooth crop
+trajectories from the confidence-weighted tracker output.
+
+### Parameters
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `target_fill_ratio` | 0.30 | Subject height / crop height |
+| `smoothing_attack` | 0.15 | Alpha for large position errors |
+| `smoothing_release` | 0.05 | Alpha for small position errors |
+| `max_crop_velocity` | 30.0 | Max px/frame crop movement |
+| `min_crop_size` | 200 | Minimum crop dimension in pixels |
+| `deadband_fraction` | 0.02 | Fraction of crop size for deadband |
+
+**Alpha floor**: smoothing alpha is clamped to `max(alpha, 0.02)` so the
+crop always responds, even at low confidence.
+
+**Velocity capping**: per-frame crop displacement clamped to 30 px with sign
+preservation.
+
+**Output resolution**: defaults to the median of all crop rectangle dimensions.
+Can be overridden with `output_resolution: [width, height]` in config.
+
+## Detection
+
+YOLOv8n via ONNX runtime. No HOG fallback.
+
+| Parameter | Value |
+| --- | --- |
+| Model | `yolov8n.onnx` |
+| Input size | 640 px |
+| Confidence threshold | 0.25 |
+| NMS threshold | 0.45 |
+| Class | person (COCO class 0) |
+| ROI padding | 3.0x bbox size |
+| Min ROI crop | 320 px |
+
+## Encode pipeline
+
+`encoder.py` decodes frames with OpenCV, applies crop rectangles, optionally
+runs filters, and encodes with ffmpeg.
+
+### Encode filters
+
+Two filter engines, applied in order: OpenCV per-frame filters run first,
+then ffmpeg temporal filters.
+
+**OpenCV filters** (per-frame):
+
+| Filter | Parameters |
+| --- | --- |
+| `bilateral` | d=9, sigmaColor=75, sigmaSpace=75 |
+| `clahe` | clipLimit=2.0, tileGridSize=(8, 8) |
+| `sharpen` | gain=1.5 |
+| `denoise` | h=10, hColor=10, template=7, search=21 |
+| `auto_levels` | 1st-99th percentile per channel |
+
+**FFmpeg filters** (temporal):
+
+| Filter | Description |
+| --- | --- |
+| `hqdn3d` | High-quality 3D denoiser |
+| `nlmeans` | Non-local means denoiser |
+
+When any encode filter is active, resize uses `cv2.INTER_LANCZOS4` instead
+of `cv2.INTER_LINEAR`.
+
+Configure via `--encode-filters bilateral,hqdn3d` on CLI or
+`processing.encode_filters` in config YAML.
+
+### Display-only filters
+
+`common_tools/frame_filters.py` provides display-only filters for the
+annotation UI. These do not affect detection or color extraction.
+
+Presets: `none`, `bilateral`, `clahe`, `bilateral+clahe`, `sharpen`,
+`edge_enhance`.
+
+### Debug overlay
+
+When `-d` is set, the encoder draws tracking data on output frames: accepted
+box (green), forward track (blue), backward track (orange), best competitor
+(red). All elements scale with output resolution and box size. Transparency:
+boxes 55%, text 70%.
+
+### Parallel encoding
+
+`encode_cropped_video_parallel()` splits the video into segments and encodes
+with 4 worker processes, then concatenates.
+
+### Video output
+
+| Parameter | Default |
+| --- | --- |
+| Codec | libx264 |
+| CRF | 18 |
+| Container | inferred from extension |
+
+## Annotation UI
+
+PySide6-based annotation window replacing OpenCV popup loops.
+
+### Window structure
+
+`AnnotationWindow(AppShell)` contains `FrameView(QGraphicsView)` as central
+widget, with a mode toolbar and status bar. Mode toolbar has mutually-exclusive
+Seed/Target/Edit actions.
+
+### Mode accent colors
+
+| Mode | Color |
+| --- | --- |
+| Seed | `#0D9488` (teal) |
+| Target | `#3B82F6` (blue) |
+| Edit | `#8B5CF6` (purple) |
+
+### Status colors
+
+| Status | Color |
+| --- | --- |
+| visible | `#22C55E` (green) |
+| partial | `#F59E0B` (amber) |
+| approximate | `#F97316` (orange) |
+| not_in_frame | `#94A3B8` (slate) |
+
+### Zoom
+
+Cursor-anchored zoom: 1.25x per wheel tick, clamped 0.5x to 10x. Scale bar
+appears in top-right corner when zoom > 1.05x.
+
+### Scrub step sizes
+
+`[` and `]` keys cycle through presets: 0.1s, 0.2s, 0.5s, 1.0s, 2.0s, 5.0s.
+Hold Alt for 5x multiplier, Shift for 2x multiplier.
+
+### Keyboard shortcuts (seed controller)
+
+| Key | Action |
+| --- | --- |
+| ESC, q | Quit |
+| SPACE | Skip frame |
+| LEFT/RIGHT | Navigate frames |
+| `[`, `]` | Decrease/increase step size |
+| n | Mark not_in_frame |
+| p | Mark partial |
+| a | Draw approximate area |
+| f | Use FWD/BWD average position |
+| mouse drag | Draw torso box |
+
+### Theme
+
+`apply_theme(app, mode)` supports dark, light, and system modes. Dark palette:
+bg `#0F0F23`, text `#F8FAFC`, accent `#E11D48`.
 
 ## File formats
 
-All three files are derived from the input filename stem.
+All companion files derive from the input filename stem.
 
 ### Config YAML
 
 Path: `{input}.track_runner.config.yaml`
 
-Header key `track_runner` must equal `2`. Required top-level sections:
-`detection` and `processing`.
+Header key `track_runner` must equal `2`.
 
 ```yaml
 track_runner: 2
 detection:
-  model: yolov8n
+  model: "yolov8n"
   confidence_threshold: 0.25
 processing:
   crop_aspect: "1:1"
   crop_fill_ratio: 0.30
-  video_codec: libx264
+  video_codec: "libx264"
   crf: 18
+  encode_filters: []
+  output_resolution: [1280, 720]  # optional
 ```
 
 ### Seeds JSON
@@ -303,11 +626,6 @@ processing:
 Path: `{input}.track_runner.seeds.json`
 
 Header key `track_runner_seeds` must equal `2`.
-Each seed entry has a `frame` key (integer frame index).
-The `mode` field records how the seed was created.
-
-Valid `mode` values: `initial`, `suggested_refine`, `interval_refine`,
-`gap_refine`, `target_refine`, `bbox_polish`.
 
 ```json
 {
@@ -335,7 +653,7 @@ Valid `mode` values: `initial`, `suggested_refine`, `interval_refine`,
     {
       "frame": 450,
       "time_s": 15.0,
-      "status": "obstructed",
+      "status": "approximate",
       "torso_box": [500, 300, 80, 120],
       "pass": 2,
       "source": "human",
@@ -345,34 +663,68 @@ Valid `mode` values: `initial`, `suggested_refine`, `interval_refine`,
 }
 ```
 
+Valid `status` values: `visible`, `partial`, `approximate`, `not_in_frame`.
+
+Legacy `"obstructed"` seeds are migrated on load: those with `torso_box`
+become `"approximate"`, those without are dropped.
+
+Valid `mode` values: `initial`, `suggested_refine`, `interval_refine`,
+`gap_refine`, `target_refine`, `bbox_polish`, `edit_redraw`, `solve_refine`,
+`interactive_refine`.
+
 ### Diagnostics JSON
 
 Path: `{input}.track_runner.diagnostics.json`
 
 Header key `track_runner_diagnostics` must equal `2`.
 
-## Differences from v2
+Contains per-interval results: forward track, backward track, fused track,
+interval scores, failure reasons.
 
-| Area | v2 | v3 |
+### Intervals JSON
+
+Path: `{input}.track_runner.intervals.json`
+
+Header key `track_runner_intervals` must equal `1`.
+
+Stores interval fingerprints for incremental refinement. Each fingerprint
+encodes start/end seed frame and position so that `refine` mode can detect
+which intervals have changed.
+
+## Key constants
+
+| Component | Parameter | Value |
 | --- | --- | --- |
-| Drawing modes | visible, partial, not_in_frame | visible, partial, approx (`a` key), not_in_frame |
-| Approx seeds | no approx mode existed | weak endpoints (conf=0.3) guide solver; trajectory still erased |
-| Trajectory erasure | erases near not_in_frame only | erases near approx (0.5s) and not_in_frame (1.0s) |
-| Confidence tiers | 4-tier (high/good/fair/low) | 4-tier with short-interval promotion (<= 5 frames bumps one tier) |
-| Annotation UI | OpenCV cv2.namedWindow loops | PySide6 AnnotationWindow with dark theme and cursor-anchored zoom |
-| Seed modes | initial, suggested_refine, interval_refine, gap_refine | adds target_refine, bbox_polish |
-| Seed validation | none | validate_seed() warns on approx seeds missing torso_box |
-
-## Differences from v1
-
-| Area | v1 | v3 |
-| --- | --- | --- |
-| Tracking algorithm | 7-state Kalman filter | Bounded interval solver |
-| Propagator | Kalman predict/update | Local search propagator (no Kalman) |
-| Interval scoring | Per-frame confidence only | Agreement + identity + competitor margin |
-| Review workflow | `--add-seeds` (manual) | Structured review pass with seed targets |
-| Seeds format | YAML (`track_runner_seeds: 1`) | JSON (`track_runner_seeds: 2`) |
-| Diagnostics format | YAML (~1 MB per 4 min) | JSON (~500 KB per 4 min) |
-| Config format | YAML (`track_runner: 1`) | YAML (`track_runner: 2`) |
-| Detection fallback | HOG if YOLO unavailable | YOLO required; no HOG fallback |
-| Annotation UI | OpenCV popup windows | PySide6 native Qt windows |
+| Propagator | Confidence decay/frame | 0.97 |
+| Propagator | Confidence floor | 0.1 |
+| Propagator | Prior weight scale | 0.3 |
+| Propagator | Stationary streak threshold | 5 frames |
+| Propagator | Stationary displacement fraction | 0.03 |
+| Propagator | Patch search margin | 20 px |
+| Propagator | Min flow features | 4 |
+| Interval solver | Dice agreement threshold | 0.3 |
+| Scoring | Agreement threshold (high) | > 0.5 |
+| Scoring | Margin threshold (high) | > 0.5 |
+| Scoring | Short interval promotion | <= 5 frames |
+| Hypothesis | Min competitor height | 20 px |
+| Hypothesis | Max competitors | 3 |
+| Hypothesis | Target overlap IoU | 0.3 |
+| Hypothesis | Competitor match IoU | 0.2 |
+| Crop | Target fill ratio | 0.30 |
+| Crop | Smoothing attack | 0.15 |
+| Crop | Smoothing release | 0.05 |
+| Crop | Max velocity | 30.0 px/frame |
+| Crop | Alpha floor | 0.02 |
+| Anchor | Proximity skip | 7 frames |
+| Anchor | Blend scale (cx/cy) | 0.5 |
+| Anchor | Blend scale (w/h) | 0.3 |
+| Anchor | Max displacement (cx/cy) | 25% of dimension |
+| Anchor | Max displacement (w/h) | 15% of dimension |
+| Anchor | Window seeds | 4 per side |
+| Erasure | Approx radius | 0.5 s |
+| Erasure | Not-in-frame radius | 1.0 s |
+| Review | Short interval demotion | < 10 frames |
+| Review | Duration promotion threshold | 10.0 s |
+| Detection | Confidence threshold | 0.25 |
+| Detection | NMS threshold | 0.45 |
+| Encoder | Default CRF | 18 |
