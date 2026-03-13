@@ -9,10 +9,11 @@ of existing seeds. Handles keyboard shortcuts and mouse drawing.
 
 # PIP3 modules
 from PySide6.QtCore import QObject, Qt, QTimer, QThread
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QPushButton
+from PySide6.QtWidgets import QLabel, QWidget, QHBoxLayout, QPushButton
 import numpy
 
 # local repo modules
+import overlay_config
 import ui.overlay_items as overlay_items_module
 import ui.status_presenter as status_presenter_module
 
@@ -240,13 +241,19 @@ class EditController(QObject):
 		toolbar_widget = self._status_presenter.get_widget()
 		window.statusBar().addWidget(toolbar_widget)
 
-		# Show keybinding instructions in the window title
-		keybindings = (
-			"  [SPACE/R=keep  L=prev(Shift when zoomed)  D=delete  "
+		# Add keybinding hints as a permanent label in the status bar
+		keybindings_text = (
+			"SPACE/Right=keep  Left=prev  D=delete  "
 			"N=not_in_frame  P=partial  A=approx  "
-			"Y=YOLO  F=consensus  ESC/q=done]"
+			"Y=YOLO  F=consensus  Z=zoom  "
+			"[/]=jump 10%  L=low conf  ESC/q=done"
 		)
-		window.setWindowTitle(window.windowTitle() + keybindings)
+		self._keybindings_label = QLabel(keybindings_text)
+		self._keybindings_label.setStyleSheet(
+			"font-family: monospace; font-size: 10px; "
+			"color: #888888; padding: 2px 8px;"
+		)
+		window.statusBar().addPermanentWidget(self._keybindings_label)
 
 		# Load and display the first frame
 		self._load_current_seed()
@@ -364,10 +371,10 @@ class EditController(QObject):
 		self._current_bgr = frame
 		self._window.set_frame(frame)
 
-		# Show existing seed box if visible or partial
+		# Show seed box underneath (thick, solid)
 		self._update_seed_rect_overlay()
 
-		# Show FWD/BWD overlays
+		# Show FWD/BWD overlays on top (thin, dashed)
 		self._update_fwd_bwd_overlays()
 
 		# Update status presenter
@@ -380,6 +387,65 @@ class EditController(QObject):
 
 		# Update scale bar
 		self._update_scale_bar()
+
+		# Recenter view on bbox when zoomed in
+		self._recenter_on_bbox()
+
+	#============================================
+
+	def _recenter_on_bbox(self) -> None:
+		"""Recenter the view on the current seed bbox when zoomed in."""
+		frame_view = self._window.get_frame_view()
+		zoom = frame_view.get_zoom_factor()
+		# Skip if not zoomed in
+		if zoom <= 1.05:
+			return
+
+		seed = self._current_seed
+		status = seed.get("status", "unknown")
+
+		# Use seed cx/cy if the seed has a real position
+		if status not in ("approximate", "not_in_frame") and seed.get("cx") is not None:
+			center_x = float(seed["cx"])
+			center_y = float(seed["cy"])
+		else:
+			# Fall back to FWD/BWD prediction average center
+			center = self._get_prediction_center()
+			if center is None:
+				return
+			center_x, center_y = center
+
+		frame_view.set_zoom(zoom, center_x, center_y)
+
+	#============================================
+
+	def _get_prediction_center(self) -> tuple | None:
+		"""Get the average center of FWD/BWD predictions for the current frame.
+
+		Returns:
+			Tuple of (cx, cy) or None if no predictions available.
+		"""
+		if self._predictions is None:
+			return None
+		preds = self._predictions.get(self._current_frame)
+		if preds is None:
+			return None
+
+		centers = []
+		fwd = preds.get("forward")
+		if fwd is not None:
+			centers.append((float(fwd["cx"]), float(fwd["cy"])))
+		bwd = preds.get("backward")
+		if bwd is not None:
+			centers.append((float(bwd["cx"]), float(bwd["cy"])))
+
+		if not centers:
+			return None
+
+		# Average the available centers
+		avg_cx = sum(c[0] for c in centers) / len(centers)
+		avg_cy = sum(c[1] for c in centers) / len(centers)
+		return (avg_cx, avg_cy)
 
 	#============================================
 
@@ -395,33 +461,49 @@ class EditController(QObject):
 		# Get current seed
 		seed_list_idx = self._filtered_indices[self._nav_idx]
 		seed = self._work_seeds[seed_list_idx]
-		status = seed.get("status", "unknown")
 
-		# Only show box for visible and partial status
-		if status not in ("visible", "partial"):
+		# Show box for any seed that has coordinates
+		cx = seed.get("cx")
+		cy = seed.get("cy")
+		if cx is None or cy is None:
 			return
 
 		# Extract seed box
-		cx = float(seed.get("cx", 0))
-		cy = float(seed.get("cy", 0))
+		cx = float(cx)
+		cy = float(cy)
 		w = float(seed.get("w", 0))
 		h = float(seed.get("h", 0))
 
 		x = int(cx - w / 2.0)
 		y = int(cy - h / 2.0)
 
-		# Create and add seed box overlay
+		# Color seed box by status type from overlay_styles.yaml
+		status = seed.get("status", "visible")
+		style = overlay_config.get_seed_status_style(status)
+		color = style["color"]
+		fill_alpha = int(style["fill_opacity"] * 255)
+		thickness = overlay_config.get_thickness_scale(style["thickness_tier"])
+
+		# Create seed box overlay: solid line, heavy thickness, drawn underneath
 		self._seed_rect_item = RectItem(
 			x, y, int(w), int(h),
-			color_str="#00FFFF",
-			label="SEED"
+			color_str=color,
+			label=f"SEED ({status})",
+			fill_alpha=fill_alpha,
+			thickness_scale=thickness,
 		)
+		# low z-value so seed box renders below FWD/BWD
+		self._seed_rect_item.setZValue(1)
 		scene.addItem(self._seed_rect_item)
 
 	#============================================
 
 	def _update_fwd_bwd_overlays(self) -> None:
-		"""Update FWD/BWD prediction overlays."""
+		"""Update FWD/BWD prediction overlays.
+
+		Always shows both predictions when available, using dashed lines
+		to distinguish them from the solid seed box.
+		"""
 		scene = self._window.get_frame_view().scene()
 
 		# Remove old overlays
@@ -440,9 +522,10 @@ class EditController(QObject):
 		if preds is None:
 			return
 
-		# FWD prediction
+		# FWD prediction (color and style from overlay_styles.yaml)
 		fwd = preds.get("forward")
 		if fwd is not None:
+			fwd_style = overlay_config.get_prediction_style("forward")
 			cx = float(fwd["cx"])
 			cy = float(fwd["cy"])
 			w = float(fwd["w"])
@@ -451,14 +534,18 @@ class EditController(QObject):
 			y = int(cy - h / 2.0)
 			self._fwd_item = RectItem(
 				x, y, int(w), int(h),
-				color_str="#FF6400",
-				label="FWD"
+				color_str=fwd_style["color"],
+				label="FWD",
+				fill_alpha=int(fwd_style["fill_opacity"] * 255),
+				dashed=(fwd_style["line_style"] == "dashed"),
 			)
+			self._fwd_item.setZValue(5)
 			scene.addItem(self._fwd_item)
 
-		# BWD prediction
+		# BWD prediction (color and style from overlay_styles.yaml)
 		bwd = preds.get("backward")
 		if bwd is not None:
+			bwd_style = overlay_config.get_prediction_style("backward")
 			cx = float(bwd["cx"])
 			cy = float(bwd["cy"])
 			w = float(bwd["w"])
@@ -467,9 +554,12 @@ class EditController(QObject):
 			y = int(cy - h / 2.0)
 			self._bwd_item = RectItem(
 				x, y, int(w), int(h),
-				color_str="#FF00FF",
-				label="BWD"
+				color_str=bwd_style["color"],
+				label="BWD",
+				fill_alpha=int(bwd_style["fill_opacity"] * 255),
+				dashed=(bwd_style["line_style"] == "dashed"),
 			)
+			self._bwd_item.setZValue(5)
 			scene.addItem(self._bwd_item)
 
 	#============================================
@@ -551,6 +641,18 @@ class EditController(QObject):
 			return True
 		elif key == Qt.Key.Key_A:
 			self._on_approx_toggle()
+			return True
+		elif key == Qt.Key.Key_BracketRight:
+			# jump forward 10% of filtered seed list
+			self._on_jump_forward()
+			return True
+		elif key == Qt.Key.Key_BracketLeft:
+			# jump backward 10% of filtered seed list
+			self._on_jump_backward()
+			return True
+		elif key == Qt.Key.Key_L:
+			# jump to next low-confidence seed
+			self._on_jump_low_conf()
 			return True
 
 		return False
@@ -1042,13 +1144,15 @@ class EditController(QObject):
 			return
 		status_widget = self._status_presenter.get_widget()
 		if self._approx_mode:
+			approx_color = overlay_config.get_draw_mode_badge_color("approximate")
 			self._window.statusBar().setStyleSheet(
-				"background-color: #F97316; color: #000000; font-weight: bold;"
+				f"background-color: {approx_color}; color: #000000; font-weight: bold;"
 			)
 			status_widget.setText("** APPROX MODE ** draw approximate box (press 'a' to cancel)")
 		elif self._partial_mode:
+			partial_color = overlay_config.get_draw_mode_badge_color("partial")
 			self._window.statusBar().setStyleSheet(
-				"background-color: #F59E0B; color: #000000; font-weight: bold;"
+				f"background-color: {partial_color}; color: #000000; font-weight: bold;"
 			)
 			status_widget.setText("** PARTIAL MODE ** draw visible torso (press 'p' to cancel)")
 		else:
@@ -1064,6 +1168,51 @@ class EditController(QObject):
 			self._on_quit()
 			return
 		self._load_current_seed()
+
+	#============================================
+
+	def _on_jump_forward(self) -> None:
+		"""Jump forward 10% of the filtered seed list."""
+		total = len(self._filtered_indices)
+		jump = max(1, total // 10)
+		self._nav_idx = min(self._nav_idx + jump, total - 1)
+		self._load_current_seed()
+
+	#============================================
+
+	def _on_jump_backward(self) -> None:
+		"""Jump backward 10% of the filtered seed list."""
+		total = len(self._filtered_indices)
+		jump = max(1, total // 10)
+		self._nav_idx = max(self._nav_idx - jump, 0)
+		self._load_current_seed()
+
+	#============================================
+
+	def _on_jump_low_conf(self) -> None:
+		"""Jump to the next low-confidence seed after the current position.
+
+		Searches forward through filtered seeds for one with confidence
+		score below 0.5. Wraps around to the beginning if needed.
+		"""
+		if self._seed_confidences is None:
+			print("  no confidence data available")
+			return
+
+		total = len(self._filtered_indices)
+		# search forward from current position, wrapping around
+		for offset in range(1, total):
+			idx = (self._nav_idx + offset) % total
+			seed_list_idx = self._filtered_indices[idx]
+			seed = self._work_seeds[seed_list_idx]
+			frame_idx = int(seed["frame_index"])
+			conf = self._seed_confidences.get(frame_idx)
+			if conf is not None and float(conf.get("score", 1.0)) < 0.5:
+				self._nav_idx = idx
+				self._load_current_seed()
+				return
+
+		print("  no low-confidence seeds found")
 
 	#============================================
 

@@ -648,6 +648,7 @@ def make_seed_state(
 	w: float,
 	h: float,
 	conf: float = 1.0,
+	seed_status: str = "",
 ) -> dict:
 	"""Create a seed tracking state dict at a known location.
 
@@ -657,6 +658,7 @@ def make_seed_state(
 		w: Bounding box width in pixels.
 		h: Bounding box height in pixels.
 		conf: Initial confidence (default 1.0 for human seeds).
+		seed_status: Seed annotation status (visible, partial, approximate).
 
 	Returns:
 		Tracking state dict with source='seed'.
@@ -668,6 +670,7 @@ def make_seed_state(
 		"h": float(h),
 		"conf": float(conf),
 		"source": "seed",
+		"seed_status": seed_status,
 		"stationary_lock": False,
 		"disp_history": [],
 	}

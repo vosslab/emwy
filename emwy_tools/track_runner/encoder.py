@@ -13,6 +13,9 @@ import concurrent.futures
 # PIP3 modules
 import cv2
 import numpy
+
+# local repo modules
+import overlay_config
 import rich.progress
 
 # local repo modules
@@ -383,30 +386,22 @@ def encode_cropped_video(
 
 
 #============================================
-# color constants for debug overlay drawing (v2)
-_COLOR_ACCEPTED = (0, 255, 0)        # solid green: accepted torso track
-_COLOR_FORWARD = (255, 128, 0)       # dashed blue: forward track box
-_COLOR_BACKWARD = (0, 128, 255)      # dashed orange: backward track box
-_COLOR_COMPETITOR = (0, 0, 255)      # red: best competitor box (low margin)
-_COLOR_LOST = (0, 0, 200)           # dark red: no tracking data
-
-
-#============================================
-def _source_color(source: str) -> tuple:
+# color lookups for debug overlay drawing (v2) - from overlay_styles.yaml
+def _source_color(source: str, seed_status: str = "") -> tuple:
 	"""Return a BGR color for a v2 tracking source label.
 
+	Seed frames are further distinguished by seed_status (visible,
+	partial, approximate). Non-seed sources ignore seed_status.
+	Colors are loaded from overlay_styles.yaml via overlay_config.
+
 	Args:
-		source: Frame source string (seed, propagated, merged).
+		source: Frame source string from tracker pipeline.
+		seed_status: Seed annotation status (visible, partial, approximate).
 
 	Returns:
 		Tuple of (B, G, R) color values.
 	"""
-	color_map = {
-		"seed": (0, 255, 128),        # bright green-teal for seed frames
-		"propagated": (0, 200, 255),  # yellow-orange for propagated frames
-		"merged": (255, 200, 0),      # cyan-blue for merged frames
-	}
-	color = color_map.get(source, _COLOR_LOST)
+	color = overlay_config.get_source_bgr(source, seed_status)
 	return color
 
 
@@ -526,9 +521,9 @@ def _compute_overlay_scale(
 
 
 #============================================
-# overlay transparency: 0.0 = invisible, 1.0 = opaque
-_OVERLAY_ALPHA_BOXES = 0.55
-_OVERLAY_ALPHA_TEXT = 0.70
+# overlay transparency loaded from overlay_styles.yaml
+_OVERLAY_ALPHA_BOXES = overlay_config.get_encoder_overlay_opacity("box")
+_OVERLAY_ALPHA_TEXT = overlay_config.get_encoder_overlay_opacity("text")
 
 
 #============================================
@@ -572,12 +567,14 @@ def draw_debug_overlay_cropped(
 		thickness = max(1, int(1.5 * s))
 		cv2.putText(
 			frame, "NO DATA", (10, int(25 * s)),
-			cv2.FONT_HERSHEY_SIMPLEX, font_scale, _COLOR_LOST, thickness,
+			cv2.FONT_HERSHEY_SIMPLEX, font_scale,
+			overlay_config.get_source_bgr("lost"), thickness,
 		)
 		return
 
 	# extract v2 state fields
 	source = state.get("source", "")
+	seed_status = state.get("seed_status", "")
 	conf = state["conf"]
 	cx = state.get("cx")
 	cy = state.get("cy")
@@ -630,29 +627,34 @@ def draw_debug_overlay_cropped(
 	# draw dashed blue forward track box when available
 	if forward_box is not None:
 		fx1, fy1, fx2, fy2 = _box_to_crop_coords(forward_box, crop_rect, out_w, out_h)
-		_draw_dashed_rect(overlay, fx1, fy1, fx2, fy2, _COLOR_FORWARD,
+		_draw_dashed_rect(overlay, fx1, fy1, fx2, fy2,
+			overlay_config.get_prediction_bgr("forward"),
 			thickness=thin_line, dash_len=dash_len)
 
 	# draw dashed orange backward track box when available
 	if backward_box is not None:
 		bx1, by1, bx2, by2 = _box_to_crop_coords(backward_box, crop_rect, out_w, out_h)
-		_draw_dashed_rect(overlay, bx1, by1, bx2, by2, _COLOR_BACKWARD,
+		_draw_dashed_rect(overlay, bx1, by1, bx2, by2,
+			overlay_config.get_prediction_bgr("backward"),
 			thickness=thin_line, dash_len=dash_len)
 
 	# draw red competitor box when present (low margin situation)
 	if competitor_box is not None:
 		rx1, ry1, rx2, ry2 = _box_to_crop_coords(competitor_box, crop_rect, out_w, out_h)
 		cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2), (0, 0, 0), outline_line)
-		cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2), _COLOR_COMPETITOR, med_line)
+		cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2),
+			overlay_config.get_source_bgr("competitor"), med_line)
 
-	# draw accepted torso track as solid green box
+	# draw accepted torso track as solid box colored by source type
 	if cx is not None and cy is not None and w is not None and h is not None:
+		# color the box by tracking source (seed, propagated, merged, etc.)
+		box_color = _source_color(source, seed_status)
 		accepted_box = [cx, cy, w, h]
 		ax1, ay1, ax2, ay2 = _box_to_crop_coords(accepted_box, crop_rect, out_w, out_h)
 		# black outline for contrast against any background
 		cv2.rectangle(overlay, (ax1, ay1), (ax2, ay2), (0, 0, 0), outline_line)
-		# solid green accepted track box
-		cv2.rectangle(overlay, (ax1, ay1), (ax2, ay2), _COLOR_ACCEPTED, med_line)
+		# solid source-colored accepted track box
+		cv2.rectangle(overlay, (ax1, ay1), (ax2, ay2), box_color, med_line)
 		# crosshair at box center
 		cross_cx = int((ax1 + ax2) / 2)
 		cross_cy = int((ay1 + ay2) / 2)
@@ -661,9 +663,18 @@ def draw_debug_overlay_cropped(
 		cv2.line(overlay, (cross_cx, cross_cy - cross_len),
 			(cross_cx, cross_cy + cross_len), (0, 0, 0), med_line)
 		cv2.line(overlay, (cross_cx - cross_len, cross_cy),
-			(cross_cx + cross_len, cross_cy), _COLOR_ACCEPTED, thin_line)
+			(cross_cx + cross_len, cross_cy), box_color, thin_line)
 		cv2.line(overlay, (cross_cx, cross_cy - cross_len),
-			(cross_cx, cross_cy + cross_len), _COLOR_ACCEPTED, thin_line)
+			(cross_cx, cross_cy + cross_len), box_color, thin_line)
+		# small filled dot at exact computed center for drift diagnosis
+		cv2.circle(overlay, (cross_cx, cross_cy), max(2, int(3 * s)), box_color, -1)
+
+	# draw raw (pre-anchor) box as dashed gray outline for drift comparison
+	raw_box = debug_state.get("raw_box")
+	if raw_box is not None:
+		rx1, ry1, rx2, ry2 = _box_to_crop_coords(raw_box, crop_rect, out_w, out_h)
+		_draw_dashed_rect(overlay, rx1, ry1, rx2, ry2, (200, 200, 200),
+			thickness=thin_line, dash_len=dash_len)
 
 	# blend box overlay onto frame with transparency
 	cv2.addWeighted(overlay, _OVERLAY_ALPHA_BOXES, frame, 1.0 - _OVERLAY_ALPHA_BOXES, 0, frame)
@@ -672,9 +683,33 @@ def draw_debug_overlay_cropped(
 	text_overlay = frame.copy()
 
 	# build top-left info text: source and confidence value
-	source_color = _source_color(source)
-	source_label = f"src:{source}" if source else "src:unknown"
+	source_color = _source_color(source, seed_status)
+	# include seed_status in the label when source is a seed type
+	if seed_status and source in ("human", "seed"):
+		source_label = f"src:{source}({seed_status})"
+	elif source:
+		source_label = f"src:{source}"
+	else:
+		source_label = "src:unknown"
 	text_x = max(4, int(6 * s))
+
+	# diagnostic: show crop vs box coords for first 10 frames
+	frame_index = state.get("frame_index", -1)
+	if frame_index >= 0 and frame_index < 10 and cx is not None:
+		diag_lines = [
+			f"f{frame_index} box:({cx:.0f},{cy:.0f})"
+			+ f" crop:({crop_rect[0]},{crop_rect[1]},{crop_rect[2]},{crop_rect[3]})",
+			f"  out:({out_w},{out_h})"
+			+ f" ax1,ay1:({ax1},{ay1})",
+		]
+		diag_y = out_h - max(30, int(40 * s))
+		for line in diag_lines:
+			cv2.putText(
+				text_overlay, line, (text_x, diag_y),
+				cv2.FONT_HERSHEY_SIMPLEX, font_scale_small,
+				(255, 255, 255), thin_line,
+			)
+			diag_y += max(12, int(16 * s))
 	cv2.putText(text_overlay, source_label, (text_x, text_y1),
 		cv2.FONT_HERSHEY_SIMPLEX, font_scale_large, source_color, text_thick)
 

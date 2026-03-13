@@ -11,6 +11,7 @@ import numpy
 from PySide6.QtWidgets import QApplication
 
 # local repo modules
+import overlay_config
 import common_tools.frame_reader as frame_reader
 import ui.workspace as workspace_module
 import ui.seed_controller as seed_controller_module
@@ -175,9 +176,10 @@ def _draw_trajectory_preview(
 	"""
 	if predictions is None:
 		return
-	# forward prediction in blue
+	# forward prediction
 	fwd = predictions.get("forward")
 	if fwd is not None:
+		fwd_bgr = overlay_config.get_prediction_bgr("forward")
 		cx = float(fwd["cx"])
 		cy = float(fwd["cy"])
 		w = float(fwd["w"])
@@ -188,17 +190,18 @@ def _draw_trajectory_preview(
 		y2 = int(cy + h / 2.0)
 		# draw semi-transparent filled rectangle
 		overlay = frame.copy()
-		cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 100, 0), -1)
+		cv2.rectangle(overlay, (x1, y1), (x2, y2), fwd_bgr, -1)
 		cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
 		# draw thin border on top
-		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 100, 0), 1)
+		cv2.rectangle(frame, (x1, y1), (x2, y2), fwd_bgr, 1)
 		cv2.putText(
 			frame, "FWD",
-			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 100, 0), 1,
+			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, fwd_bgr, 1,
 		)
-	# backward prediction in magenta
+	# backward prediction
 	bwd = predictions.get("backward")
 	if bwd is not None:
+		bwd_bgr = overlay_config.get_prediction_bgr("backward")
 		cx = float(bwd["cx"])
 		cy = float(bwd["cy"])
 		w = float(bwd["w"])
@@ -209,13 +212,13 @@ def _draw_trajectory_preview(
 		y2 = int(cy + h / 2.0)
 		# draw semi-transparent filled rectangle
 		overlay = frame.copy()
-		cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 0, 255), -1)
+		cv2.rectangle(overlay, (x1, y1), (x2, y2), bwd_bgr, -1)
 		cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
 		# draw thin border on top
-		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 1)
+		cv2.rectangle(frame, (x1, y1), (x2, y2), bwd_bgr, 1)
 		cv2.putText(
 			frame, "BWD",
-			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1,
+			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, bwd_bgr, 1,
 		)
 
 
@@ -223,7 +226,7 @@ def _draw_trajectory_preview(
 def _interactive_draw_box(
 	frame: numpy.ndarray,
 	predictions: dict | None = None,
-	box_color: tuple = (0, 255, 0),
+	box_color: tuple | None = None,
 	initial_zoom: dict | None = None,
 ) -> list | str | None:
 	"""Show a frame and let the user draw a rectangle interactively.
@@ -246,6 +249,9 @@ def _interactive_draw_box(
 		or averaged FWD/BWD box as [x,y,w,h] if f pressed with sufficient overlap,
 		or None if ESC/q pressed to finish.
 	"""
+	# default box color from overlay config (preview box = user-drawn)
+	if box_color is None:
+		box_color = overlay_config.hex_to_bgr(overlay_config.get_preview_box_color())
 	# mutable state for the mouse callback closure
 	state = {
 		"drawing": False,

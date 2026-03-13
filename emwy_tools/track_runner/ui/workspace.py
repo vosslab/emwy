@@ -12,6 +12,7 @@ from PySide6.QtCore import QSettings
 from PySide6.QtGui import QAction, QActionGroup
 
 # local repo modules
+import overlay_config
 import common_tools.frame_filters as frame_filters_module
 import ui.frame_view as frame_view_module
 import ui.app_shell as app_shell_module
@@ -44,11 +45,11 @@ class AnnotationWindow(AppShell):
 		self._frame_view = FrameView()
 		self.setCentralWidget(self._frame_view)
 
-		# Mode colors mapping
+		# Mode colors loaded from overlay_styles.yaml
 		self._mode_colors = {
-			"seed": "#0D9488",
-			"target": "#3B82F6",
-			"edit": "#8B5CF6",
+			"seed": overlay_config.get_workspace_mode_color("seed"),
+			"target": overlay_config.get_workspace_mode_color("target"),
+			"edit": overlay_config.get_workspace_mode_color("edit"),
 		}
 
 		# Create annotation toolbar

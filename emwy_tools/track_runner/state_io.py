@@ -245,6 +245,8 @@ def load_diagnostics(path: str) -> dict:
 		"confidence", "failure_reasons",
 	)
 	for iv in data.get("intervals", []):
+		if not isinstance(iv, dict):
+			continue
 		if "interval_score" not in iv:
 			score = {}
 			for key in _score_keys:

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton
 import numpy
 
 # local repo modules
+import overlay_config
 import ui.overlay_items as overlay_items_module
 
 PreviewBoxItem = overlay_items_module.PreviewBoxItem
@@ -397,10 +398,13 @@ class SeedController(QObject):
 			h = float(fwd["h"])
 			x = int(cx - w / 2.0)
 			y = int(cy - h / 2.0)
+			fwd_style = overlay_config.get_prediction_style("forward")
 			self._fwd_item = RectItem(
 				x, y, int(w), int(h),
-				color_str="#FF6400",
-				label="FWD"
+				color_str=fwd_style["color"],
+				label="FWD",
+				fill_alpha=int(fwd_style["fill_opacity"] * 255),
+				dashed=(fwd_style["line_style"] == "dashed"),
 			)
 			scene.addItem(self._fwd_item)
 
@@ -413,10 +417,13 @@ class SeedController(QObject):
 			h = float(bwd["h"])
 			x = int(cx - w / 2.0)
 			y = int(cy - h / 2.0)
+			bwd_style = overlay_config.get_prediction_style("backward")
 			self._bwd_item = RectItem(
 				x, y, int(w), int(h),
-				color_str="#FF00FF",
-				label="BWD"
+				color_str=bwd_style["color"],
+				label="BWD",
+				fill_alpha=int(bwd_style["fill_opacity"] * 255),
+				dashed=(bwd_style["line_style"] == "dashed"),
 			)
 			scene.addItem(self._bwd_item)
 
@@ -831,16 +838,18 @@ class SeedController(QObject):
 				"** APPROX MODE ** draw approximate box for obstructed position "
 				"(press 'a' to cancel)"
 			)
+			approx_color = overlay_config.get_draw_mode_badge_color("approximate")
 			self._window.statusBar().setStyleSheet(
-				"background-color: #F97316; color: #000000; font-weight: bold;"
+				f"background-color: {approx_color}; color: #000000; font-weight: bold;"
 			)
 		elif self._partial_mode:
 			self._window.statusBar().showMessage(
 				"** PARTIAL MODE ** draw visible portion of torso "
 				"(press 'p' to cancel)"
 			)
+			partial_color = overlay_config.get_draw_mode_badge_color("partial")
 			self._window.statusBar().setStyleSheet(
-				"background-color: #F59E0B; color: #000000; font-weight: bold;"
+				f"background-color: {partial_color}; color: #000000; font-weight: bold;"
 			)
 		else:
 			# restore default keybinding text

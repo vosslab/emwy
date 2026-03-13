@@ -88,14 +88,21 @@ def test_state_io_diagnostics_round_trip() -> None:
 	"""write_diagnostics then load_diagnostics returns same data."""
 	import track_runner.state_io as state_io_mod
 	diag_data = {
-		"intervals": [1, 2, 3],
+		"intervals": [
+			{"start_frame": 0, "end_frame": 100, "confidence": 0.9},
+			{"start_frame": 100, "end_frame": 200, "agreement_score": 0.8},
+		],
 		"trajectory": [{"frame": 0, "x": 100}],
 	}
 	with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
 		tmp_path = tmp.name
 	state_io_mod.write_diagnostics(tmp_path, diag_data)
 	loaded = state_io_mod.load_diagnostics(tmp_path)
-	assert loaded["intervals"] == [1, 2, 3]
+	assert len(loaded["intervals"]) == 2
+	assert loaded["intervals"][0]["start_frame"] == 0
+	# score reconstruction: flat keys get grouped into interval_score sub-dict
+	assert "interval_score" in loaded["intervals"][1]
+	assert loaded["intervals"][1]["interval_score"]["agreement_score"] == 0.8
 	assert loaded[state_io_mod.DIAGNOSTICS_HEADER_KEY] == state_io_mod.DIAGNOSTICS_HEADER_VALUE
 	os.unlink(tmp_path)
 
@@ -383,7 +390,9 @@ def test_trajectory_erasure_all_drawing_modes() -> None:
 		# partial: precise torso box, partially hidden -- keep
 		{"status": "partial", "frame_index": 100},
 		# approximate: larger approx area, uncertain position -- erase
-		{"status": "approximate", "frame_index": 200, "torso_box": [10, 20, 30, 40]},
+		# torso_box is [x, y, w, h] (top-left); cx/cy are center coords
+		{"status": "approximate", "frame_index": 200, "torso_box": [10, 20, 30, 40],
+			"cx": 25.0, "cy": 40.0, "w": 30.0, "h": 40.0},
 		# not_in_frame: runner off-screen -- erase
 		{"status": "not_in_frame", "frame_index": 400},
 	]
@@ -393,8 +402,10 @@ def test_trajectory_erasure_all_drawing_modes() -> None:
 	assert result[50] is not None
 	# partial at 100: NOT erased
 	assert result[100] is not None
-	# approximate at 200: erased (uncertain position)
-	assert result[200] is None
+	# approximate at 200: replaced with low-confidence hint (not erased to None)
+	assert result[200] is not None
+	assert result[200]["source"] == "approx_seed_hint"
+	assert result[200]["conf"] == 0.3
 	# not_in_frame at 400: erased (off-screen)
 	assert result[400] is None
 
@@ -962,10 +973,17 @@ def _make_seed(
 	status: str = "visible",
 ) -> dict:
 	"""Create a seed dict for testing anchor_to_seeds."""
+	# torso_box stores [x, y, w, h] (top-left corner)
+	tx = cx - w / 2.0
+	ty = cy - h / 2.0
 	seed = {
 		"frame_index": frame_index,
 		"status": status,
-		"torso_box": [cx, cy, w, h],
+		"torso_box": [tx, ty, w, h],
+		"cx": cx,
+		"cy": cy,
+		"w": w,
+		"h": h,
 		"pass": 1,
 	}
 	return seed
@@ -985,14 +1003,14 @@ def test_anchor_visible_seed_frames_exact() -> None:
 	# trajectory with slightly drifted positions
 	trajectory = _make_trajectory(n, cx=640.0, cy=360.0, w=100.0, h=150.0, conf=0.5)
 	result = solver_mod.anchor_to_seeds(trajectory, seeds)
-	# each visible seed frame must match exact seed values
+	# each visible seed frame must match exact seed center values
 	for fi in seed_frames:
 		state = result[fi]
 		seed = seeds[seed_frames.index(fi)]
-		assert state["cx"] == seed["torso_box"][0]
-		assert state["cy"] == seed["torso_box"][1]
-		assert state["w"] == seed["torso_box"][2]
-		assert state["h"] == seed["torso_box"][3]
+		assert state["cx"] == seed["cx"]
+		assert state["cy"] == seed["cy"]
+		assert state["w"] == seed["w"]
+		assert state["h"] == seed["h"]
 
 
 #============================================
@@ -1125,13 +1143,21 @@ def test_anchor_preserves_state_keys() -> None:
 		state["fuse_flag"] = True
 		state["seed_status"] = "merged"
 	result = solver_mod.anchor_to_seeds(trajectory, seeds)
+	# seed frames at 0 and 199 are visible seeds
+	seed_frame_set = {0, 199}
 	for fi in range(n):
 		state = result[fi]
 		assert "source" in state
 		assert "fuse_flag" in state
 		assert state["fuse_flag"] is True
 		assert "seed_status" in state
-		assert state["seed_status"] == "merged"
+		if fi in seed_frame_set:
+			# visible seed frames get their status restored
+			assert state["seed_status"] == "visible"
+			assert state["source"] == "seed"
+		else:
+			# non-seed frames keep original seed_status
+			assert state["seed_status"] == "merged"
 
 
 #============================================

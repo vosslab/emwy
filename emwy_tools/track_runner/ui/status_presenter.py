@@ -10,6 +10,9 @@ and status color in the annotation toolbar.
 # PIP3 modules
 from PySide6.QtWidgets import QLabel
 
+# local repo modules
+import overlay_config
+
 #============================================
 
 class StatusPresenter:
@@ -84,7 +87,7 @@ class StatusPresenter:
 	#============================================
 
 	def _get_status_color(self, status: str) -> str:
-		"""Map status to a display color.
+		"""Map status to a display color from overlay_styles.yaml.
 
 		Args:
 			status: Status string from the seed.
@@ -92,14 +95,8 @@ class StatusPresenter:
 		Returns:
 			Hex color string for the status.
 		"""
-		color_map = {
-			"visible": "#22C55E",
-			"partial": "#F59E0B",
-			"approximate": "#F97316",
-			"obstructed": "#F97316",
-			"not_in_frame": "#94A3B8",
-		}
-		return color_map.get(status, "#FFFFFF")
+		color = overlay_config.get_seed_status_color(status)
+		return color
 
 	#============================================
 

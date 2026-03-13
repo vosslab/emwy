@@ -174,6 +174,16 @@ Added bilateral, CLAHE, sharpen, and edge-enhance filters to the annotation
 UI to help annotators see detail in difficult footage. Filters are
 display-only and do not affect YOLO detection or jersey color extraction.
 
+### Visual semantics centralization
+
+Visual styles were previously scattered across 6+ files with inconsistent
+colors between UI and encoder (e.g. seed visible was `#22C55E` in UI but
+`(0,255,0)` BGR in encoder). A YAML semantic palette
+(`overlay_styles.yaml`) now serves as the single source of visual truth.
+The config captures shared overlay semantics (color, line style, opacity,
+thickness tier), not low-level rendering details (dash patterns, font sizes,
+DPI math).
+
 ### common_tools package
 
 Shared modules (`tools_common.py`, `frame_reader.py`, `emwy_yaml_writer.py`)

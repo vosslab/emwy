@@ -350,6 +350,7 @@ def solve_interval(
 		h=float(seed_start["h"]),
 		# None means unscored human seed, treat as full confidence
 		conf=1.0 if seed_start["conf"] is None else float(seed_start["conf"]),
+		seed_status=seed_start.get("status", ""),
 	)
 	end_state = propagator.make_seed_state(
 		cx=float(seed_end["cx"]),
@@ -358,6 +359,7 @@ def solve_interval(
 		h=float(seed_end["h"]),
 		# None means unscored human seed, treat as full confidence
 		conf=1.0 if seed_end["conf"] is None else float(seed_end["conf"]),
+		seed_status=seed_end.get("status", ""),
 	)
 
 	# propagate forward from start to end, and backward from end to start
@@ -850,14 +852,25 @@ def _collect_anchor_knots(
 		status = seed.get("status", "")
 		if status not in ("visible", "partial"):
 			continue
-		torso_box = seed.get("torso_box")
-		if torso_box is None:
-			continue
-		# torso_box is [cx, cy, w, h]
-		cx = float(torso_box[0])
-		cy = float(torso_box[1])
-		w = float(torso_box[2])
-		h = float(torso_box[3])
+		# use the seed's center coordinates (cx, cy) directly;
+		# torso_box stores [x, y, w, h] (top-left), not center
+		seed_cx = seed.get("cx")
+		seed_cy = seed.get("cy")
+		seed_w = seed.get("w")
+		seed_h = seed.get("h")
+		if seed_cx is None or seed_cy is None:
+			# fall back to torso_box and convert to center
+			torso_box = seed.get("torso_box")
+			if torso_box is None:
+				continue
+			seed_cx = float(torso_box[0]) + float(torso_box[2]) / 2.0
+			seed_cy = float(torso_box[1]) + float(torso_box[3]) / 2.0
+			seed_w = float(torso_box[2])
+			seed_h = float(torso_box[3])
+		cx = float(seed_cx)
+		cy = float(seed_cy)
+		w = float(seed_w)
+		h = float(seed_h)
 		# skip invalid dimensions
 		if w <= 0 or h <= 0:
 			continue
@@ -1136,11 +1149,14 @@ def anchor_to_seeds(
 	# build set of all knot frame indices for proximity check
 	knot_frame_set = set(k[0] for k in knots)
 
-	# build dict of visible seed knots for hard-pinning
+	# build dicts of seed knots by status for pinning and source restoration
 	visible_knots = {}
+	partial_knots = {}
 	for knot in knots:
 		if knot[5] == "visible":
 			visible_knots[knot[0]] = knot
+		elif knot[5] == "partial":
+			partial_knots[knot[0]] = knot
 
 	# segment the correction range by knot window
 	correction_range = range(first_knot_frame, last_knot_frame + 1)
@@ -1222,6 +1238,7 @@ def anchor_to_seeds(
 				corrected_count += 1
 
 	# hard-pin visible seed frames to exact seed positions
+	# also restore source/seed_status so the color system routes correctly
 	pinned_count = 0
 	for fi, knot in visible_knots.items():
 		if fi < 0 or fi >= n:
@@ -1233,7 +1250,21 @@ def anchor_to_seeds(
 		state["cy"] = knot[2]
 		state["w"] = knot[3]
 		state["h"] = knot[4]
+		# restore seed identity so overlay color uses seed_status palette
+		state["source"] = "seed"
+		state["seed_status"] = knot[5]
 		pinned_count += 1
+
+	# restore source/seed_status on partial seed frames (not hard-pinned,
+	# but need correct color in debug overlay)
+	for fi, knot in partial_knots.items():
+		if fi < 0 or fi >= n:
+			continue
+		state = trajectory[fi]
+		if state is None:
+			continue
+		state["source"] = "seed"
+		state["seed_status"] = knot[5]
 
 	if corrected_count > 0 or pinned_count > 0:
 		print(

@@ -3,6 +3,28 @@
 ## 2026-03-13
 
 ### Additions and New Features
+- Created [emwy_tools/track_runner/overlay_styles.yaml](emwy_tools/track_runner/overlay_styles.yaml): centralized YAML palette for all track runner visual semantics (colors, line styles, opacity, thickness tiers). Covers seed status, predictions, tracking sources, workspace modes, draw mode badges, preview box, and encoder overlay blending.
+- Created [emwy_tools/track_runner/overlay_config.py](emwy_tools/track_runner/overlay_config.py): loader module that reads `overlay_styles.yaml` once, caches the result, validates hex colors and opacity ranges, merges defaults into each style entry, and provides typed accessor functions for both UI hex strings and cv2 BGR tuples.
+- Unified visual tokens across UI and encoder: seed visible is now `#22C55E` everywhere (was `(0,255,0)` in encoder), FWD prediction is `#EF4444` everywhere (was `(255,128,0)` in encoder), BWD prediction is `#FF00FF` everywhere (was `(0,128,255)` in encoder).
+
+### Behavior or Interface Changes
+- Encoder debug overlay colors now match UI overlay colors exactly. Previously the encoder used different BGR values from the UI hex colors for seed status, FWD predictions, and BWD predictions.
+- All hardcoded color constants removed from 8 consumer files: `status_presenter.py`, `edit_controller.py`, `seed_controller.py`, `workspace.py`, `overlay_items.py`, `encoder.py`, `seeding.py`, `seed_editor.py`. Colors are now loaded from `overlay_styles.yaml` via `overlay_config`.
+- Legacy cv2-based seeding and seed editor functions now use `overlay_config` for FWD/BWD prediction colors and preview box defaults instead of hardcoded BGR tuples.
+
+### Additions and New Features
+- Edit mode now auto-recenters the view on the current seed bbox when zoomed in and advancing frames (space key). Uses seed `cx`/`cy` position, falling back to FWD/BWD prediction average center for approximate/not-in-frame seeds. Added `_recenter_on_bbox()` and `_get_prediction_center()` to [emwy_tools/track_runner/ui/edit_controller.py](emwy_tools/track_runner/ui/edit_controller.py).
+- Edit mode seed rect overlay now shows for any seed that has coordinates, not just "visible"/"partial" status. The cyan SEED box is now always visible alongside the FWD/BWD prediction boxes when the seed has `cx`/`cy` values.
+- Overlay box line thickness now scales with display DPI in [emwy_tools/track_runner/ui/overlay_items.py](emwy_tools/track_runner/ui/overlay_items.py). Pen width is divided by the device pixel ratio so lines appear the same physical size on Retina and standard displays.
+- Reduced overlay box fill opacity from ~15% to ~6% across all `RectItem` overlays (SEED, FWD, BWD) for a much more transparent look that doesn't obscure the video frame.
+- FWD/BWD prediction boxes now use dashed lines to visually distinguish them from the authoritative seed box. Seed box uses solid lines at 1.5x thickness. FWD/BWD render on top (z=5) so dashed lines are not hidden by the thicker seed box (z=1). Added `dashed` and `thickness_scale` parameters to `RectItem` in [emwy_tools/track_runner/ui/overlay_items.py](emwy_tools/track_runner/ui/overlay_items.py).
+- Seed box in edit mode is now color-coded by status type: green for visible, amber for partial, orange for approximate/obstructed, gray for not_in_frame. Label shows status (e.g. "SEED (partial)"). Seed box thickness increased from 1.5x to 2x.
+- Edit mode keybinding hints now shown as a permanent label on the right side of the status bar (gray monospace text) instead of appended to the window title. Keybindings stay visible at all times without cluttering the title bar. Fixed misleading "L=prev" label (was actually Left arrow key).
+- Added jump navigation to edit mode: `]`/`[` jump forward/backward 10% of filtered seed list, `L` jumps to next low-confidence seed (score < 0.5, wraps around). Keybinding label updated to show new keys.
+- Debug overlay accepted box now colored by tracking source type (seed=green-teal, propagated=yellow-orange, merged=cyan-blue, unknown=dark red) instead of always solid green, using `_source_color()` in [emwy_tools/track_runner/encoder.py](emwy_tools/track_runner/encoder.py).
+- Debug overlay shows both refined (solid, source-colored) and raw pre-anchor (dashed gray) tracking positions. Raw trajectory is saved before `anchor_to_seeds()` in [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py) and passed as `raw_box` in debug state. On seed frames the boxes overlap; on propagated frames, divergence reveals anchor correction magnitude.
+
+### Additions and New Features
 - Created [docs/TRACK_RUNNER_DESIGN.md](docs/TRACK_RUNNER_DESIGN.md): design philosophy document covering core principles (human identity / machine geometry), signal hierarchy, dual scoring, separation of concerns, annotation UI principles, and trajectory erasure philosophy.
 - Created [docs/TRACK_RUNNER_HISTORY.md](docs/TRACK_RUNNER_HISTORY.md): evolution timeline from v1 Kalman-based tracker through v2 interval solver to v3 PySide6 UI. Preserves key design decisions and rationale extracted from implementation plans.
 
@@ -12,10 +34,18 @@
 - Updated terminology throughout docs: drawing mode name "approx" is now "approximate" for clarity; "absence erasure" replaced with "trajectory erasure".
 
 ### Fixes and Maintenance
+- Fixed debug overlay bounding box offset in `track_runner encode --debug`: box was shifted up and to the left by approximately `(-w/2, -h/2)` pixels relative to the runner's actual position. Root cause: `_collect_anchor_knots()` in [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py) read `torso_box[0]`, `torso_box[1]` as center coordinates, but `torso_box` stores `[x, y, w, h]` (top-left corner). Fix: use seed's `cx`/`cy` keys directly, with fallback conversion from `torso_box` when those keys are absent.
+- Fixed seed frames showing wrong color in debug overlay: visible and partial seed frames appeared cyan (the "merged" tracking source color) instead of their seed_status colors (green for visible, amber for partial). The fuse step overwrites `source` to "merged" for all frames. Fix: `anchor_to_seeds()` now restores `source="seed"` and `seed_status` on visible and partial seed frames so the color system routes to the `seed_status` palette.
+- Fixed test helper `_make_seed()` in [emwy_tools/tests/test_track_runner.py](emwy_tools/tests/test_track_runner.py): was storing center coords in `torso_box` (should be top-left). Now correctly computes `torso_box = [cx - w/2, cy - h/2, w, h]` and includes `cx`, `cy`, `w`, `h` top-level keys matching real seed format.
+- Fixed test `test_trajectory_erasure_all_drawing_modes`: approximate seed test data was missing `cx`/`cy` keys causing KeyError, and assertion expected `None` for erased approximate frames when the code correctly fills them with an `approx_seed_hint` dict.
+- Clarified `torso_box` coordinate convention in [docs/TRACK_RUNNER_V3_SPEC.md](docs/TRACK_RUNNER_V3_SPEC.md): explicitly documented as `[x, y, w, h]` (top-left corner), not center. Added `cx`, `cy`, `w`, `h` fields to the seed JSON example and noted that code must use `cx`/`cy` for center coordinates, never `torso_box[0]`/`torso_box[1]`.
 - Fixed stale comment in [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py):1157: changed "absence erasure" to "trajectory erasure" to match the renamed function `_apply_trajectory_erasure()`.
 
 ### Additions and New Features
 - Added optional `output_resolution` config key under `processing` in track_runner: `[width, height]` list that controls final output dimensions independently of the crop window. When absent, output resolution defaults to the median of all crop rectangle dimensions (previously used first-frame dimensions).
+- Debug overlay seed boxes now distinguished by annotation status: visible=bright green, partial=yellow, approximate=orange. `seed_status` field added to propagator `make_seed_state()` and carried through interval solver and CLI debug states. Non-seed sources: detection=green-teal, propagated=orange, hold_last=red-orange, fallback=dark orange, merged=cyan. Previously all seed types (including `human`) were either unmapped or shared one color. Source text label now shows status for seeds, e.g. `src:human(partial)`.
+- Debug overlay now shows a small filled dot at the computed box center for drift diagnosis.
+- Debug overlay shows coordinate diagnostic text on the first 10 frames (bottom-right): box center, crop rect, output size, and mapped corner. Also prints diagnostic values to stdout for the first 5 frames (both sequential and parallel encoder paths). Temporary diagnostics for investigating the constant box offset bug.
 
 ### Behavior or Interface Changes
 - Fixed `crop_fill_ratio` being overridden by tiered adaptive fill system for all practical bounding box heights. The user's configured fill ratio is now always used directly. A setting of 0.10 now produces a wide shot with the runner at 10% of frame height, as expected.

@@ -1148,6 +1148,14 @@ def _mode_encode(
 	)
 	trajectory = interval_solver.stitch_trajectories(interval_results)
 
+	# save raw trajectory before anchoring for debug overlay comparison
+	raw_trajectory_for_debug = None
+	if args.debug:
+		raw_trajectory_for_debug = [
+			dict(s) if s is not None else None
+			for s in trajectory
+		]
+
 	# apply multi-seed anchored interpolation to reduce drift
 	seeds_path = state_io.default_seeds_path(args.input_file)
 	if os.path.isfile(seeds_path):
@@ -1224,9 +1232,15 @@ def _mode_encode(
 					"h": state["h"],
 					"conf": state["conf"],
 					"source": state.get("source", "propagated"),
+					"seed_status": state.get("seed_status", ""),
 					"frame_index": i,
 					"bbox": (state["cx"], state["cy"], state["w"], state["h"]),
 				}
+				# attach raw (pre-anchor) position for drift comparison overlay
+				if raw_trajectory_for_debug is not None and i < len(raw_trajectory_for_debug):
+					raw = raw_trajectory_for_debug[i]
+					if raw is not None:
+						debug_state["raw_box"] = [raw["cx"], raw["cy"], raw["w"], raw["h"]]
 			else:
 				debug_state = None
 			frame_states_for_debug.append(debug_state)

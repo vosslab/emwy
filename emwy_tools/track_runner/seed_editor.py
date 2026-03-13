@@ -14,6 +14,9 @@ import numpy
 from PySide6.QtWidgets import QApplication
 
 # local repo modules
+import overlay_config
+
+# local repo modules
 import common_tools.frame_reader as frame_reader
 import seeding
 import ui.workspace as workspace_module
@@ -27,7 +30,7 @@ EditController = edit_controller_module.EditController
 def _draw_seed_overlay(
 	frame: numpy.ndarray,
 	seed: dict,
-	color: tuple = (255, 255, 0),
+	color: tuple | None = None,
 	alpha: float = 0.4,
 ) -> None:
 	"""Draw an existing seed box on the frame with transparency.
@@ -38,9 +41,13 @@ def _draw_seed_overlay(
 	Args:
 		frame: BGR image to draw on (modified in place).
 		seed: Seed dict with cx, cy, w, h and status keys.
-		color: BGR color tuple for the rectangle (default cyan).
+		color: BGR color tuple for the rectangle. Defaults to seed status color.
 		alpha: Opacity for the overlay (0.0 = invisible, 1.0 = opaque).
 	"""
+	# default color from seed status via overlay config
+	if color is None:
+		status = seed.get("status", "visible")
+		color = overlay_config.get_seed_status_bgr(status)
 	status = seed["status"]
 	if status in ("not_in_frame", "approximate", "obstructed"):
 		# draw status label in the center of the frame
@@ -89,9 +96,10 @@ def _draw_predictions_overlay(
 	frame_preds = predictions.get(frame_idx)
 	if frame_preds is None:
 		return
-	# forward prediction in blue
+	# forward prediction
 	fwd = frame_preds.get("forward")
 	if fwd is not None:
+		fwd_bgr = overlay_config.get_prediction_bgr("forward")
 		cx = float(fwd["cx"])
 		cy = float(fwd["cy"])
 		w = float(fwd["w"])
@@ -101,16 +109,17 @@ def _draw_predictions_overlay(
 		x2 = int(cx + w / 2.0)
 		y2 = int(cy + h / 2.0)
 		overlay = frame.copy()
-		cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 100, 0), -1)
+		cv2.rectangle(overlay, (x1, y1), (x2, y2), fwd_bgr, -1)
 		cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
-		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 100, 0), 1)
+		cv2.rectangle(frame, (x1, y1), (x2, y2), fwd_bgr, 1)
 		cv2.putText(
 			frame, "FWD",
-			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 100, 0), 1,
+			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, fwd_bgr, 1,
 		)
-	# backward prediction in magenta
+	# backward prediction
 	bwd = frame_preds.get("backward")
 	if bwd is not None:
+		bwd_bgr = overlay_config.get_prediction_bgr("backward")
 		cx = float(bwd["cx"])
 		cy = float(bwd["cy"])
 		w = float(bwd["w"])
@@ -120,12 +129,12 @@ def _draw_predictions_overlay(
 		x2 = int(cx + w / 2.0)
 		y2 = int(cy + h / 2.0)
 		overlay = frame.copy()
-		cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 0, 255), -1)
+		cv2.rectangle(overlay, (x1, y1), (x2, y2), bwd_bgr, -1)
 		cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
-		cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 1)
+		cv2.rectangle(frame, (x1, y1), (x2, y2), bwd_bgr, 1)
 		cv2.putText(
 			frame, "BWD",
-			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1,
+			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, bwd_bgr, 1,
 		)
 
 
@@ -296,7 +305,7 @@ def _refine_box_consensus(
 def _draw_preview_box(
 	frame: numpy.ndarray,
 	box: dict,
-	color: tuple = (0, 255, 0),
+	color: tuple | None = None,
 	alpha: float = 0.4,
 ) -> None:
 	"""Draw a preview bounding box on a frame with transparency.
@@ -304,9 +313,12 @@ def _draw_preview_box(
 	Args:
 		frame: BGR image to draw on (modified in place).
 		box: Dict with cx, cy, w, h keys.
-		color: BGR color tuple (default green).
+		color: BGR color tuple. Defaults to preview box color from config.
 		alpha: Opacity for the overlay.
 	"""
+	# default color from overlay config (preview box)
+	if color is None:
+		color = overlay_config.hex_to_bgr(overlay_config.get_preview_box_color())
 	cx = float(box["cx"])
 	cy = float(box["cy"])
 	bw = float(box["w"])

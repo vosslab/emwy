@@ -523,10 +523,19 @@ Presets: `none`, `bilateral`, `clahe`, `bilateral+clahe`, `sharpen`,
 
 ### Debug overlay
 
-When `-d` is set, the encoder draws tracking data on output frames: accepted
-box (green), forward track (blue), backward track (orange), best competitor
-(red). All elements scale with output resolution and box size. Transparency:
-boxes 55%, text 70%.
+When `-d` is set, the encoder draws tracking data on output frames. Colors and
+styles are loaded from [emwy_tools/track_runner/overlay_styles.yaml](emwy_tools/track_runner/overlay_styles.yaml)
+via `overlay_config`. Semantic roles:
+
+- **Accepted box**: solid, colored by tracking source (seed status on seed frames)
+- **Forward track**: dashed, prediction color
+- **Backward track**: dashed, prediction color
+- **Competitor**: solid, competitor color
+- **Lost/no data**: lost color for status text
+
+All elements scale with output resolution and box size. Transparency values
+(box blending, text blending) are configured in `encoder_overlay` section of
+the YAML.
 
 ### Parallel encoding
 
@@ -621,11 +630,41 @@ processing:
   output_resolution: [1280, 720]  # optional
 ```
 
+### Overlay styles YAML
+
+Path: `emwy_tools/track_runner/overlay_styles.yaml`
+
+Centralized visual palette for all UI and encoder overlays. Loaded once per
+process by `overlay_config.py`. Semantic layers:
+
+- `seed_status`: annotation state colors (visible, partial, approximate, not_in_frame)
+- `predictions`: algorithm output colors (forward, backward)
+- `tracking_source`: debug overlay source colors (detection, propagated, merged, etc.)
+- `workspace_mode`: editing mode accent colors (seed, target, edit)
+- `draw_mode_badge`: drawing sub-mode badge colors (approximate, partial)
+- `preview_box`: user-drawn confirmation box color and opacity
+- `encoder_overlay`: debug overlay blending (box_opacity, text_opacity)
+- `defaults`: inherited fill_opacity, line_style, thickness_tier
+- `thickness_tiers`: named scale multipliers (normal=1.0, heavy=2.0)
+
+Visual encoding model:
+
+- **Color** = semantic state (what the annotation means)
+- **Line style** (solid/dashed) = object certainty (confirmed vs inferred)
+- **Opacity/fill** = spatial extent without blocking the frame
+- **Thickness** = emphasis tier (confirmed/authored vs inferred/predicted)
+
 ### Seeds JSON
 
 Path: `{input}.track_runner.seeds.json`
 
 Header key `track_runner_seeds` must equal `2`.
+
+**Coordinate convention**: `torso_box` stores `[x, y, w, h]` where `x, y` is
+the **top-left corner** of the bounding rectangle. The seed also carries `cx`,
+`cy` (center coordinates, computed as `x + w/2`, `y + h/2`) and `w`, `h` at the
+top level for direct use by the solver and encoder. Code that needs the center
+must use `cx`/`cy`, never `torso_box[0]`/`torso_box[1]`.
 
 ```json
 {
@@ -635,7 +674,11 @@ Header key `track_runner_seeds` must equal `2`.
     {
       "frame": 150,
       "time_s": 5.0,
-      "torso_box": [640, 360, 40, 60],
+      "torso_box": [620, 330, 40, 60],
+      "cx": 640.0,
+      "cy": 360.0,
+      "w": 40.0,
+      "h": 60.0,
       "jersey_hsv": [120, 180, 200],
       "pass": 1,
       "source": "human",
@@ -654,7 +697,11 @@ Header key `track_runner_seeds` must equal `2`.
       "frame": 450,
       "time_s": 15.0,
       "status": "approximate",
-      "torso_box": [500, 300, 80, 120],
+      "torso_box": [460, 240, 80, 120],
+      "cx": 500.0,
+      "cy": 300.0,
+      "w": 80.0,
+      "h": 120.0,
       "pass": 2,
       "source": "human",
       "mode": "suggested_refine"

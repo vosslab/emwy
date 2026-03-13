@@ -129,3 +129,20 @@ divergence between what the solver computed and what the encoder renders.
 - **Not a template matcher.** Runner appearance changes with pose, distance,
   lighting, and occlusion. Pure template matching fails on these changes.
   The tool uses detection + motion + gated appearance instead.
+
+## Visual encoding principles
+
+Overlay visuals use a consistent semantic encoding across the UI and encoder
+debug output. The mapping is defined in `overlay_styles.yaml` and loaded by
+`overlay_config.py`.
+
+- **Color** conveys semantic state: what the annotation means (seed status,
+  prediction direction, tracking source). Each semantic role has one color
+  used identically in the UI and encoder.
+- **Line style** conveys certainty: solid lines for confirmed/user-authored
+  positions, dashed lines for inferred/predicted positions.
+- **Opacity** conveys spatial extent: low fill opacity (~6%) lets the video
+  show through overlay boxes without obscuring the frame.
+- **Thickness** conveys emphasis tier: heavy (2x) for user-authored seed
+  boxes, normal (1x) for algorithm predictions. Emphasis is about authorship,
+  not state.

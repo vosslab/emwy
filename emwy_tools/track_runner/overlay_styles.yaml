@@ -1,0 +1,76 @@
+# Track runner visual palette.
+# Edit this file to customize overlay appearance.
+# All color values are hex RGB strings (#RRGGBB).
+# Opacity values are 0.0 (invisible) to 1.0 (opaque).
+
+# -- Global defaults for box overlay styles --
+# Per-role entries inherit these unless they override a specific field.
+# Change fill_opacity here to adjust all overlays at once.
+defaults:
+  fill_opacity: 0.06
+  line_style: solid
+  thickness_tier: normal
+
+# -- Thickness tiers (scale multiplier for base line width) --
+thickness_tiers:
+  normal: 1.0
+  heavy: 2.0
+
+# -- Annotation state: what the seed means --
+# Rendered states override defaults where they differ.
+# not_in_frame is color-only: no box overlay, used for status text only.
+seed_status:
+  visible:
+    color: "#22C55E"
+    thickness_tier: heavy
+  partial:
+    color: "#F59E0B"
+    thickness_tier: heavy
+  approximate:
+    color: "#F97316"
+    thickness_tier: heavy
+  not_in_frame:
+    color: "#94A3B8"
+
+# -- Algorithm output: predictions from propagator --
+predictions:
+  forward:
+    color: "#EF4444"
+    line_style: dashed
+  backward:
+    color: "#FF00FF"
+    line_style: dashed
+
+# -- Tracking source: how the tracker produced a box (debug overlay) --
+tracking_source:
+  detection: "#64C896"
+  propagated: "#F97316"
+  hold_last: "#FF6400"
+  fallback: "#C85000"
+  merged: "#00FFFF"
+  approx_seed_hint: "#F97316"
+  competitor: "#FF0000"
+  lost: "#C80000"
+
+# -- Workspace mode: which editing mode is active --
+workspace_mode:
+  seed: "#0D9488"
+  target: "#3B82F6"
+  edit: "#8B5CF6"
+
+# -- Interaction state: drawing sub-modes --
+draw_mode_badge:
+  approximate: "#F97316"
+  partial: "#F59E0B"
+
+# -- Preview box: user-drawn confirmation box --
+preview_box:
+  color: "#22C55E"
+  fill_opacity: 0.24
+  thickness_tier: heavy
+
+# -- Shared overlay presentation settings --
+# These control debug overlay blending, not semantic meaning.
+encoder_overlay:
+  box_opacity: 0.55
+  text_opacity: 0.70
