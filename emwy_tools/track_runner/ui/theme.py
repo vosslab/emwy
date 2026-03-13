@@ -8,8 +8,11 @@ Provides dark and light theme support with system detection.
 
 # PIP3 modules
 from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QPalette, QColor
+from PySide6.QtGui import QPalette, QColor, QFont
 from PySide6.QtCore import Qt
+
+# local repo modules
+import overlay_config
 
 #============================================
 
@@ -65,25 +68,61 @@ def _apply_dark_theme(app: QApplication) -> None:
 
 	app.setPalette(palette)
 
-	# Apply stylesheet for scrollbars and tooltips
-	qss = """
-QScrollBar:vertical {
+	# Set app-wide default font with no-hinting for Retina clarity
+	ui_font = QFont(overlay_config.get_ui_font_family())
+	ui_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+	app.setFont(ui_font)
+
+	# Load theme colors from overlay_styles.yaml
+	surface = overlay_config.get_theme_color("surface")
+	surface_raised = overlay_config.get_theme_color("surface_raised")
+	border_subtle = overlay_config.get_theme_color("border_subtle")
+
+	# Apply stylesheet for depth, polish, scrollbars, and tooltips
+	qss = f"""
+QToolBar {{
+	background: {surface};
+	border-bottom: 1px solid {border_subtle};
+	padding: 2px;
+	spacing: 4px;
+}}
+QPushButton {{
+	border: 1px solid {border_subtle};
+	border-radius: 4px;
+	padding: 4px 8px;
+	background: {surface_raised};
+}}
+QPushButton:hover {{
+	background: #2E2E4A;
+}}
+QPushButton:pressed {{
+	background: #3E3E5A;
+}}
+QPushButton:checked {{
+	background: #3E3E5A;
+	border: 1px solid #8B5CF6;
+}}
+QStatusBar {{
+	border-top: 1px solid {border_subtle};
+	background: {surface};
+}}
+QScrollBar:vertical {{
 	background-color: #0F0F23;
 	width: 12px;
-}
-QScrollBar::handle:vertical {
+}}
+QScrollBar::handle:vertical {{
 	background-color: #1E1E3A;
 	border-radius: 6px;
-}
-QScrollBar::handle:vertical:hover {
+}}
+QScrollBar::handle:vertical:hover {{
 	background-color: #2E2E4A;
-}
-QTooltip {
+}}
+QToolTip {{
 	background-color: #1E1E3A;
 	color: #F8FAFC;
 	border: 1px solid #E11D48;
 	padding: 2px;
-}
+}}
 """
 	app.setStyleSheet(qss)
 

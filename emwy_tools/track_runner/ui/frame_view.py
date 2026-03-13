@@ -9,7 +9,7 @@ QGraphicsView for displaying video frames with zoom and coordinate mapping.
 import numpy
 from PySide6 import QtGui, QtWidgets
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene
-from PySide6.QtGui import QImage, QPixmap, QColor, QTransform
+from PySide6.QtGui import QImage, QPixmap, QColor, QTransform, QPainter
 
 #============================================
 
@@ -39,6 +39,11 @@ class FrameView(QGraphicsView):
 		self.zoom_factor = 1.0
 		self.min_zoom = 0.5
 		self.max_zoom = 10.0
+
+		# enable anti-aliasing for smooth overlay rendering
+		self.setRenderHint(QPainter.RenderHint.Antialiasing)
+		self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+		self.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
 		self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
 		self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)

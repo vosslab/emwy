@@ -168,22 +168,44 @@ class SeedController(BaseAnnotationController):
 	#============================================
 
 	def _get_default_status_text(self) -> str:
-		"""Keybinding hints for seed mode.
+		"""Short mode summary for the status bar.
+
+		Returns:
+			String with mode summary.
+		"""
+		if self._return_callback is not None:
+			text = "Seed mode - add seeds (ESC to return)"
+		else:
+			text = "Seed mode - draw torso box"
+		return text
+
+	#============================================
+
+	def _get_keybinding_hints(self) -> str:
+		"""Keybinding hints for the key hint overlay.
 
 		Returns:
 			String with keybinding hints.
 		"""
-		text = (
-			"LR=scrub(Shift when zoomed)  []=step size  SPACE=skip  "
-			"n=not_in_frame  p=partial  a=approx_obstruction  "
-			"f=FWD/BWD avg  z=zoom"
+		hints = (
+			"LR=scrub  []=step  SPACE=skip  N=not-in-frame  "
+			"F=avg  P=part  A=approx  V=hide preds  Z=zoom"
 		)
-		# Append return hint when in add-seed submode
 		if self._return_callback is not None:
-			text += "  ESC/q=return to edit"
+			hints += "  ESC=return"
 		else:
-			text += "  ESC/q=done"
-		return text
+			hints += "  ESC=done"
+		return hints
+
+	#============================================
+
+	def _get_mode_name(self) -> str:
+		"""Mode name for display.
+
+		Returns:
+			String "seed".
+		"""
+		return "seed"
 
 	#============================================
 
@@ -198,13 +220,18 @@ class SeedController(BaseAnnotationController):
 			# Recenter on prediction center when zoomed in
 			self._recenter_on_prediction()
 
+		# update progress bar
+		self._window.set_progress(
+			self._list_idx + 1, len(self._seed_frame_indices)
+		)
+
 		# update title bar with current state
 		self._refresh_frame_title()
 
 	#============================================
 
 	def _refresh_frame_title(self) -> None:
-		"""Update window title with frame, step, and zoom info."""
+		"""Update window title with frame, step, zoom, and interval quality info."""
 		step_frames = max(1, int(round(self._fps * self._scrub_step_s)))
 		zoom = self._window.get_frame_view().get_zoom_factor()
 		title = (
@@ -213,7 +240,42 @@ class SeedController(BaseAnnotationController):
 			f"Step {step_frames}f | "
 			f"Zoom {zoom:.1f}x"
 		)
+		# append interval quality info from predictions if available
+		quality_text = self._get_interval_quality_text()
+		if quality_text:
+			title += f" | {quality_text}"
 		self._window.setWindowTitle(title)
+
+	#============================================
+
+	def _get_interval_quality_text(self) -> str:
+		"""Build a short quality string from the current frame's interval info.
+
+		Returns:
+			String like "HIGH: agree=0.12 margin=0.08 (FWD/BWD diverge)"
+			or empty string if no info is available.
+		"""
+		if self._predictions is None:
+			return ""
+		preds = self._predictions.get(self._current_frame)
+		if preds is None:
+			return ""
+		info = preds.get("interval_info")
+		if info is None:
+			return ""
+
+		severity = info["severity"].upper()
+		agreement = info["agreement"]
+		margin = info["margin"]
+		# start with severity and key scores
+		text = f"{severity}: agree={agreement:.2f} margin={margin:.2f}"
+		# append short failure reasons if present
+		reasons = info.get("reasons", [])
+		if reasons:
+			# use short labels: strip common prefixes for brevity
+			short_reasons = [r.replace("likely_", "").replace("_", " ") for r in reasons]
+			text += f" ({', '.join(short_reasons)})"
+		return text
 
 	#============================================
 

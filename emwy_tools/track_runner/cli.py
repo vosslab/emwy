@@ -417,29 +417,63 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 
 #============================================
 def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
-	"""Build frame-indexed forward/backward prediction dict from solved intervals.
+	"""Build frame-indexed prediction dict with overlays and interval metadata.
+
+	Each frame entry includes FWD/BWD/fused/consensus boxes plus interval-level
+	quality metadata (severity, confidence, scores, failure reasons) so the GUI
+	can display why an interval was flagged.
 
 	Args:
 		diagnostics: Dict from solve_all_intervals() with in-memory interval data.
 
 	Returns:
-		Dict mapping frame_index (int) to {"forward": {cx,cy,w,h}, "backward": {cx,cy,w,h}}.
+		Dict mapping frame_index (int) to prediction dict with box data and
+		an "interval_info" sub-dict for quality display.
 	"""
+	fps = float(diagnostics.get("fps", 30.0))
 	predictions = {}
 	for iv in diagnostics.get("intervals", []):
 		fwd_track = iv.get("forward_track")
 		bwd_track = iv.get("backward_track")
+		fused_track = iv.get("fused_track")
 		if fwd_track is None or bwd_track is None:
 			# stored intervals may lack per-direction tracks
 			continue
+
+		# build interval quality metadata once per interval
+		score = iv.get("interval_score", {})
+		severity = review.classify_interval_severity(iv, fps)
+		interval_info = {
+			"severity": severity,
+			"confidence": score.get("confidence", "unknown"),
+			"agreement": float(score.get("agreement_score", 0.0)),
+			"margin": float(score.get("competitor_margin", 0.0)),
+			"reasons": score.get("failure_reasons", []),
+		}
+
 		start_frame = int(iv["start_frame"])
 		n = min(len(fwd_track), len(bwd_track))
 		for i in range(n):
 			frame_idx = start_frame + i
-			predictions[frame_idx] = {
+			frame_preds = {
 				"forward": fwd_track[i],
 				"backward": bwd_track[i],
+				"interval_info": interval_info,
 			}
+			# add fused (refined second-pass) if available
+			if fused_track is not None and i < len(fused_track):
+				frame_preds["fused"] = fused_track[i]
+			# compute consensus as average of FWD and BWD
+			fwd_box = fwd_track[i]
+			bwd_box = bwd_track[i]
+			consensus = {
+				"cx": (float(fwd_box["cx"]) + float(bwd_box["cx"])) / 2.0,
+				"cy": (float(fwd_box["cy"]) + float(bwd_box["cy"])) / 2.0,
+				"w": (float(fwd_box["w"]) + float(bwd_box["w"])) / 2.0,
+				"h": (float(fwd_box["h"]) + float(bwd_box["h"])) / 2.0,
+			}
+			frame_preds["consensus"] = consensus
+			predictions[frame_idx] = frame_preds
 	return predictions
 
 

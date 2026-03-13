@@ -40,6 +40,12 @@ predictions:
   backward:
     color: "#FF00FF"
     line_style: dashed
+  fused:
+    color: "#06B6D4"
+    line_style: solid
+  consensus:
+    color: "#FBBF24"
+    line_style: dotted
 
 # -- Tracking source: how the tracker produced a box (debug overlay) --
 tracking_source:
@@ -68,6 +74,34 @@ preview_box:
   color: "#22C55E"
   fill_opacity: 0.24
   thickness_tier: heavy
+
+# -- Fonts: family fallback chains and sizes --
+# Qt does not do CSS-style fallback; overlay_config probes each candidate.
+fonts:
+  ui_family: "Helvetica Neue, Helvetica, Arial, sans-serif"
+  mono_family: "Menlo, SF Mono, Consolas, monospace"
+  overlay_size: 10
+  status_size: 12
+
+# -- Theme: dark UI depth colors --
+theme:
+  surface: "#1A1A2E"
+  surface_raised: "#25253E"
+  border_subtle: "#2A2A44"
+  text_secondary: "#94A3B8"
+  text_muted: "#64748B"
+
+# -- Severity: interval quality severity badge colors --
+severity:
+  high:
+    color: "#EF4444"
+    label: "HIGH"
+  medium:
+    color: "#F59E0B"
+    label: "MED"
+  low:
+    color: "#22C55E"
+    label: "LOW"
 
 # -- Shared overlay presentation settings --
 # These control debug overlay blending, not semantic meaning.

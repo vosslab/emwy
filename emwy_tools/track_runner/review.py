@@ -331,7 +331,70 @@ def generate_refinement_targets(
 					target_set.add(mid)
 
 	targets = sorted(target_set)
+
+	# enforce minimum gap between high-severity target frames
+	if severity == "high" and targets:
+		targets = _enforce_severity_gap(targets, diagnostics, fps)
+
 	return targets
+
+
+#============================================
+def _enforce_severity_gap(
+	targets: list,
+	diagnostics: dict,
+	fps: float,
+	gap_seconds: float = 2.0,
+) -> list:
+	"""Filter high-severity targets so no two are within gap_seconds.
+
+	When two frames are too close, keeps the one with the lower
+	agreement_score (worse tracking = higher priority for a new seed).
+
+	Args:
+		targets: Sorted list of target frame numbers.
+		diagnostics: Dict with "intervals" key for score lookup.
+		fps: Video frames per second.
+		gap_seconds: Minimum seconds between kept frames.
+
+	Returns:
+		Filtered sorted list of frame numbers.
+	"""
+	intervals = diagnostics.get("intervals", [])
+	min_gap_frames = int(gap_seconds * fps)
+
+	# build a lookup from frame to parent interval agreement_score
+	def _lookup_agreement(frame: int) -> float:
+		"""Return agreement_score for the interval containing frame."""
+		for iv in intervals:
+			start = int(iv["start_frame"])
+			end = int(iv["end_frame"])
+			if start <= frame <= end:
+				score = iv.get("interval_score", {})
+				agreement = float(score.get("agreement_score", 0.0))
+				return agreement
+		# frame not in any interval: treat as worst possible
+		return 0.0
+
+	kept = []
+	for frame in targets:
+		if not kept or (frame - kept[-1]) >= min_gap_frames:
+			# no conflict, keep this frame
+			kept.append(frame)
+		else:
+			# too close to previous; keep whichever has lower agreement
+			prev_score = _lookup_agreement(kept[-1])
+			curr_score = _lookup_agreement(frame)
+			if curr_score < prev_score:
+				# current frame is worse, replace previous
+				kept[-1] = frame
+			# else: drop current frame (previous already has worse score)
+
+	dropped_count = len(targets) - len(kept)
+	if dropped_count > 0:
+		print(f"  severity gap filter: dropped {dropped_count} frames "
+			f"within {gap_seconds:.1f}s of another target")
+	return kept
 
 
 #============================================

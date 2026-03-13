@@ -210,24 +210,51 @@ class EditController(BaseAnnotationController):
 				scene.removeItem(self._polish_preview_item)
 				self._polish_preview_item = None
 
+		# Remove status bar widgets to prevent accumulation
+		if self._window is not None:
+			self._window.statusBar().removeWidget(
+				self._status_presenter.get_widget()
+			)
+			if self._keybindings_label is not None:
+				self._window.statusBar().removeWidget(self._keybindings_label)
+
 		# Clear status bar
 		self._status_presenter.clear()
 
 	#============================================
 
 	def _get_default_status_text(self) -> str:
-		"""Keybinding hints for edit mode.
+		"""Short mode summary for the status bar.
+
+		Returns:
+			String with mode summary.
+		"""
+		return "Edit mode - review seeds"
+
+	#============================================
+
+	def _get_keybinding_hints(self) -> str:
+		"""Keybinding hints for the key hint overlay.
 
 		Returns:
 			String with keybinding hints.
 		"""
-		text = (
-			"SPACE/Right=keep  Left=prev  D=delete  "
-			"N=not_in_frame  P=partial  A=approx  "
-			"Y=YOLO  F=consensus  Z=zoom  "
-			"[/]=jump 10%  L=low conf  U=add seed  ESC/q=done"
+		hints = (
+			"SPACE/R=keep  LEFT=prev  D=del  Y=yolo  F=avg  "
+			"[/]=jump  L=low  U=add  P=part  A=approx  "
+			"V=hide preds  Z=zoom  ESC=done"
 		)
-		return text
+		return hints
+
+	#============================================
+
+	def _get_mode_name(self) -> str:
+		"""Mode name for display.
+
+		Returns:
+			String "edit".
+		"""
+		return "edit"
 
 	#============================================
 
@@ -292,12 +319,24 @@ class EditController(BaseAnnotationController):
 		# Show FWD/BWD overlays on top (thin, dashed)
 		self._update_fwd_bwd_overlays()
 
+		# Update progress bar
+		self._window.set_progress(
+			self._nav_idx + 1, len(self._filtered_indices)
+		)
+
 		# Update status presenter
 		seed_confidence = None
 		if self._seed_confidences is not None:
 			seed_confidence = self._seed_confidences.get(frame_idx)
+		# look up interval_info for severity display
+		interval_info = None
+		if self._predictions is not None:
+			preds = self._predictions.get(frame_idx)
+			if preds is not None:
+				interval_info = preds.get("interval_info")
 		self._status_presenter.update(
-			seed, self._nav_idx, len(self._filtered_indices), seed_confidence
+			seed, self._nav_idx, len(self._filtered_indices),
+			seed_confidence, interval_info,
 		)
 
 		# Update scale bar
@@ -769,8 +808,15 @@ class EditController(BaseAnnotationController):
 		conf = None
 		if self._seed_confidences is not None:
 			conf = self._seed_confidences.get(frame_idx)
+		# look up interval_info for severity display
+		interval_info = None
+		if self._predictions is not None:
+			preds = self._predictions.get(frame_idx)
+			if preds is not None:
+				interval_info = preds.get("interval_info")
 		self._status_presenter.update(
-			self._current_seed, self._nav_idx, len(self._filtered_indices), conf,
+			self._current_seed, self._nav_idx, len(self._filtered_indices),
+			conf, interval_info,
 		)
 
 	#============================================

@@ -7,9 +7,9 @@ Provides the AnnotationWindow with mode toolbar and annotation controls.
 # (none needed)
 
 # PIP3 modules
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QProgressBar
 from PySide6.QtCore import QSettings
-from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QColor
 
 # local repo modules
 import overlay_config
@@ -95,6 +95,46 @@ class AnnotationWindow(AppShell):
 		self._filter_button.clicked.connect(self._cycle_filter)
 		self._annotation_toolbar.addWidget(self._filter_button)
 
+		# Create overlay visibility toolbar with checkable toggle actions
+		self._overlay_toolbar = self.addToolBar("Overlays")
+		self._overlay_toolbar.setMovable(False)
+		# map of overlay key -> (label, color hex from predictions section)
+		pred_colors = {
+			"fwd": ("FWD", overlay_config.get_prediction_color("forward")),
+			"bwd": ("BWD", overlay_config.get_prediction_color("backward")),
+			"fused": ("REFINED", overlay_config.get_prediction_color("fused")),
+			"consensus": ("AVG", overlay_config.get_prediction_color("consensus")),
+			"legend": ("Legend", "#FFFFFF"),
+		}
+		self._overlay_actions: dict = {}
+		for key, (label, color) in pred_colors.items():
+			action = QAction(label, self)
+			action.setCheckable(True)
+			action.setChecked(True)
+			# color-code the action icon with a small swatch
+			action.setIcon(self._make_swatch_icon(color))
+			action.setData(key)
+			action.toggled.connect(self._on_overlay_toggled)
+			self._overlay_toolbar.addAction(action)
+			self._overlay_actions[key] = action
+
+		# Add progress bar to the status bar
+		self._progress_bar = QProgressBar()
+		self._progress_bar.setMaximumWidth(200)
+		self._progress_bar.setTextVisible(True)
+		self._progress_bar.setFormat("%v / %m")
+		self._progress_bar.setValue(0)
+		self._progress_bar.setMaximum(0)
+		# style progress bar for the dark theme
+		mode_color = self._mode_colors.get(initial_mode, "#0D9488")
+		self._progress_bar.setStyleSheet(
+			"QProgressBar { max-height: 14px; border: none; "
+			"background: #1A1A2E; border-radius: 2px; text-align: center; "
+			"font-size: 10px; color: #F8FAFC; }"
+			f"QProgressBar::chunk {{ border-radius: 2px; background: {mode_color}; }}"
+		)
+		self.statusBar().addPermanentWidget(self._progress_bar)
+
 		# Restore window geometry from QSettings
 		settings = QSettings("emwy", "AnnotationWindow")
 		geometry = settings.value("geometry")
@@ -144,8 +184,8 @@ class AnnotationWindow(AppShell):
 			mode: Mode name ("seed", "target", or "edit").
 		"""
 		color = self._mode_colors.get(mode, "#0D9488")
-		# Apply color as border to the frame view
-		stylesheet = f"border: 3px solid {color};"
+		# Apply subtle color accent as top border to the frame view
+		stylesheet = f"border-top: 2px solid {color};"
 		self._frame_view.setStyleSheet(stylesheet)
 
 	#============================================
@@ -168,14 +208,19 @@ class AnnotationWindow(AppShell):
 		# Store new controller
 		self._active_controller = controller
 
-		# Clear annotation toolbar and add new controller widgets
-		for action in self._annotation_toolbar.actions():
-			self._annotation_toolbar.removeAction(action)
-		# Re-add mode label and filter button
-		self._mode_label = QLabel(f"MODE: {self._current_mode.upper()}")
+		# Reset progress bar between controller swaps
+		self._progress_bar.setValue(0)
+		self._progress_bar.setMaximum(0)
+
+		# Reset overlay toggles to all-visible on mode switch
+		for action in self._overlay_actions.values():
+			action.setChecked(True)
+
+		# Clear annotation toolbar and re-add persistent widgets (no recreation)
+		self._annotation_toolbar.clear()
+		self._mode_label.setText(f"MODE: {self._current_mode.upper()}")
 		self._annotation_toolbar.addWidget(self._mode_label)
-		self._filter_button = QPushButton(f"Filter: {self._current_filter}")
-		self._filter_button.clicked.connect(self._cycle_filter)
+		self._filter_button.setText(f"Filter: {self._current_filter}")
 		self._annotation_toolbar.addWidget(self._filter_button)
 
 		# Activate new controller if provided
@@ -187,6 +232,59 @@ class AnnotationWindow(AppShell):
 				widget = self._active_controller.toolbar_widget
 				if widget is not None:
 					self._annotation_toolbar.addWidget(widget)
+
+	#============================================
+
+	def _make_swatch_icon(self, hex_color: str) -> QIcon:
+		"""Create a small colored swatch icon for toolbar actions.
+
+		Args:
+			hex_color: Hex color string like "#EF4444".
+
+		Returns:
+			QIcon with a filled colored square.
+		"""
+		size = 12
+		pixmap = QPixmap(size, size)
+		pixmap.fill(QColor(hex_color))
+		icon = QIcon(pixmap)
+		return icon
+
+	#============================================
+
+	def _on_overlay_toggled(self, checked: bool) -> None:
+		"""Handle overlay toggle action.
+
+		Args:
+			checked: Whether the overlay is now enabled.
+		"""
+		action = self.sender()
+		if action is None:
+			return
+		key = action.data()
+		if self._active_controller is not None:
+			if hasattr(self._active_controller, "set_overlay_enabled"):
+				self._active_controller.set_overlay_enabled(key, checked)
+
+	#============================================
+
+	def set_progress(self, current: int, total: int) -> None:
+		"""Update the progress bar with current/total values.
+
+		Args:
+			current: Current item number (1-based).
+			total: Total number of items.
+		"""
+		self._progress_bar.setMaximum(total)
+		self._progress_bar.setValue(current)
+		# update chunk color to match current mode
+		mode_color = self._mode_colors.get(self._current_mode, "#0D9488")
+		self._progress_bar.setStyleSheet(
+			"QProgressBar { max-height: 14px; border: none; "
+			"background: #1A1A2E; border-radius: 2px; text-align: center; "
+			"font-size: 10px; color: #F8FAFC; }"
+			f"QProgressBar::chunk {{ border-radius: 2px; background: {mode_color}; }}"
+		)
 
 	#============================================
 

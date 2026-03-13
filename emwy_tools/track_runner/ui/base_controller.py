@@ -20,6 +20,8 @@ import ui.overlay_items as overlay_items_module
 PreviewBoxItem = overlay_items_module.PreviewBoxItem
 RectItem = overlay_items_module.RectItem
 ScaleBarItem = overlay_items_module.ScaleBarItem
+PredictionLegendItem = overlay_items_module.PredictionLegendItem
+KeyHintOverlay = overlay_items_module.KeyHintOverlay
 
 #============================================
 
@@ -75,7 +77,20 @@ class BaseAnnotationController(QObject):
 		self._overlay_items: list = []
 		self._fwd_item: object = None
 		self._bwd_item: object = None
+		self._fused_item: object = None
+		self._consensus_item: object = None
 		self._scale_bar_item: object = None
+		self._legend_item: object = None
+		self._key_hint_item: object = None
+
+		# Peek suppression state
+		self._preds_suppressed: bool = False
+
+		# Per-overlay persistent visibility toggles
+		self._overlay_visibility: dict = {
+			"fwd": True, "bwd": True, "fused": True,
+			"consensus": True, "legend": True,
+		}
 
 		# Toolbar widgets
 		self._toolbar_widget: QWidget | None = None
@@ -118,6 +133,33 @@ class BaseAnnotationController(QObject):
 		scene.addItem(self._scale_bar_item)
 		self._overlay_items.append(self._scale_bar_item)
 
+		# Add prediction legend if predictions are available
+		if self._predictions is not None:
+			scene_rect = scene.sceneRect()
+			self._legend_item = PredictionLegendItem(
+				scene_rect.width(), scene_rect.height(),
+			)
+			scene.addItem(self._legend_item)
+			self._overlay_items.append(self._legend_item)
+
+		# Add keybinding hint overlay at bottom of frame
+		scene_rect = scene.sceneRect()
+		if scene_rect.width() > 0 and scene_rect.height() > 0:
+			self._key_hint_item = KeyHintOverlay(
+				scene_rect.width(), scene_rect.height(),
+			)
+			# populate with mode-specific hints
+			mode_color = overlay_config.get_workspace_mode_color(
+				self._get_mode_name()
+			)
+			self._key_hint_item.update_text(
+				self._get_mode_name().upper(),
+				self._get_keybinding_hints(),
+				mode_color,
+			)
+			scene.addItem(self._key_hint_item)
+			self._overlay_items.append(self._key_hint_item)
+
 		# Subclass hook
 		self._on_activated()
 
@@ -140,7 +182,11 @@ class BaseAnnotationController(QObject):
 		self._overlay_items.clear()
 		self._fwd_item = None
 		self._bwd_item = None
+		self._fused_item = None
+		self._consensus_item = None
 		self._scale_bar_item = None
+		self._legend_item = None
+		self._key_hint_item = None
 		# Remove preview item if present
 		if self._preview_item is not None and self._window is not None:
 			scene = self._window.get_frame_view().scene()
@@ -351,6 +397,9 @@ class BaseAnnotationController(QObject):
 		elif key == Qt.Key.Key_Z:
 			self._on_zoom_toggle()
 			return True
+		elif key == Qt.Key.Key_V:
+			self._suppress_predictions()
+			return True
 		return None
 
 	#============================================
@@ -386,7 +435,10 @@ class BaseAnnotationController(QObject):
 	#============================================
 
 	def _update_fwd_bwd_overlays(self) -> None:
-		"""Update FWD/BWD prediction overlays on the scene."""
+		"""Update FWD/BWD/fused/consensus prediction overlays on the scene."""
+		# Reset peek suppression on frame advance
+		self._preds_suppressed = False
+
 		# Remove old overlays
 		if self._fwd_item is not None:
 			self._remove_overlay(self._fwd_item)
@@ -394,6 +446,12 @@ class BaseAnnotationController(QObject):
 		if self._bwd_item is not None:
 			self._remove_overlay(self._bwd_item)
 			self._bwd_item = None
+		if self._fused_item is not None:
+			self._remove_overlay(self._fused_item)
+			self._fused_item = None
+		if self._consensus_item is not None:
+			self._remove_overlay(self._consensus_item)
+			self._consensus_item = None
 
 		# Return early if no predictions
 		if self._predictions is None:
@@ -402,7 +460,47 @@ class BaseAnnotationController(QObject):
 		if preds is None:
 			return
 
-		# FWD prediction
+		# Consensus overlay (AVG of FWD/BWD) -- Z=3, below others
+		cons = preds.get("consensus")
+		if cons is not None:
+			cons_style = overlay_config.get_prediction_style("consensus")
+			cx = float(cons["cx"])
+			cy = float(cons["cy"])
+			w = float(cons["w"])
+			h = float(cons["h"])
+			x = int(cx - w / 2.0)
+			y = int(cy - h / 2.0)
+			self._consensus_item = RectItem(
+				x, y, int(w), int(h),
+				color_str=cons_style["color"],
+				label="AVG",
+				fill_alpha=int(cons_style["fill_opacity"] * 255),
+				dashed=(cons_style["line_style"] == "dotted"),
+			)
+			self._consensus_item.setZValue(3)
+			self._add_overlay(self._consensus_item)
+
+		# Fused (refined second-pass) overlay -- Z=4
+		fused = preds.get("fused")
+		if fused is not None:
+			fused_style = overlay_config.get_prediction_style("fused")
+			cx = float(fused["cx"])
+			cy = float(fused["cy"])
+			w = float(fused["w"])
+			h = float(fused["h"])
+			x = int(cx - w / 2.0)
+			y = int(cy - h / 2.0)
+			self._fused_item = RectItem(
+				x, y, int(w), int(h),
+				color_str=fused_style["color"],
+				label="REFINED",
+				fill_alpha=int(fused_style["fill_opacity"] * 255),
+				dashed=(fused_style["line_style"] == "dashed"),
+			)
+			self._fused_item.setZValue(4)
+			self._add_overlay(self._fused_item)
+
+		# FWD prediction -- Z=5
 		fwd = preds.get("forward")
 		if fwd is not None:
 			fwd_style = overlay_config.get_prediction_style("forward")
@@ -422,7 +520,7 @@ class BaseAnnotationController(QObject):
 			self._fwd_item.setZValue(5)
 			self._add_overlay(self._fwd_item)
 
-		# BWD prediction
+		# BWD prediction -- Z=5
 		bwd = preds.get("backward")
 		if bwd is not None:
 			bwd_style = overlay_config.get_prediction_style("backward")
@@ -441,6 +539,25 @@ class BaseAnnotationController(QObject):
 			)
 			self._bwd_item.setZValue(5)
 			self._add_overlay(self._bwd_item)
+
+		# reposition legend to the corner farthest from the tracked box
+		if self._legend_item is not None:
+			# use consensus center as the bbox reference point
+			cons = preds.get("consensus")
+			if cons is not None:
+				bbox_cx = float(cons["cx"])
+				bbox_cy = float(cons["cy"])
+			else:
+				bbox_cx = -1
+				bbox_cy = -1
+			scene_rect = self._window.get_frame_view().scene().sceneRect()
+			self._legend_item.reposition(
+				scene_rect.width(), scene_rect.height(),
+				bbox_cx, bbox_cy,
+			)
+
+		# apply per-overlay visibility (respects user toggles and peek suppression)
+		self._apply_overlay_visibility()
 
 	#============================================
 
@@ -524,6 +641,49 @@ class BaseAnnotationController(QObject):
 			self._partial_mode = False
 			self._update_mode_badge()
 			print("  approx mode: draw approximate box for obstructed position")
+
+	#============================================
+
+	def _suppress_predictions(self) -> None:
+		"""Toggle temporary prediction overlay suppression for current frame.
+
+		Suppression resets on frame advance (in _update_fwd_bwd_overlays).
+		"""
+		self._preds_suppressed = not self._preds_suppressed
+		self._apply_overlay_visibility()
+
+	#============================================
+
+	def _apply_overlay_visibility(self) -> None:
+		"""Apply three-layer visibility model to prediction overlays.
+
+		visible = available AND user_enabled AND NOT temporary_suppressed
+		"""
+		item_map = {
+			"fwd": self._fwd_item,
+			"bwd": self._bwd_item,
+			"fused": self._fused_item,
+			"consensus": self._consensus_item,
+			"legend": self._legend_item,
+		}
+		for key, item in item_map.items():
+			if item is not None:
+				user_enabled = self._overlay_visibility.get(key, True)
+				show = user_enabled and not self._preds_suppressed
+				item.setVisible(show)
+
+	#============================================
+
+	def set_overlay_enabled(self, key: str, enabled: bool) -> None:
+		"""Set persistent visibility for a specific overlay type.
+
+		Args:
+			key: Overlay key ("fwd", "bwd", "fused", "consensus", "legend").
+			enabled: Whether the overlay should be visible.
+		"""
+		if key in self._overlay_visibility:
+			self._overlay_visibility[key] = enabled
+			self._apply_overlay_visibility()
 
 	#============================================
 
@@ -629,10 +789,30 @@ class BaseAnnotationController(QObject):
 	#============================================
 
 	def _get_default_status_text(self) -> str:
-		"""Keybinding hint string for non-badge state. Subclass must implement.
+		"""Short mode/state summary for the status bar. Subclass must implement.
 
 		Returns:
-			String with keybinding hints.
+			String with mode summary.
+		"""
+		raise NotImplementedError
+
+	#============================================
+
+	def _get_keybinding_hints(self) -> str:
+		"""Keybinding hint string for the key hint overlay. Subclass must implement.
+
+		Returns:
+			String with keybinding hints (without mode label prefix).
+		"""
+		raise NotImplementedError
+
+	#============================================
+
+	def _get_mode_name(self) -> str:
+		"""Short mode name for display. Subclass must implement.
+
+		Returns:
+			String like "seed", "edit", or "target".
 		"""
 		raise NotImplementedError
 

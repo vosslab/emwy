@@ -16,7 +16,7 @@ import yaml
 # module-level cache (loaded once per process)
 _PALETTE_CACHE = None
 _HEX_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
-_VALID_LINE_STYLES = {"solid", "dashed"}
+_VALID_LINE_STYLES = {"solid", "dashed", "dotted"}
 
 
 #============================================
@@ -399,3 +399,125 @@ def get_thickness_scale(tier: str) -> float:
 	palette = load_palette()
 	scale = float(palette.get("thickness_tiers", {}).get(tier, 1.0))
 	return scale
+
+
+#============================================
+def _resolve_font_family(comma_list: str) -> str:
+	"""Try each font in a comma-separated list via QFontDatabase.
+
+	Falls back to the last entry if none are found.
+
+	Args:
+		comma_list: Comma-separated font family names.
+
+	Returns:
+		First available font family name.
+	"""
+	from PySide6.QtGui import QFontDatabase
+	candidates = [f.strip() for f in comma_list.split(",")]
+	for name in candidates:
+		if QFontDatabase.hasFamily(name):
+			return name
+	# last entry is the generic fallback
+	last = candidates[-1] if candidates else "sans-serif"
+	return last
+
+
+#============================================
+def get_ui_font_family() -> str:
+	"""Get the best available UI font family.
+
+	Returns:
+		Font family name string.
+	"""
+	palette = load_palette()
+	raw = palette.get("fonts", {}).get(
+		"ui_family", "Helvetica Neue, Helvetica, Arial, sans-serif"
+	)
+	family = _resolve_font_family(raw)
+	return family
+
+
+#============================================
+def get_mono_font_family() -> str:
+	"""Get the best available monospace font family.
+
+	Returns:
+		Font family name string.
+	"""
+	palette = load_palette()
+	raw = palette.get("fonts", {}).get(
+		"mono_family", "Menlo, SF Mono, Consolas, monospace"
+	)
+	family = _resolve_font_family(raw)
+	return family
+
+
+#============================================
+def get_overlay_font_size() -> int:
+	"""Get the overlay font size in points.
+
+	Returns:
+		Font size integer.
+	"""
+	palette = load_palette()
+	size = int(palette.get("fonts", {}).get("overlay_size", 10))
+	return size
+
+
+#============================================
+def get_status_font_size() -> int:
+	"""Get the status bar font size in points.
+
+	Returns:
+		Font size integer.
+	"""
+	palette = load_palette()
+	size = int(palette.get("fonts", {}).get("status_size", 12))
+	return size
+
+
+#============================================
+def get_theme_color(key: str) -> str:
+	"""Get a theme color by key.
+
+	Args:
+		key: Theme color key (surface, surface_raised, border_subtle, etc).
+
+	Returns:
+		Hex color string.
+	"""
+	palette = load_palette()
+	defaults = {
+		"surface": "#1A1A2E",
+		"surface_raised": "#25253E",
+		"border_subtle": "#2A2A44",
+		"text_secondary": "#94A3B8",
+		"text_muted": "#64748B",
+	}
+	color = palette.get("theme", {}).get(key, defaults.get(key, "#FFFFFF"))
+	return color
+
+
+#============================================
+def get_severity_style(level: str) -> dict:
+	"""Get severity display style for a given level.
+
+	Args:
+		level: Severity level ("high", "medium", or "low").
+
+	Returns:
+		Dict with "color" and "label" keys.
+	"""
+	palette = load_palette()
+	defaults = {
+		"high": {"color": "#EF4444", "label": "HIGH"},
+		"medium": {"color": "#F59E0B", "label": "MED"},
+		"low": {"color": "#22C55E", "label": "LOW"},
+	}
+	entry = palette.get("severity", {}).get(level, defaults.get(level, {}))
+	style = {
+		"color": entry.get("color", "#FFFFFF"),
+		"label": entry.get("label", level.upper()),
+	}
+	return style

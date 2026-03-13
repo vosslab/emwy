@@ -1471,3 +1471,276 @@ def test_refine_low_conf_prior_has_small_effect() -> None:
 	# verify the exact computation
 	expected = 0.1 * prop_mod.PRIOR_WEIGHT_SCALE
 	assert abs(prior_weight - expected) < 1e-9
+
+
+# ============================================================
+# crop post-smoothing tests
+# ============================================================
+
+
+#============================================
+def test_post_smooth_passthrough() -> None:
+	"""All params 0 returns input unchanged."""
+	import track_runner.crop as crop_mod
+
+	# Create a list of 20 crop rects with some variation
+	rects = [
+		(500 + i * 10, 300 + (i % 5), 200, 200)
+		for i in range(20)
+	]
+	# Call with all params 0
+	result = crop_mod.smooth_crop_trajectory(
+		rects,
+		1920,
+		1080,
+		alpha_position=0.0,
+		alpha_size=0.0,
+		max_velocity=0.0,
+	)
+	# Assert result equals input exactly
+	assert result == rects
+
+
+#============================================
+def test_post_smooth_reduces_jitter() -> None:
+	"""Synthetic jittery trajectory has lower velocity_std after smoothing."""
+	import track_runner.crop as crop_mod
+
+	# Seed for reproducibility
+	numpy.random.seed(42)
+	# Create 100 frames of jittery trajectory
+	rects = []
+	for i in range(100):
+		# Base position (500, 300) with noise ±20px on center
+		center_x = 500.0 + numpy.random.uniform(-20, 20)
+		center_y = 300.0 + numpy.random.uniform(-20, 20)
+		x = center_x - 100
+		y = center_y - 100
+		rects.append((x, y, 200, 200))
+	# Compute metrics before smoothing
+	before_metrics = crop_mod.compute_crop_metrics(rects)
+	# Smooth with alpha_position=0.10
+	smoothed = crop_mod.smooth_crop_trajectory(
+		rects,
+		1920,
+		1080,
+		alpha_position=0.10,
+		alpha_size=0.0,
+		max_velocity=0.0,
+	)
+	# Compute metrics after smoothing
+	after_metrics = crop_mod.compute_crop_metrics(smoothed)
+	# Assert after velocity_std < before velocity_std
+	assert after_metrics["velocity_std"] < before_metrics["velocity_std"]
+
+
+#============================================
+def test_post_smooth_clamps_to_bounds() -> None:
+	"""Smoothed rects stay within frame bounds."""
+	import track_runner.crop as crop_mod
+
+	frame_width = 1920
+	frame_height = 1080
+	# Create rects near edges
+	rects = [
+		(10, 10, 200, 200),
+		(1850, 10, 200, 200),
+		(10, 950, 200, 200),
+		(1850, 950, 200, 200),
+		(500, 300, 200, 200),
+	]
+	# Smooth
+	smoothed = crop_mod.smooth_crop_trajectory(
+		rects,
+		alpha_position=0.10,
+		alpha_size=0.0,
+		max_velocity=0.0,
+		frame_width=frame_width,
+		frame_height=frame_height,
+	)
+	# Assert all output rects stay within bounds
+	for x, y, w, h in smoothed:
+		assert x >= 0
+		assert y >= 0
+		assert x + w <= frame_width
+		assert y + h <= frame_height
+
+
+#============================================
+def test_post_smooth_preserves_constant_velocity() -> None:
+	"""Constant velocity trajectory is preserved in shape (not amplitude)."""
+	import track_runner.crop as crop_mod
+
+	# Create 50 rects with constant velocity (linearly increasing x)
+	rects = []
+	for i in range(50):
+		x = 500.0 + i * 5.0
+		y = 300.0
+		rects.append((x, y, 200, 200))
+	# Compute velocity before smoothing
+	velocities_before = []
+	for i in range(1, len(rects)):
+		v = (rects[i][0] + 100) - (rects[i - 1][0] + 100)
+		velocities_before.append(v)
+	# Smooth (very light smoothing)
+	smoothed = crop_mod.smooth_crop_trajectory(
+		rects,
+		1920,
+		1080,
+		alpha_position=0.10,
+		alpha_size=0.0,
+		max_velocity=0.0,
+	)
+	# Compute velocity after smoothing
+	velocities_after = []
+	for i in range(1, len(smoothed)):
+		v = (smoothed[i][0] + 100) - (smoothed[i - 1][0] + 100)
+		velocities_after.append(v)
+	# With constant input velocity, smoothed velocities should be stable
+	# (low variance in the middle frames)
+	import numpy
+	middle_velocities = velocities_after[25:45]
+	velocity_var = numpy.var(middle_velocities)
+	# Smoothing should make velocities more consistent
+	assert velocity_var < 1.0, (
+		f"Velocity variance {velocity_var} too high after smoothing"
+	)
+
+
+#============================================
+def test_post_smooth_direction_change() -> None:
+	"""Trajectory with sharp turn does not produce giant overshoot."""
+	import track_runner.crop as crop_mod
+
+	# Create 40 rects: first 20 move right, next 20 move left
+	rects = []
+	# First 20 frames: move right
+	for i in range(20):
+		x = 500.0 + i * 10.0
+		y = 300.0
+		rects.append((x, y, 200, 200))
+	# Next 20 frames: move left
+	for i in range(20):
+		x = 700.0 - i * 10.0
+		y = 300.0
+		rects.append((x, y, 200, 200))
+	# Smooth
+	smoothed = crop_mod.smooth_crop_trajectory(
+		rects,
+		1920,
+		1080,
+		alpha_position=0.10,
+		alpha_size=0.0,
+		max_velocity=0.0,
+	)
+	# At turn point (frame 20), smoothed center should not overshoot wildly
+	turn_frame = 20
+	orig_x_center = rects[turn_frame][0] + 100
+	smooth_x_center = smoothed[turn_frame][0] + 100
+	overshoot = abs(smooth_x_center - orig_x_center)
+	# Allow up to 100px overshoot at direction change (EMA lag)
+	assert overshoot < 100.0, (
+		f"Turn overshoot {overshoot}px exceeds 100px"
+	)
+	# No frames should have negative x
+	for x, y, w, h in smoothed:
+		assert x >= 0.0
+
+
+#============================================
+def test_post_smooth_final_velocity_cap() -> None:
+	"""Velocity cap limits per-frame center displacement."""
+	import track_runner.crop as crop_mod
+
+	# Create 30 rects: frames 0-14 at x=500, frames 15-29 at x=800
+	rects = []
+	for i in range(15):
+		rects.append((500.0, 300.0, 200, 200))
+	for i in range(15):
+		rects.append((800.0, 300.0, 200, 200))
+	# Smooth with max_velocity=15.0 and alpha_position=0.0 (no EMA)
+	smoothed = crop_mod.smooth_crop_trajectory(
+		rects,
+		1920,
+		1080,
+		alpha_position=0.0,
+		alpha_size=0.0,
+		max_velocity=15.0,
+	)
+	# Compute frame-to-frame center step distances
+	max_step = 0.0
+	for i in range(1, len(smoothed)):
+		x1, y1, w1, h1 = smoothed[i - 1]
+		x2, y2, w2, h2 = smoothed[i]
+		c1_x = x1 + w1 / 2
+		c1_y = y1 + h1 / 2
+		c2_x = x2 + w2 / 2
+		c2_y = y2 + h2 / 2
+		step = ((c2_x - c1_x) ** 2 + (c2_y - c1_y) ** 2) ** 0.5
+		max_step = max(max_step, step)
+	# Assert max step distance <= 15.0 + small tolerance
+	assert max_step <= 16.0
+
+
+#============================================
+def test_forward_backward_ema_short_sequence() -> None:
+	"""Explicit edge behavior on short input."""
+	import track_runner.crop as crop_mod
+
+	signal = numpy.array([10.0, 50.0, 10.0, 50.0, 10.0])
+	alpha = 0.3
+	result = crop_mod._forward_backward_ema(signal, alpha)
+	# Assert length preserved
+	assert len(result) == 5
+	# Assert result is smoother than input
+	assert (max(result) - min(result)) < (max(signal) - min(signal))
+	# Assert result[0] closer to 10.0 than to 50.0 (endpoint stiffness)
+	assert abs(result[0] - 10.0) < abs(result[0] - 50.0)
+
+
+#============================================
+def test_forward_backward_ema_interior_symmetry() -> None:
+	"""Reversing input yields approximately matching reversed output."""
+	import track_runner.crop as crop_mod
+
+	signal = numpy.array([0.0, 0.0, 100.0, 0.0, 0.0])
+	reversed_signal = signal[::-1]
+	result = crop_mod._forward_backward_ema(signal, 0.2)
+	result_rev = crop_mod._forward_backward_ema(reversed_signal, 0.2)
+	# Interior values should be close (within 5.0)
+	for i in range(1, 4):
+		assert abs(result[i] - result_rev[4 - i]) < 5.0
+
+
+#============================================
+def test_compute_crop_metrics() -> None:
+	"""Verify metrics dict has expected keys and sane values."""
+	import track_runner.crop as crop_mod
+
+	# Test with small jitter
+	numpy.random.seed(42)
+	rects = []
+	for i in range(50):
+		center_x = 500.0 + numpy.random.uniform(-5, 5)
+		center_y = 300.0 + numpy.random.uniform(-5, 5)
+		x = center_x - 100
+		y = center_y - 100
+		rects.append((x, y, 200, 200))
+	# Call compute_crop_metrics
+	metrics = crop_mod.compute_crop_metrics(rects)
+	# Assert result has expected keys
+	assert "velocity_std" in metrics
+	assert "acceleration_std" in metrics
+	assert "p95_step_distance" in metrics
+	# Assert all values are >= 0.0
+	assert metrics["velocity_std"] >= 0.0
+	assert metrics["acceleration_std"] >= 0.0
+	assert metrics["p95_step_distance"] >= 0.0
+	# Assert velocity_std > 0 (there IS jitter)
+	assert metrics["velocity_std"] > 0.0
+	# Test edge case: single rect returns all zeros
+	single_rect = [(500.0, 300.0, 200, 200)]
+	single_metrics = crop_mod.compute_crop_metrics(single_rect)
+	assert single_metrics["velocity_std"] == 0.0
+	assert single_metrics["acceleration_std"] == 0.0
+	assert single_metrics["p95_step_distance"] == 0.0

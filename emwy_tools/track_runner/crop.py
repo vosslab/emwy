@@ -399,8 +399,202 @@ def trajectory_to_crop_rects(
 			}
 			full_trajectory.append(fallback)
 
-	# compute smoothed crop trajectory
+	# compute smoothed crop trajectory (online pass)
 	crop_rects = compute_crop_trajectory(
 		full_trajectory, frame_width, frame_height, config,
 	)
+
+	# optional offline post-smoothing (forward-backward EMA)
+	processing = config.get("processing", {})
+	alpha_pos = float(processing.get("crop_post_smooth_strength", 0.0))
+	alpha_size = float(processing.get("crop_post_smooth_size_strength", 0.0))
+	final_velocity = float(processing.get("crop_post_smooth_max_velocity", 0.0))
+	if alpha_pos > 0 or alpha_size > 0:
+		# default size alpha to half of position alpha (heavier smoothing)
+		effective_alpha_size = alpha_size if alpha_size > 0 else alpha_pos / 2.0
+		crop_rects = smooth_crop_trajectory(
+			crop_rects, frame_width, frame_height,
+			alpha_position=alpha_pos,
+			alpha_size=effective_alpha_size,
+			max_velocity=final_velocity,
+		)
+
 	return crop_rects
+
+
+#============================================
+def _forward_backward_ema(
+	signal: numpy.ndarray,
+	alpha: float,
+) -> numpy.ndarray:
+	"""Apply a true forward-backward exponential moving average.
+
+	Runs a forward EMA on the raw signal, then a backward EMA on the
+	forward result. This produces zero-phase-like smoothing that
+	preserves local dynamics without needing scipy.
+
+	Args:
+		signal: 1-D numpy array of float values.
+		alpha: EMA coefficient (0 < alpha <= 1). Lower values give
+			heavier smoothing and slower response.
+
+	Returns:
+		Smoothed 1-D numpy array of the same length as signal.
+	"""
+	n = len(signal)
+	if n == 0:
+		return signal.copy()
+	if n == 1:
+		return signal.copy()
+
+	# forward pass: initialize at raw[0]
+	forward = numpy.empty(n, dtype=float)
+	forward[0] = signal[0]
+	for i in range(1, n):
+		forward[i] = alpha * signal[i] + (1.0 - alpha) * forward[i - 1]
+
+	# backward pass on forward result: initialize at forward[-1]
+	final = numpy.empty(n, dtype=float)
+	final[-1] = forward[-1]
+	for i in range(n - 2, -1, -1):
+		final[i] = alpha * forward[i] + (1.0 - alpha) * final[i + 1]
+
+	return final
+
+
+#============================================
+def smooth_crop_trajectory(
+	crop_rects: list,
+	frame_width: int,
+	frame_height: int,
+	alpha_position: float = 0.0,
+	alpha_size: float = 0.0,
+	max_velocity: float = 0.0,
+) -> list:
+	"""Post-smooth a crop trajectory using forward-backward EMA.
+
+	Decomposes crop rectangles into center (cx, cy) and size (w, h)
+	signals, applies optional forward-backward EMA smoothing to each,
+	reconstructs rectangles, clamps to frame bounds, and applies an
+	optional final velocity cap on the crop center.
+
+	Args:
+		crop_rects: List of (x, y, w, h) integer crop rectangles.
+		frame_width: Source video frame width in pixels.
+		frame_height: Source video frame height in pixels.
+		alpha_position: EMA alpha for center smoothing. 0 = disabled.
+		alpha_size: EMA alpha for size smoothing. 0 = disabled.
+		max_velocity: Max center displacement per frame (px). 0 = no cap.
+
+	Returns:
+		List of (x, y, w, h) integer crop rectangles after smoothing.
+	"""
+	n = len(crop_rects)
+	if n == 0:
+		return crop_rects
+
+	# extract center and size arrays from rectangles
+	arr = numpy.array(crop_rects, dtype=float)
+	# arr columns: x, y, w, h
+	cx = arr[:, 0] + arr[:, 2] / 2.0
+	cy = arr[:, 1] + arr[:, 3] / 2.0
+	w = arr[:, 2].copy()
+	h = arr[:, 3].copy()
+
+	# smooth position signals
+	if alpha_position > 0:
+		cx = _forward_backward_ema(cx, alpha_position)
+		cy = _forward_backward_ema(cy, alpha_position)
+
+	# smooth size signals
+	if alpha_size > 0:
+		w = _forward_backward_ema(w, alpha_size)
+		h = _forward_backward_ema(h, alpha_size)
+
+	# clamp size to minimum positive value
+	min_dim = 10.0
+	w = numpy.maximum(w, min_dim)
+	h = numpy.maximum(h, min_dim)
+
+	# reconstruct rectangles from smoothed center + size
+	x = cx - w / 2.0
+	y = cy - h / 2.0
+
+	# clamp to frame bounds
+	x = numpy.clip(x, 0.0, frame_width - w)
+	y = numpy.clip(y, 0.0, frame_height - h)
+
+	# apply final velocity cap on center only
+	if max_velocity > 0:
+		# recompute centers after clamping
+		cx = x + w / 2.0
+		cy = y + h / 2.0
+		for i in range(1, n):
+			dx = cx[i] - cx[i - 1]
+			dy = cy[i] - cy[i - 1]
+			dist = math.sqrt(dx * dx + dy * dy)
+			if dist > max_velocity:
+				# rescale displacement to max_velocity, preserving direction
+				scale = max_velocity / dist
+				cx[i] = cx[i - 1] + dx * scale
+				cy[i] = cy[i - 1] + dy * scale
+		# rebuild x, y from capped centers
+		x = cx - w / 2.0
+		y = cy - h / 2.0
+		# re-clamp to frame bounds after velocity cap
+		x = numpy.clip(x, 0.0, frame_width - w)
+		y = numpy.clip(y, 0.0, frame_height - h)
+
+	# convert back to integer tuples
+	result = []
+	for i in range(n):
+		rect = (int(x[i]), int(y[i]), int(w[i]), int(h[i]))
+		result.append(rect)
+	return result
+
+
+#============================================
+def compute_crop_metrics(crop_rects: list) -> dict:
+	"""Compute motion metrics for a crop trajectory.
+
+	Measures frame-to-frame crop center step distances, velocity
+	changes (jerk proxy), and 95th percentile step distance.
+	Useful for comparing trajectories before and after smoothing.
+
+	Args:
+		crop_rects: List of (x, y, w, h) integer crop rectangles.
+
+	Returns:
+		Dict with keys:
+			velocity_std: std of frame-to-frame center step distances.
+			acceleration_std: std of frame-to-frame velocity changes.
+			p95_step_distance: 95th percentile of center step distances.
+	"""
+	n = len(crop_rects)
+	if n < 2:
+		result = {
+			"velocity_std": 0.0,
+			"acceleration_std": 0.0,
+			"p95_step_distance": 0.0,
+		}
+		return result
+
+	# compute center positions
+	arr = numpy.array(crop_rects, dtype=float)
+	cx = arr[:, 0] + arr[:, 2] / 2.0
+	cy = arr[:, 1] + arr[:, 3] / 2.0
+
+	# frame-to-frame step distances (Euclidean)
+	dx = numpy.diff(cx)
+	dy = numpy.diff(cy)
+	step_dist = numpy.sqrt(dx * dx + dy * dy)
+
+	# velocity changes (acceleration proxy)
+	accel = numpy.diff(step_dist) if len(step_dist) > 1 else numpy.array([0.0])
+
+	result = {
+		"velocity_std": float(numpy.std(step_dist)),
+		"acceleration_std": float(numpy.std(accel)),
+		"p95_step_distance": float(numpy.percentile(step_dist, 95)),
+	}
+	return result

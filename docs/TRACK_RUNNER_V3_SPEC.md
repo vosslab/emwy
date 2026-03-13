@@ -460,12 +460,53 @@ trajectories from the confidence-weighted tracker output.
 | `max_crop_velocity` | 30.0 | Max px/frame crop movement |
 | `min_crop_size` | 200 | Minimum crop dimension in pixels |
 | `deadband_fraction` | 0.02 | Fraction of crop size for deadband |
+| `crop_post_smooth_strength` | 0.0 | EMA alpha for post-smoothing crop center (0 = disabled) |
+| `crop_post_smooth_size_strength` | 0.0 | EMA alpha for post-smoothing crop size (0 = auto) |
+| `crop_post_smooth_max_velocity` | 0.0 | Final center velocity cap after smoothing (0 = no cap) |
 
 **Alpha floor**: smoothing alpha is clamped to `max(alpha, 0.02)` so the
 crop always responds, even at low confidence.
 
 **Velocity capping**: per-frame crop displacement clamped to 30 px with sign
 preservation.
+
+### Post-smoothing (offline)
+
+An optional offline forward-backward EMA smoother runs after the online crop
+pass. This reduces residual crop jitter for telephoto footage where small
+bbox noise translates to visible crop movement.
+
+The smoother decomposes crop rectangles into center (cx, cy) and size (w, h)
+signals, applies forward-backward EMA independently, reconstructs
+rectangles, clamps to frame bounds, and applies an optional final velocity
+cap on the center.
+
+Pipeline order:
+
+1. Online crop pass (existing `CropController`)
+2. Optional forward-backward EMA on cx, cy (position) and w, h (size)
+3. Reconstruct rectangles from smoothed center + size
+4. Clamp to frame bounds
+5. Optional final velocity cap on center only
+6. Re-clamp to frame bounds
+
+### Telephoto preset
+
+For tight-zoom footage (e.g., 600mm lens), add these values to the
+`processing` section:
+
+```yaml
+processing:
+  crop_post_smooth_strength: 0.10
+  crop_post_smooth_size_strength: 0.05
+  crop_post_smooth_max_velocity: 12.0
+  crop_max_velocity: 12.0
+```
+
+Lower alpha means heavier smoothing. Position alpha 0.10 provides moderate
+stabilization. Size alpha 0.05 smooths zoom changes more aggressively.
+The final velocity cap of 12.0 px/frame is a safety rail on the rendered
+path.
 
 **Output resolution**: defaults to the median of all crop rectangle dimensions.
 Can be overridden with `output_resolution: [width, height]` in config.
