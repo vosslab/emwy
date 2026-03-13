@@ -1148,13 +1148,31 @@ def _mode_encode(
 	)
 	trajectory = interval_solver.stitch_trajectories(interval_results)
 
-	# save raw trajectory before anchoring for debug overlay comparison
+	# save raw trajectory and FWD/BWD tracks before anchoring for debug overlay
 	raw_trajectory_for_debug = None
+	fwd_trajectory_for_debug = None
+	bwd_trajectory_for_debug = None
 	if args.debug:
 		raw_trajectory_for_debug = [
 			dict(s) if s is not None else None
 			for s in trajectory
 		]
+		# stitch forward and backward tracks for FWD/BWD overlay boxes
+		n_frames = len(trajectory)
+		fwd_trajectory_for_debug = [None] * n_frames
+		bwd_trajectory_for_debug = [None] * n_frames
+		for result in interval_results:
+			start = int(result["start_frame"])
+			fwd_track = result.get("forward_track", [])
+			bwd_track = result.get("backward_track", [])
+			for i, fwd_state in enumerate(fwd_track):
+				fi = start + i
+				if 0 <= fi < n_frames and fwd_state is not None:
+					fwd_trajectory_for_debug[fi] = fwd_state
+			for i, bwd_state in enumerate(bwd_track):
+				fi = start + i
+				if 0 <= fi < n_frames and bwd_state is not None:
+					bwd_trajectory_for_debug[fi] = bwd_state
 
 	# apply multi-seed anchored interpolation to reduce drift
 	seeds_path = state_io.default_seeds_path(args.input_file)
@@ -1241,6 +1259,15 @@ def _mode_encode(
 					raw = raw_trajectory_for_debug[i]
 					if raw is not None:
 						debug_state["raw_box"] = [raw["cx"], raw["cy"], raw["w"], raw["h"]]
+				# attach FWD/BWD projection boxes for debug overlay
+				if fwd_trajectory_for_debug is not None and i < len(fwd_trajectory_for_debug):
+					fwd = fwd_trajectory_for_debug[i]
+					if fwd is not None:
+						debug_state["forward_box"] = [fwd["cx"], fwd["cy"], fwd["w"], fwd["h"]]
+				if bwd_trajectory_for_debug is not None and i < len(bwd_trajectory_for_debug):
+					bwd = bwd_trajectory_for_debug[i]
+					if bwd is not None:
+						debug_state["backward_box"] = [bwd["cx"], bwd["cy"], bwd["w"], bwd["h"]]
 			else:
 				debug_state = None
 			frame_states_for_debug.append(debug_state)

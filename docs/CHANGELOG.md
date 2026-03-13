@@ -3,6 +3,18 @@
 ## 2026-03-13
 
 ### Additions and New Features
+- Extracted `BaseAnnotationController` in [emwy_tools/track_runner/ui/base_controller.py](emwy_tools/track_runner/ui/base_controller.py) from edit/seed controllers: shared event filter, mouse drawing, overlay management, zoom cycling, draw mode toggles (partial/approx), scale bar, and activation lifecycle. Eliminates ~300 lines of duplicated plumbing.
+- Edit mode `U` key enters seed-add scrub mode for adding seeds at unseeded frames without leaving the edit session. ESC/Q returns to edit mode. New seeds are merged into the work list in timeline order; deleted seeds are purged on return. Added `_on_enter_add_mode()`, `_resume_from_add_mode()`, `_rebuild_filtered_indices()`, and `_restore_nav_position()` to [emwy_tools/track_runner/ui/edit_controller.py](emwy_tools/track_runner/ui/edit_controller.py).
+- `SeedController` now accepts optional `return_callback` and `start_frame` parameters for use as a sub-mode within edit mode. When `return_callback` is set, ESC/Q returns collected seeds to the caller instead of closing the window. Status bar hints update to show "ESC/q=return to edit".
+- Duplicate seed detection in `SeedController._on_box_drawn()`: draws at frames that already have a seed are rejected with a status bar flash message "seed already exists at this frame".
+
+### Behavior or Interface Changes
+- `EditController` and `SeedController` now inherit from `BaseAnnotationController` instead of `QObject` directly. No change in external API.
+- Edit mode `get_summary()` now includes an `"added"` count in the summary dict.
+- `edit_seeds()` in [emwy_tools/track_runner/seed_editor.py](emwy_tools/track_runner/seed_editor.py) now passes `frame_filter` to `EditController` for use during seed list rebuilds after add-mode returns.
+
+### Additions and New Features
+- Added `torso_box` coordinate warning to the anchored interpolation section of [docs/TRACK_RUNNER_V3_SPEC.md](docs/TRACK_RUNNER_V3_SPEC.md): `torso_box[0:2]` are top-left, never center coordinates. Prevents repeat of prior `_collect_anchor_knots()` bug.
 - Created [emwy_tools/track_runner/overlay_styles.yaml](emwy_tools/track_runner/overlay_styles.yaml): centralized YAML palette for all track runner visual semantics (colors, line styles, opacity, thickness tiers). Covers seed status, predictions, tracking sources, workspace modes, draw mode badges, preview box, and encoder overlay blending.
 - Created [emwy_tools/track_runner/overlay_config.py](emwy_tools/track_runner/overlay_config.py): loader module that reads `overlay_styles.yaml` once, caches the result, validates hex colors and opacity ranges, merges defaults into each style entry, and provides typed accessor functions for both UI hex strings and cv2 BGR tuples.
 - Unified visual tokens across UI and encoder: seed visible is now `#22C55E` everywhere (was `(0,255,0)` in encoder), FWD prediction is `#EF4444` everywhere (was `(255,128,0)` in encoder), BWD prediction is `#FF00FF` everywhere (was `(0,128,255)` in encoder).
@@ -39,7 +51,10 @@
 - Fixed test helper `_make_seed()` in [emwy_tools/tests/test_track_runner.py](emwy_tools/tests/test_track_runner.py): was storing center coords in `torso_box` (should be top-left). Now correctly computes `torso_box = [cx - w/2, cy - h/2, w, h]` and includes `cx`, `cy`, `w`, `h` top-level keys matching real seed format.
 - Fixed test `test_trajectory_erasure_all_drawing_modes`: approximate seed test data was missing `cx`/`cy` keys causing KeyError, and assertion expected `None` for erased approximate frames when the code correctly fills them with an `approx_seed_hint` dict.
 - Clarified `torso_box` coordinate convention in [docs/TRACK_RUNNER_V3_SPEC.md](docs/TRACK_RUNNER_V3_SPEC.md): explicitly documented as `[x, y, w, h]` (top-left corner), not center. Added `cx`, `cy`, `w`, `h` fields to the seed JSON example and noted that code must use `cx`/`cy` for center coordinates, never `torso_box[0]`/`torso_box[1]`.
+- Fixed `load_diagnostics()` in [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py) crashing with `TypeError` when `intervals` list contains non-dict entries. The score reconstruction loop now skips non-dict items. Also fixed `test_state_io_diagnostics_round_trip` to use realistic interval dicts that exercise the score reconstruction path.
 - Fixed stale comment in [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py):1157: changed "absence erasure" to "trajectory erasure" to match the renamed function `_apply_trajectory_erasure()`.
+- Fixed partial seed frames losing color identity: `_apply_trajectory_erasure()` in [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py) blindly overwrote all frames within erasure radius, including visible/partial seed frames that `anchor_to_seeds()` had already pinned. Fix: builds a `protected_frames` set of visible/partial seed frame indices and skips them during erasure.
+- Added FWD/BWD projection boxes to debug encode overlay: stitches `forward_track` and `backward_track` from solved intervals in [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py), passes them as `forward_box`/`backward_box` in debug states. Encoder's `draw_debug_overlay_cropped()` in [emwy_tools/track_runner/encoder.py](emwy_tools/track_runner/encoder.py) now falls back to `state` dict for FWD/BWD boxes when `debug_state` parameter is not provided.
 
 ### Additions and New Features
 - Added optional `output_resolution` config key under `processing` in track_runner: `[width, height]` list that controls final output dimensions independently of the crop window. When absent, output resolution defaults to the median of all crop rectangle dimensions (previously used first-frame dimensions).

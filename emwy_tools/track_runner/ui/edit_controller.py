@@ -8,19 +8,19 @@ of existing seeds. Handles keyboard shortcuts and mouse drawing.
 # (none)
 
 # PIP3 modules
-from PySide6.QtCore import QObject, Qt, QTimer, QThread
+from PySide6.QtCore import Qt, QThread
 from PySide6.QtWidgets import QLabel, QWidget, QHBoxLayout, QPushButton
-import numpy
 
 # local repo modules
 import overlay_config
 import ui.overlay_items as overlay_items_module
 import ui.status_presenter as status_presenter_module
+import ui.base_controller as base_controller_module
 
 PreviewBoxItem = overlay_items_module.PreviewBoxItem
 RectItem = overlay_items_module.RectItem
-ScaleBarItem = overlay_items_module.ScaleBarItem
 StatusPresenter = status_presenter_module.StatusPresenter
+BaseAnnotationController = base_controller_module.BaseAnnotationController
 
 #============================================
 
@@ -54,7 +54,7 @@ class _YoloLoaderThread(QThread):
 #============================================
 
 
-class EditController(QObject):
+class EditController(BaseAnnotationController):
 	"""Manages the Edit mode annotation workflow.
 
 	Allows reviewing, filtering, deleting, and redrawing existing seeds.
@@ -72,6 +72,7 @@ class EditController(QObject):
 		predictions: dict | None = None,
 		seed_confidences: dict | None = None,
 		yolo_detector_list: list | None = None,
+		frame_filter: set | None = None,
 	) -> None:
 		"""Initialize the EditController.
 
@@ -84,81 +85,55 @@ class EditController(QObject):
 			save_callback: Callable(work_seeds) to save incremental changes.
 			predictions: Optional dict mapping frame_index to prediction dicts.
 			seed_confidences: Optional dict mapping frame_index to confidence dicts.
-			yolo_detector_list: Optional [None] list for lazy YOLO loading (Patch 6).
+			yolo_detector_list: Optional [None] list for lazy YOLO loading.
+			frame_filter: Optional set of frame indices for filtering seeds.
 		"""
-		super().__init__()
+		super().__init__(
+			reader=reader,
+			fps=fps,
+			config=config,
+			save_callback=save_callback,
+			predictions=predictions,
+		)
 
 		self._work_seeds = work_seeds
 		self._filtered_indices = filtered_indices
-		self._reader = reader
-		self._fps = fps
-		self._config = config
-		self._save_callback = save_callback
-		self._predictions = predictions
 		self._seed_confidences = seed_confidences
 		self._yolo_detector_list = yolo_detector_list or [None]
+		self._frame_filter = frame_filter
 
 		# Navigation state
 		self._nav_idx = 0
-		self._current_frame = 0
-		self._current_bgr: numpy.ndarray | None = None
 
 		# Tracking counters
 		self._reviewed = 0
 		self._kept = 0
 		self._redrawn = 0
 		self._deleted = 0
+		self._added = 0
 		self._status_changed = 0
 		self._changed_frames: set = set()
 		self._delete_indices: set = set()
 
-		# Window and UI state
-		self._window: object = None
+		# Status presenter
 		self._status_presenter = StatusPresenter()
-		self._scale_bar_item: object = None
-
-		# Drawing state
-		self._drawing = False
-		self._drag_start: tuple | None = None
-		self._drag_current: tuple | None = None
-		self._preview_item: object = None
-		self._partial_mode = False
 
 		# Seed box display
 		self._seed_rect_item: object = None
-		self._fwd_item: object = None
-		self._bwd_item: object = None
 
-		# Polish mode state (Patch 6)
+		# Polish mode state
 		self._polish_preview_item: object = None
 		self._polish_mode: str | None = None
 		self._pending_refined: dict | None = None
 		self._yolo_loading: bool = False
 		self._yolo_tried: bool = False
 		self._yolo_thread: object = None
-		self._approx_mode: bool = False
 
 		# Current seed being reviewed
 		self._current_seed: dict | None = None
 
-		# Toolbar widgets
-		self._toolbar_widget: QWidget | None = None
-		self._btn_partial: QPushButton | None = None
-		self._btn_approx: QPushButton | None = None
-
-		# Session state
-		self._done = False
-
-	#============================================
-
-	@property
-	def toolbar_widget(self) -> QWidget | None:
-		"""Toolbar widget for the annotation toolbar.
-
-		Returns:
-			QWidget with navigation and draw mode buttons, or None.
-		"""
-		return self._toolbar_widget
+		# Keybindings label
+		self._keybindings_label: QLabel | None = None
 
 	#============================================
 
@@ -191,7 +166,7 @@ class EditController(QObject):
 		self._btn_partial = QPushButton("Partial")
 		self._btn_partial.setCheckable(True)
 		self._btn_partial.setToolTip("Toggle partial draw mode (P)")
-		self._btn_partial.clicked.connect(self._on_partial_mode)
+		self._btn_partial.clicked.connect(self._on_partial_toggle)
 		layout.addWidget(self._btn_partial)
 
 		self._btn_approx = QPushButton("Approx")
@@ -204,148 +179,88 @@ class EditController(QObject):
 
 	#============================================
 
-	def _sync_toolbar_buttons(self) -> None:
-		"""Sync toolbar button checked state with internal mode flags."""
-		if self._btn_partial is not None:
-			self._btn_partial.setChecked(self._partial_mode)
-		if self._btn_approx is not None:
-			self._btn_approx.setChecked(self._approx_mode)
-
-	#============================================
-
-	def activate(self, window: object) -> None:
-		"""Activate the controller and connect to window events.
-
-		Args:
-			window: AnnotationWindow instance.
-		"""
-		self._window = window
-
-		# Build toolbar widget
-		self._toolbar_widget = self._build_toolbar()
-
-		# Install event filter for keyboard and mouse events
-		# Filter on window and frame_view for key events,
-		# and on viewport for mouse events
-		self._window.installEventFilter(self)
-		self._window.get_frame_view().installEventFilter(self)
-		viewport = self._window.get_frame_view().viewport()
-		viewport.installEventFilter(self)
-
-		# Add scale bar item to scene
-		scene = self._window.get_frame_view().scene()
-		self._scale_bar_item = ScaleBarItem()
-		scene.addItem(self._scale_bar_item)
-
+	def _on_activated(self) -> None:
+		"""Set up status presenter and load the first seed."""
 		# Add status presenter to toolbar
 		toolbar_widget = self._status_presenter.get_widget()
-		window.statusBar().addWidget(toolbar_widget)
+		self._window.statusBar().addWidget(toolbar_widget)
 
 		# Add keybinding hints as a permanent label in the status bar
-		keybindings_text = (
-			"SPACE/Right=keep  Left=prev  D=delete  "
-			"N=not_in_frame  P=partial  A=approx  "
-			"Y=YOLO  F=consensus  Z=zoom  "
-			"[/]=jump 10%  L=low conf  ESC/q=done"
-		)
-		self._keybindings_label = QLabel(keybindings_text)
+		self._keybindings_label = QLabel(self._get_default_status_text())
 		self._keybindings_label.setStyleSheet(
 			"font-family: monospace; font-size: 10px; "
 			"color: #888888; padding: 2px 8px;"
 		)
-		window.statusBar().addPermanentWidget(self._keybindings_label)
+		self._window.statusBar().addPermanentWidget(self._keybindings_label)
 
 		# Load and display the first frame
 		self._load_current_seed()
 
 	#============================================
 
-	def deactivate(self) -> None:
-		"""Deactivate the controller and disconnect from window events."""
-		if self._window is not None:
-			self._window.removeEventFilter(self)
-			self._window.get_frame_view().removeEventFilter(self)
-			viewport = self._window.get_frame_view().viewport()
-			viewport.removeEventFilter(self)
-
-		# Clear overlay items
+	def _on_deactivated(self) -> None:
+		"""Clean up edit-specific state."""
+		# Remove edit-specific overlays (seed rect, polish preview)
 		if self._window is not None:
 			scene = self._window.get_frame_view().scene()
 			if self._seed_rect_item is not None:
 				scene.removeItem(self._seed_rect_item)
 				self._seed_rect_item = None
-			if self._fwd_item is not None:
-				scene.removeItem(self._fwd_item)
-				self._fwd_item = None
-			if self._bwd_item is not None:
-				scene.removeItem(self._bwd_item)
-				self._bwd_item = None
-			if self._preview_item is not None:
-				scene.removeItem(self._preview_item)
-				self._preview_item = None
 			if self._polish_preview_item is not None:
 				scene.removeItem(self._polish_preview_item)
 				self._polish_preview_item = None
-			if self._scale_bar_item is not None:
-				scene.removeItem(self._scale_bar_item)
-				self._scale_bar_item = None
 
 		# Clear status bar
 		self._status_presenter.clear()
 
 	#============================================
 
-	def eventFilter(self, obj: object, event: object) -> bool:
-		"""Handle window and viewport events.
-
-		Args:
-			obj: Object that received the event.
-			event: Event instance.
+	def _get_default_status_text(self) -> str:
+		"""Keybinding hints for edit mode.
 
 		Returns:
-			True if event was handled, False otherwise.
+			String with keybinding hints.
 		"""
-		from PySide6.QtCore import QEvent as QEventType
-		from PySide6.QtGui import QMouseEvent
+		text = (
+			"SPACE/Right=keep  Left=prev  D=delete  "
+			"N=not_in_frame  P=partial  A=approx  "
+			"Y=YOLO  F=consensus  Z=zoom  "
+			"[/]=jump 10%  L=low conf  U=add seed  ESC/q=done"
+		)
+		return text
 
-		if event.type() == QEventType.Type.KeyPress:
-			key = event.key()
-			modifiers = event.modifiers()
-			if self.handle_key_press(key, modifiers):
-				return True
-		elif event.type() == QEventType.Type.MouseButtonPress:
-			if isinstance(event, QMouseEvent):
-				pos = event.position()
-				sx, sy = self._window.get_frame_view().map_to_scene(
-					int(pos.x()), int(pos.y())
-				)
-				self.handle_mouse_press(sx, sy)
-				return True
-		elif event.type() == QEventType.Type.MouseMove:
-			if isinstance(event, QMouseEvent):
-				pos = event.position()
-				sx, sy = self._window.get_frame_view().map_to_scene(
-					int(pos.x()), int(pos.y())
-				)
-				self.handle_mouse_move(sx, sy)
-				return True
-		elif event.type() == QEventType.Type.MouseButtonRelease:
-			if isinstance(event, QMouseEvent):
-				pos = event.position()
-				sx, sy = self._window.get_frame_view().map_to_scene(
-					int(pos.x()), int(pos.y())
-				)
-				self.handle_mouse_release(sx, sy)
-				return True
-		elif event.type() == QEventType.Type.Wheel:
-			# Delegate wheel to the FrameView so zoom works when filter
-			# is installed on the viewport
-			frame_view = self._window.get_frame_view()
-			frame_view.wheelEvent(event)
-			QTimer.singleShot(0, self._update_scale_bar)
-			return True
+	#============================================
 
-		return super().eventFilter(obj, event)
+	def _get_zoom_center(self) -> tuple | None:
+		"""Get zoom center from current seed or predictions.
+
+		Returns:
+			Tuple of (cx, cy) or None.
+		"""
+		# try to center on current seed position
+		if self._current_seed is not None:
+			cx = self._current_seed.get("cx")
+			cy = self._current_seed.get("cy")
+			if cx is not None and cy is not None:
+				return (float(cx), float(cy))
+		# fallback to prediction center
+		return self._get_prediction_center()
+
+	#============================================
+
+	def _set_status_text(self, text: str) -> None:
+		"""Set status via the StatusPresenter widget.
+
+		Args:
+			text: Message to display.
+		"""
+		self._status_presenter.get_widget().setText(text)
+
+	#============================================
+
+	def _restore_default_status(self) -> None:
+		"""Restore the status presenter with current seed info."""
+		self._update_status_presenter()
 
 	#============================================
 
@@ -419,36 +334,6 @@ class EditController(QObject):
 
 	#============================================
 
-	def _get_prediction_center(self) -> tuple | None:
-		"""Get the average center of FWD/BWD predictions for the current frame.
-
-		Returns:
-			Tuple of (cx, cy) or None if no predictions available.
-		"""
-		if self._predictions is None:
-			return None
-		preds = self._predictions.get(self._current_frame)
-		if preds is None:
-			return None
-
-		centers = []
-		fwd = preds.get("forward")
-		if fwd is not None:
-			centers.append((float(fwd["cx"]), float(fwd["cy"])))
-		bwd = preds.get("backward")
-		if bwd is not None:
-			centers.append((float(bwd["cx"]), float(bwd["cy"])))
-
-		if not centers:
-			return None
-
-		# Average the available centers
-		avg_cx = sum(c[0] for c in centers) / len(centers)
-		avg_cy = sum(c[1] for c in centers) / len(centers)
-		return (avg_cx, avg_cy)
-
-	#============================================
-
 	def _update_seed_rect_overlay(self) -> None:
 		"""Show the existing seed box on the frame."""
 		scene = self._window.get_frame_view().scene()
@@ -498,81 +383,6 @@ class EditController(QObject):
 
 	#============================================
 
-	def _update_fwd_bwd_overlays(self) -> None:
-		"""Update FWD/BWD prediction overlays.
-
-		Always shows both predictions when available, using dashed lines
-		to distinguish them from the solid seed box.
-		"""
-		scene = self._window.get_frame_view().scene()
-
-		# Remove old overlays
-		if self._fwd_item is not None:
-			scene.removeItem(self._fwd_item)
-			self._fwd_item = None
-		if self._bwd_item is not None:
-			scene.removeItem(self._bwd_item)
-			self._bwd_item = None
-
-		# Return early if no predictions
-		if self._predictions is None:
-			return
-
-		preds = self._predictions.get(self._current_frame)
-		if preds is None:
-			return
-
-		# FWD prediction (color and style from overlay_styles.yaml)
-		fwd = preds.get("forward")
-		if fwd is not None:
-			fwd_style = overlay_config.get_prediction_style("forward")
-			cx = float(fwd["cx"])
-			cy = float(fwd["cy"])
-			w = float(fwd["w"])
-			h = float(fwd["h"])
-			x = int(cx - w / 2.0)
-			y = int(cy - h / 2.0)
-			self._fwd_item = RectItem(
-				x, y, int(w), int(h),
-				color_str=fwd_style["color"],
-				label="FWD",
-				fill_alpha=int(fwd_style["fill_opacity"] * 255),
-				dashed=(fwd_style["line_style"] == "dashed"),
-			)
-			self._fwd_item.setZValue(5)
-			scene.addItem(self._fwd_item)
-
-		# BWD prediction (color and style from overlay_styles.yaml)
-		bwd = preds.get("backward")
-		if bwd is not None:
-			bwd_style = overlay_config.get_prediction_style("backward")
-			cx = float(bwd["cx"])
-			cy = float(bwd["cy"])
-			w = float(bwd["w"])
-			h = float(bwd["h"])
-			x = int(cx - w / 2.0)
-			y = int(cy - h / 2.0)
-			self._bwd_item = RectItem(
-				x, y, int(w), int(h),
-				color_str=bwd_style["color"],
-				label="BWD",
-				fill_alpha=int(bwd_style["fill_opacity"] * 255),
-				dashed=(bwd_style["line_style"] == "dashed"),
-			)
-			self._bwd_item.setZValue(5)
-			scene.addItem(self._bwd_item)
-
-	#============================================
-
-	def _update_scale_bar(self) -> None:
-		"""Update the zoom scale bar display."""
-		if self._scale_bar_item is None:
-			return
-		zoom = self._window.get_frame_view().get_zoom_factor()
-		self._scale_bar_item.update_zoom(zoom)
-
-	#============================================
-
 	def handle_key_press(self, key: int, modifiers: object = None) -> bool:
 		"""Handle keyboard events.
 
@@ -593,17 +403,18 @@ class EditController(QObject):
 			self._clear_polish_preview()
 			self._update_status_presenter()
 
-		if key == Qt.Key.Key_Escape or key == Qt.Key.Key_Q:
-			self._on_quit()
-			return True
-		elif key == Qt.Key.Key_Space:
+		# Common keys (ESC/Q, P, A, Z)
+		result = self._handle_common_key(key, modifiers)
+		if result is not None:
+			return result
+
+		if key == Qt.Key.Key_Space:
 			if self._polish_mode == "pending":
 				self._on_accept_polish()
 				return True
 			self._on_keep()
 			return True
 		elif key == Qt.Key.Key_Right:
-			# Shift+Right always advances; bare Right advances at 1x, pans when zoomed
 			is_zoomed = self._window.get_frame_view().get_zoom_factor() > 1.05
 			if shift_held or not is_zoomed:
 				if self._polish_mode == "pending":
@@ -611,15 +422,12 @@ class EditController(QObject):
 					return True
 				self._on_keep()
 				return True
-			# Bare Right when zoomed = let QGraphicsView pan
 			return False
 		elif key == Qt.Key.Key_Left:
-			# Shift+Left always advances; bare Left advances at 1x, pans when zoomed
 			is_zoomed = self._window.get_frame_view().get_zoom_factor() > 1.05
 			if shift_held or not is_zoomed:
 				self._on_prev()
 				return True
-			# Bare Left when zoomed = let QGraphicsView pan
 			return False
 		elif key == Qt.Key.Key_D:
 			self._on_delete()
@@ -627,130 +435,26 @@ class EditController(QObject):
 		elif key == Qt.Key.Key_N:
 			self._on_status_change("not_in_frame")
 			return True
-		elif key == Qt.Key.Key_P:
-			self._on_partial_mode()
-			return True
-		elif key == Qt.Key.Key_Z:
-			self._on_zoom_toggle()
-			return True
 		elif key == Qt.Key.Key_Y:
 			self._on_yolo_polish()
 			return True
 		elif key == Qt.Key.Key_F:
 			self._on_consensus_polish()
 			return True
-		elif key == Qt.Key.Key_A:
-			self._on_approx_toggle()
-			return True
 		elif key == Qt.Key.Key_BracketRight:
-			# jump forward 10% of filtered seed list
 			self._on_jump_forward()
 			return True
 		elif key == Qt.Key.Key_BracketLeft:
-			# jump backward 10% of filtered seed list
 			self._on_jump_backward()
 			return True
 		elif key == Qt.Key.Key_L:
-			# jump to next low-confidence seed
 			self._on_jump_low_conf()
+			return True
+		elif key == Qt.Key.Key_U:
+			self._on_enter_add_mode()
 			return True
 
 		return False
-
-	#============================================
-
-	def handle_mouse_press(self, scene_x: float, scene_y: float) -> None:
-		"""Handle mouse button press.
-
-		Args:
-			scene_x: Scene x coordinate.
-			scene_y: Scene y coordinate.
-		"""
-		if self._current_bgr is None:
-			return
-
-		self._drawing = True
-		self._drag_start = (scene_x, scene_y)
-		self._drag_current = (scene_x, scene_y)
-
-		# Remove any old preview item
-		if self._preview_item is not None:
-			scene = self._window.get_frame_view().scene()
-			scene.removeItem(self._preview_item)
-			self._preview_item = None
-
-	#============================================
-
-	def handle_mouse_move(self, scene_x: float, scene_y: float) -> None:
-		"""Handle mouse move.
-
-		Args:
-			scene_x: Scene x coordinate.
-			scene_y: Scene y coordinate.
-		"""
-		if not self._drawing or self._drag_start is None:
-			return
-
-		self._drag_current = (scene_x, scene_y)
-
-		# Update preview box
-		scene = self._window.get_frame_view().scene()
-		if self._preview_item is not None:
-			scene.removeItem(self._preview_item)
-
-		x1, y1 = self._drag_start
-		x2, y2 = self._drag_current
-		x = min(x1, x2)
-		y = min(y1, y2)
-		w = abs(x2 - x1)
-		h = abs(y2 - y1)
-
-		self._preview_item = PreviewBoxItem(x, y, w, h)
-		scene.addItem(self._preview_item)
-
-	#============================================
-
-	def handle_mouse_release(self, scene_x: float, scene_y: float) -> None:
-		"""Handle mouse button release.
-
-		Args:
-			scene_x: Scene x coordinate.
-			scene_y: Scene y coordinate.
-		"""
-		if not self._drawing:
-			return
-
-		self._drawing = False
-
-		if self._drag_start is None:
-			return
-
-		x1, y1 = self._drag_start
-		x2, y2 = scene_x, scene_y
-
-		# Normalize the box
-		x = min(x1, x2)
-		y = min(y1, y2)
-		w = abs(x2 - x1)
-		h = abs(y2 - y1)
-
-		# Remove preview item
-		scene = self._window.get_frame_view().scene()
-		if self._preview_item is not None:
-			scene.removeItem(self._preview_item)
-			self._preview_item = None
-
-		# Validate box size
-		box_area = w * h
-		frame_h, frame_w = self._current_bgr.shape[:2]
-		min_area = 10
-		max_area = frame_w * frame_h * 0.5
-
-		if box_area < min_area or box_area > max_area:
-			return
-
-		box = [int(x), int(y), int(w), int(h)]
-		self._on_box_drawn(box)
 
 	#============================================
 
@@ -900,58 +604,6 @@ class EditController(QObject):
 		self._work_seeds[seed_list_idx] = new_seed
 		self._save_callback(self._work_seeds)
 		self._advance()
-
-	#============================================
-
-	def _on_partial_mode(self) -> None:
-		"""Toggle partial mode for redrawing torso box."""
-		if self._partial_mode:
-			self._partial_mode = False
-			self._update_mode_badge()
-			print("  partial mode cancelled")
-		else:
-			self._partial_mode = True
-			self._approx_mode = False
-			self._update_mode_badge()
-			print("  partial mode: draw the runner's torso box (press p again to cancel)")
-
-	#============================================
-
-	def _on_zoom_toggle(self) -> None:
-		"""Cycle through zoom levels (1x -> 1.5x -> 2.25x -> 3.375x -> 1x).
-
-		Centers zoom on the current seed position when available,
-		otherwise centers on the frame center.
-		"""
-		zoom_levels = [1.0, 1.5, 2.25, 3.375]
-		frame_view = self._window.get_frame_view()
-		current = frame_view.get_zoom_factor()
-		# find the next zoom level in the cycle
-		next_zoom = zoom_levels[0]
-		for zf in zoom_levels:
-			if zf > current + 0.01:
-				next_zoom = zf
-				break
-
-		# determine zoom center from current seed or frame center
-		center_x = -1.0
-		center_y = -1.0
-		if next_zoom > 1.0:
-			# try to center on current seed position
-			if self._current_seed is not None:
-				cx = self._current_seed.get("cx")
-				cy = self._current_seed.get("cy")
-				if cx is not None and cy is not None:
-					center_x = float(cx)
-					center_y = float(cy)
-			# fallback to frame center
-			if center_x < 0 and self._current_bgr is not None:
-				h, w = self._current_bgr.shape[:2]
-				center_x = w / 2.0
-				center_y = h / 2.0
-
-		frame_view.set_zoom(next_zoom, center_x, center_y)
-		self._update_scale_bar()
 
 	#============================================
 
@@ -1123,44 +775,6 @@ class EditController(QObject):
 
 	#============================================
 
-	def _on_approx_toggle(self) -> None:
-		"""Toggle approximated obstruction mode."""
-		if self._approx_mode:
-			self._approx_mode = False
-			self._update_mode_badge()
-			print("  approx mode cancelled")
-		else:
-			self._approx_mode = True
-			self._partial_mode = False
-			self._update_mode_badge()
-			print("  approx mode: draw approximate box for obstructed position")
-
-	#============================================
-
-	def _update_mode_badge(self) -> None:
-		"""Update the status bar to show active draw mode (partial/approx)."""
-		self._sync_toolbar_buttons()
-		if self._window is None:
-			return
-		status_widget = self._status_presenter.get_widget()
-		if self._approx_mode:
-			approx_color = overlay_config.get_draw_mode_badge_color("approximate")
-			self._window.statusBar().setStyleSheet(
-				f"background-color: {approx_color}; color: #000000; font-weight: bold;"
-			)
-			status_widget.setText("** APPROX MODE ** draw approximate box (press 'a' to cancel)")
-		elif self._partial_mode:
-			partial_color = overlay_config.get_draw_mode_badge_color("partial")
-			self._window.statusBar().setStyleSheet(
-				f"background-color: {partial_color}; color: #000000; font-weight: bold;"
-			)
-			status_widget.setText("** PARTIAL MODE ** draw visible torso (press 'p' to cancel)")
-		else:
-			self._window.statusBar().setStyleSheet("")
-			self._update_status_presenter()
-
-	#============================================
-
 	def _advance(self) -> None:
 		"""Advance to next seed."""
 		self._nav_idx += 1
@@ -1224,6 +838,119 @@ class EditController(QObject):
 
 	#============================================
 
+	def _on_enter_add_mode(self) -> None:
+		"""Enter seed-add mode via SeedController.
+
+		Saves the current frame position, creates a SeedController with
+		a return callback, and swaps controllers.
+		"""
+		import ui.seed_controller as seed_controller_module
+
+		# Save current frame for position restoration on return
+		self._saved_frame_index = self._current_frame
+
+		# Collect frame indices of existing seeds for duplicate filtering
+		existing_frames = set()
+		for seed in self._work_seeds:
+			existing_frames.add(int(seed["frame_index"]))
+
+		# Build a list of all frame indices the user could scrub to
+		# (use the reader's total frame count as the range)
+		total_frames = self._reader._total_frames
+		# Start the seed controller at the current frame
+		seed_frame_indices = list(range(total_frames))
+
+		controller = seed_controller_module.SeedController(
+			seed_frame_indices=seed_frame_indices,
+			reader=self._reader,
+			fps=self._fps,
+			config=self._config,
+			all_seeds=self._work_seeds,
+			save_callback=self._save_callback,
+			pass_number=1,
+			mode_str="edit_add",
+			predictions=self._predictions,
+			return_callback=self._resume_from_add_mode,
+			start_frame=self._current_frame,
+		)
+
+		# Swap controllers via the window
+		self._window.set_controller(controller)
+		# Update mode indicator
+		if hasattr(self._window, "_mode_actions"):
+			self._window._mode_actions["seed"].setChecked(True)
+
+	#============================================
+
+	def _resume_from_add_mode(self, new_seeds: list) -> None:
+		"""Resume edit mode after returning from add-seed mode.
+
+		Args:
+			new_seeds: List of newly collected seeds from seed mode.
+		"""
+		# 1. Purge deleted seeds
+		if self._delete_indices:
+			self._work_seeds[:] = [
+				s for i, s in enumerate(self._work_seeds)
+				if i not in self._delete_indices
+			]
+			self._delete_indices.clear()
+
+		# 2. Append new seeds
+		self._added += len(new_seeds)
+		self._work_seeds.extend(new_seeds)
+
+		# 3. Rebuild filtered indices
+		self._rebuild_filtered_indices()
+
+		# 4. Restore position: first seed with frame_index >= saved
+		self._restore_nav_position()
+
+		# 5. Swap back to edit mode
+		self._window.set_controller(self)
+		if hasattr(self._window, "_mode_actions"):
+			self._window._mode_actions["edit"].setChecked(True)
+
+	#============================================
+
+	def _rebuild_filtered_indices(self) -> None:
+		"""Rebuild filtered indices after seed list changes.
+
+		Sorts work_seeds in place by frame_index and rebuilds
+		_filtered_indices based on _frame_filter.
+		"""
+		# Sort work_seeds in place by frame_index
+		self._work_seeds.sort(key=lambda s: int(s["frame_index"]))
+
+		# Rebuild filtered indices
+		if self._frame_filter is not None:
+			self._filtered_indices = [
+				i for i, s in enumerate(self._work_seeds)
+				if int(s["frame_index"]) in self._frame_filter
+			]
+		else:
+			self._filtered_indices = list(range(len(self._work_seeds)))
+
+	#============================================
+
+	def _restore_nav_position(self) -> None:
+		"""Restore nav position to first seed at or after saved frame."""
+		if not self._filtered_indices:
+			# No seeds left, quit gracefully
+			self._nav_idx = 0
+			return
+
+		saved = getattr(self, "_saved_frame_index", 0)
+		for i, idx in enumerate(self._filtered_indices):
+			frame_idx = int(self._work_seeds[idx]["frame_index"])
+			if frame_idx >= saved:
+				self._nav_idx = i
+				return
+		# All seeds before saved frame, go to last
+		self._nav_idx = len(self._filtered_indices) - 1
+
+	#============================================
+
 	def get_summary(self) -> tuple:
 		"""Get the editing summary and final seeds list.
 
@@ -1243,6 +970,7 @@ class EditController(QObject):
 			"kept": self._kept,
 			"redrawn": self._redrawn,
 			"deleted": self._deleted,
+			"added": self._added,
 			"status_changed": self._status_changed,
 			"changed_frames": self._changed_frames,
 		}

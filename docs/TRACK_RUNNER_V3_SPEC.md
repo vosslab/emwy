@@ -317,6 +317,10 @@ windowed curve through nearby seeds and nudges low-confidence frames toward
 the fit. This exploits the weak kinematic prior that distance runners exhibit
 locally smooth image-plane motion.
 
+`_collect_anchor_knots()` and any seed-to-trajectory conversion must use
+top-level `cx`/`cy` or compute center from `torso_box` top-left coordinates;
+`torso_box[0:2]` are never center coordinates.
+
 **Seed window**: the nearest 4 seeds on each side of the current frame.
 `CubicSpline` with natural boundary conditions fits `cx`/`cy`; `PCHIP` in
 log-space fits `w`/`h` to avoid overshoot on scale changes. With only 2 knots,

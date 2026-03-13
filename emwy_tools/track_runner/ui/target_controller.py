@@ -7,12 +7,10 @@ SeedController with different defaults for refinement passes.
 # local repo modules
 import ui.seed_controller as seed_controller_module
 
-SeedController = seed_controller_module.SeedController
-
 #============================================
 
 
-class TargetController(SeedController):
+class TargetController(seed_controller_module.SeedController):
 	"""Manages the Target mode annotation workflow.
 
 	Inherits all functionality from SeedController, with different

@@ -779,6 +779,12 @@ def _apply_trajectory_erasure(
 		The modified trajectory list (same object, modified in place).
 	"""
 	n = len(trajectory)
+	# build set of visible/partial seed frames that must not be erased;
+	# anchor_to_seeds() already pinned these to correct positions
+	protected_frames = set()
+	for seed in seeds:
+		if seed.get("status") in ("visible", "partial"):
+			protected_frames.add(int(seed["frame_index"]))
 	erase_count = 0
 	for seed in seeds:
 		status = seed.get("status", "")
@@ -803,6 +809,9 @@ def _apply_trajectory_erasure(
 		erase_start = max(0, seed_frame - radius_frames)
 		erase_end = min(n - 1, seed_frame + radius_frames)
 		for fi in range(erase_start, erase_end + 1):
+			# skip visible/partial seed frames -- they have precise positions
+			if fi in protected_frames:
+				continue
 			if status in ("approximate", "obstructed"):
 				# use the approx seed position as a low-confidence hint
 				# instead of None which becomes a center-frame fallback

@@ -612,11 +612,11 @@ def draw_debug_overlay_cropped(
 	text_y1 = max(12, int(22 * s))
 	text_y2 = max(24, int(42 * s))
 
-	# resolve debug_state values safely
+	# resolve debug_state values safely; fall back to state for FWD/BWD boxes
 	if debug_state is None:
 		debug_state = {}
-	forward_box = debug_state.get("forward_box")
-	backward_box = debug_state.get("backward_box")
+	forward_box = debug_state.get("forward_box") or state.get("forward_box")
+	backward_box = debug_state.get("backward_box") or state.get("backward_box")
 	competitor_box = debug_state.get("competitor_box")
 	confidence_label = debug_state.get("confidence_label", "")
 	interval_id = debug_state.get("interval_id", "")

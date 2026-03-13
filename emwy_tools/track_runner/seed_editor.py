@@ -420,6 +420,7 @@ def edit_seeds(
 		predictions=predictions,
 		seed_confidences=seed_confidences,
 		yolo_detector_list=yolo_detector,
+		frame_filter=frame_filter,
 	)
 	window = AnnotationWindow("Track Runner - Seed Editor", initial_mode="edit")
 	window.set_controller(controller)
