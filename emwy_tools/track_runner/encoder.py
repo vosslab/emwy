@@ -13,13 +13,11 @@ import concurrent.futures
 # PIP3 modules
 import cv2
 import numpy
-
-# local repo modules
-import overlay_config
 import rich.progress
 
 # local repo modules
 import tr_crop
+import overlay_config
 import common_tools.frame_filters as frame_filters
 
 

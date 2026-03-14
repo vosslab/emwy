@@ -271,7 +271,6 @@ def write_diagnostics(path: str, diagnostics_data: dict) -> None:
 	diagnostics_data[DIAGNOSTICS_HEADER_KEY] = DIAGNOSTICS_HEADER_VALUE
 	with open(path, "w") as fh:
 		json.dump(diagnostics_data, fh, indent=2)
-	return
 
 
 #============================================
@@ -337,7 +336,6 @@ def write_intervals(path: str, intervals_data: dict) -> None:
 	intervals_data[INTERVALS_HEADER_KEY] = INTERVALS_HEADER_VALUE
 	with open(path, "w") as fh:
 		json.dump(intervals_data, fh, indent=2)
-	return
 
 
 #============================================

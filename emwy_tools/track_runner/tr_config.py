@@ -70,7 +70,6 @@ def validate_config(config: dict) -> None:
 	for section in required_sections:
 		if section not in config:
 			raise RuntimeError(f"config missing required key: {section}")
-	return
 
 #============================================
 
@@ -116,7 +115,6 @@ def write_config(path: str, config: dict) -> None:
 		config[TOOL_CONFIG_HEADER_KEY] = TOOL_CONFIG_HEADER_VALUE
 	with open(path, "w") as fh:
 		yaml.dump(config, fh, default_flow_style=False, sort_keys=False)
-	return
 
 #============================================
 

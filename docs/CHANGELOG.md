@@ -3,6 +3,22 @@
 ## 2026-03-13
 
 ### Additions and New Features
+- Created [emwy_tools/track_runner/box_utils.py](emwy_tools/track_runner/box_utils.py): shared geometric helpers `center_to_corners`, `clamp_box_to_frame`, `compute_iou`, and `draw_transparent_rect` extracted from duplicated inline patterns across the track runner package.
+- Created [tests/test_state_io_roundtrip.py](tests/test_state_io_roundtrip.py): pytest-based round-trip tests for [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py) covering seeds, diagnostics, intervals, and fingerprint generation. Migrated self-test logic from `__main__` block.
+
+### Fixes and Maintenance
+- Replaced inline bbox clamping patterns in [emwy_tools/track_runner/propagator.py](emwy_tools/track_runner/propagator.py) (3 sites), [emwy_tools/track_runner/hypothesis.py](emwy_tools/track_runner/hypothesis.py) (2 sites) with `box_utils.clamp_box_to_frame()` calls.
+- Replaced duplicated `_compute_iou()` in [emwy_tools/track_runner/hypothesis.py](emwy_tools/track_runner/hypothesis.py) with shared `box_utils.compute_iou()`.
+- Updated `_compute_dice_coefficient()` in [emwy_tools/track_runner/scoring.py](emwy_tools/track_runner/scoring.py) to use `box_utils.center_to_corners()` for coordinate conversion.
+- Replaced 4 transparent rectangle drawing blocks in [emwy_tools/track_runner/seed_editor.py](emwy_tools/track_runner/seed_editor.py) with `box_utils.draw_transparent_rect()` calls.
+- Extracted `read_video_metadata()` helper in [emwy_tools/track_runner/tr_config.py](emwy_tools/track_runner/tr_config.py), updated 3 call sites in [emwy_tools/track_runner/seeding.py](emwy_tools/track_runner/seeding.py) and [emwy_tools/track_runner/seed_editor.py](emwy_tools/track_runner/seed_editor.py).
+- Extracted `_load_json_with_header()` in [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py) to deduplicate JSON loading boilerplate across `load_seeds`, `load_diagnostics`, and `load_intervals`.
+- Fixed import ordering in [emwy_tools/track_runner/encoder.py](emwy_tools/track_runner/encoder.py): moved `rich.progress` from local repo modules to PIP3 section, removed duplicate comment block.
+- Fixed import ordering in [emwy_tools/track_runner/seed_editor.py](emwy_tools/track_runner/seed_editor.py): removed empty Standard Library section and duplicate local repo modules comment block.
+- Removed bare `return` statements from void functions in [emwy_tools/track_runner/tr_config.py](emwy_tools/track_runner/tr_config.py) and [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py).
+- Removed `if __name__ == "__main__"` self-test block from [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py): tests moved to [tests/test_state_io_roundtrip.py](tests/test_state_io_roundtrip.py).
+
+### Additions and New Features
 - Added `-S`/`--start` argument to interactive track runner modes (seed, edit, target) in [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py): accepts a start time in seconds and seeks the UI to that position on launch. Seed and target modes seek to the nearest candidate frame; edit mode seeks to the nearest seed at or after the given time. Wired through [emwy_tools/track_runner/seeding.py](emwy_tools/track_runner/seeding.py), [emwy_tools/track_runner/seed_editor.py](emwy_tools/track_runner/seed_editor.py), [emwy_tools/track_runner/ui/target_controller.py](emwy_tools/track_runner/ui/target_controller.py), and [emwy_tools/track_runner/ui/edit_controller.py](emwy_tools/track_runner/ui/edit_controller.py).
 
 - Created [docs/TRACK_RUNNER_KEYBINDINGS.md](docs/TRACK_RUNNER_KEYBINDINGS.md): comprehensive keybinding reference for all track runner annotation modes (seed, target, edit), including common keys, mouse/trackpad input, zoom behavior, draw modes, toolbar buttons, and polish workflow.

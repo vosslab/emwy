@@ -14,6 +14,7 @@ import numpy
 from PySide6.QtWidgets import QApplication
 
 # local repo modules
+import box_utils
 import overlay_config
 
 # local repo modules
@@ -69,11 +70,7 @@ def _draw_seed_overlay(
 	x2 = int(cx + sw / 2.0)
 	y2 = int(cy + sh / 2.0)
 	# draw semi-transparent filled rectangle
-	overlay = frame.copy()
-	cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
-	cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
-	# draw solid border on top
-	cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+	box_utils.draw_transparent_rect(frame, x1, y1, x2, y2, color, alpha, border=2)
 
 
 #============================================
@@ -108,10 +105,7 @@ def _draw_predictions_overlay(
 		y1 = int(cy - h / 2.0)
 		x2 = int(cx + w / 2.0)
 		y2 = int(cy + h / 2.0)
-		overlay = frame.copy()
-		cv2.rectangle(overlay, (x1, y1), (x2, y2), fwd_bgr, -1)
-		cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
-		cv2.rectangle(frame, (x1, y1), (x2, y2), fwd_bgr, 1)
+		box_utils.draw_transparent_rect(frame, x1, y1, x2, y2, fwd_bgr, alpha, border=1)
 		cv2.putText(
 			frame, "FWD",
 			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, fwd_bgr, 1,
@@ -128,10 +122,7 @@ def _draw_predictions_overlay(
 		y1 = int(cy - h / 2.0)
 		x2 = int(cx + w / 2.0)
 		y2 = int(cy + h / 2.0)
-		overlay = frame.copy()
-		cv2.rectangle(overlay, (x1, y1), (x2, y2), bwd_bgr, -1)
-		cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
-		cv2.rectangle(frame, (x1, y1), (x2, y2), bwd_bgr, 1)
+		box_utils.draw_transparent_rect(frame, x1, y1, x2, y2, bwd_bgr, alpha, border=1)
 		cv2.putText(
 			frame, "BWD",
 			(x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, bwd_bgr, 1,
@@ -327,10 +318,7 @@ def _draw_preview_box(
 	y1 = int(cy - bh / 2.0)
 	x2 = int(cx + bw / 2.0)
 	y2 = int(cy + bh / 2.0)
-	overlay = frame.copy()
-	cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
-	cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
-	cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+	box_utils.draw_transparent_rect(frame, x1, y1, x2, y2, color, alpha, border=2)
 
 
 #============================================

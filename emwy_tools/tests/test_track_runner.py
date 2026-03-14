@@ -460,20 +460,20 @@ def test_propagator_build_appearance_model_keys() -> None:
 #============================================
 def test_hypothesis_compute_iou_identical_boxes() -> None:
 	"""IoU of identical boxes is 1.0."""
-	import track_runner.hypothesis as hyp_mod
+	import box_utils
 	box = {"cx": 100.0, "cy": 100.0, "w": 40.0, "h": 80.0}
-	# call private function through module
-	iou = hyp_mod._compute_iou(box, box)
+	# call box_utils.compute_iou
+	iou = box_utils.compute_iou(box, box)
 	assert abs(iou - 1.0) < 1e-6
 
 
 #============================================
 def test_hypothesis_compute_iou_non_overlapping() -> None:
 	"""Non-overlapping boxes yield IoU of 0.0."""
-	import track_runner.hypothesis as hyp_mod
+	import box_utils
 	box_a = {"cx": 100.0, "cy": 100.0, "w": 40.0, "h": 80.0}
 	box_b = {"cx": 500.0, "cy": 500.0, "w": 40.0, "h": 80.0}
-	iou = hyp_mod._compute_iou(box_a, box_b)
+	iou = box_utils.compute_iou(box_a, box_b)
 	assert iou == 0.0
 
 
