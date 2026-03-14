@@ -190,7 +190,7 @@ normalizes zoom.
 Example:
 
 ```bash
-source source_me.sh && python3 emwy_tools/track_runner/track_runner.py -i race_footage.mov -o race_tracked.mp4
+source source_me.sh && python3 emwy_tools/track_runner/track_runner.py seed -i race_footage.mov
 ```
 
 Config file:

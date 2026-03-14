@@ -5,7 +5,6 @@ Multi-pass orchestration: seed collection, interval solving, refinement,
 crop trajectory computation, and video encoding.
 
 Subcommands:
-  run     Full pipeline: seed -> solve -> encode (default workflow)
   seed    Collect/add seeds, save, exit
   edit    Review/fix/delete existing seeds interactively
   target  Add seeds at weak interval frames with FWD/BWD overlays
@@ -18,7 +17,6 @@ Subcommands:
 import argparse
 import json
 import os
-import queue
 import shutil
 import statistics
 import subprocess
@@ -188,68 +186,11 @@ def parse_args() -> argparse.Namespace:
 	)
 	_add_encode_args(encode_parser)
 
-	# -- run mode (full pipeline, interactive) --
-	run_parser = subparsers.add_parser(
-		"run", help="Full pipeline: seed -> solve -> encode.",
-	)
-	_add_encode_args(run_parser)
-	_add_seed_interval_arg(run_parser)
-	_add_severity_arg(run_parser, "Minimum severity of weak intervals to refine.")
-	run_parser.add_argument(
-		"--refine", dest="refine", type=str, default=None,
-		help=(
-			"Refinement mode(s): 'suggested', 'interval', 'gap', or "
-			"comma-separated combination."
-		),
-	)
-	run_parser.add_argument(
-		"--gap-threshold", dest="gap_threshold", type=float, default=8.0,
-		help="Gap threshold in seconds for 'gap' refinement (default 8.0).",
-	)
-	run_parser.add_argument(
-		"--ignore-diagnostics", dest="ignore_diagnostics",
-		action="store_true",
-		help="Force re-seeding even where solver thinks intervals are fine.",
-	)
-	run_parser.add_argument(
-		"--no-interactive-refine", dest="interactive_refine",
-		action="store_false",
-		help="Disable interactive refinement prompt after solve.",
-	)
-	base_controller_module.BaseAnnotationController.add_argparse_args(run_parser)
-	run_parser.set_defaults(
-		keep_temp=False,
-		ignore_diagnostics=False,
-		interactive_refine=True,
-	)
-
 	args = parser.parse_args()
-	# default to 'run' mode when no subcommand is given
+	# no subcommand given: print help and exit
 	if args.mode is None:
-		args.mode = "run"
-		# set run-mode defaults that would normally come from subparser
-		if not hasattr(args, "output_file"):
-			args.output_file = None
-		if not hasattr(args, "seed_interval"):
-			args.seed_interval = 10.0
-		if not hasattr(args, "aspect"):
-			args.aspect = None
-		if not hasattr(args, "keep_temp"):
-			args.keep_temp = False
-		if not hasattr(args, "refine"):
-			args.refine = None
-		if not hasattr(args, "gap_threshold"):
-			args.gap_threshold = 8.0
-		if not hasattr(args, "ignore_diagnostics"):
-			args.ignore_diagnostics = False
-		if not hasattr(args, "severity"):
-			args.severity = None
-		if not hasattr(args, "interactive_refine"):
-			args.interactive_refine = True
-		if not hasattr(args, "encode_filters"):
-			args.encode_filters = None
-		if not hasattr(args, "start_time"):
-			args.start_time = None
+		parser.print_help()
+		raise SystemExit(0)
 	return args
 
 
@@ -1374,297 +1315,6 @@ def _mode_encode(
 
 
 #============================================
-def _mode_run(
-	args: argparse.Namespace,
-	cfg: dict,
-	video_info: dict,
-	seeds_path: str,
-	diag_path: str,
-	intervals_path: str,
-) -> None:
-	"""Full pipeline mode: seed -> solve -> refine -> encode.
-
-	Args:
-		args: Parsed argparse namespace.
-		cfg: Configuration dict.
-		video_info: Video metadata dict.
-		seeds_path: Path to the seeds JSON file.
-		diag_path: Path to diagnostics JSON file.
-		intervals_path: Path to solved-intervals JSON file.
-	"""
-	fps = video_info["fps"]
-	time_range = _parse_time_range(args.time_range)
-
-	# apply aspect override
-	if getattr(args, "aspect", None) is not None:
-		cfg.setdefault("processing", {})
-		cfg["processing"]["crop_aspect"] = args.aspect
-
-	# initialize YOLO detector
-	print("initializing YOLO detector...")
-	det = tr_detection.create_detector(cfg)
-
-	# load saved seeds (or start fresh)
-	seeds_data = state_io.load_seeds(seeds_path)
-	existing_seeds = seeds_data.get("seeds", [])
-
-	if existing_seeds:
-		print(f"loaded {len(existing_seeds)} existing seeds from {seeds_path}")
-		seeds = existing_seeds
-	else:
-		# seed collection pass
-		pass_number = 1
-		seed_interval = getattr(args, "seed_interval", 10.0)
-		print(f"launching seed collection (pass {pass_number})...")
-		seeds = seeding.collect_seeds(
-			args.input_file,
-			seed_interval,
-			cfg,
-			pass_number=pass_number,
-			existing_seeds=None,
-			frame_count_override=video_info["frame_count"],
-			debug=args.debug,
-			save_callback=_make_save_callback(seeds_path),
-			time_range=time_range,
-		)
-		if not seeds:
-			raise RuntimeError("no seeds collected; cannot proceed without seeds")
-		_save_seeds_to_disk(seeds, seeds_path)
-		print(f"saved {len(seeds)} seeds to {seeds_path}")
-
-	# deduplicate seeds
-	seeds = _load_and_deduplicate_seeds(seeds_path)
-	_validate_usable_seeds(seeds)
-	solver_seeds = seeds
-
-	num_workers = _resolve_workers(args)
-
-	# run interval solver with weak-interval tracking
-	weak_queue = queue.Queue()
-	seeds_added_during_solve = 0
-
-	def _on_interval_complete(result: dict) -> None:
-		"""Callback fired when each interval finishes solving."""
-		score = result.get("interval_score", {})
-		confidence = score.get("confidence", "low")
-		if confidence in ("low", "fair"):
-			weak_queue.put(result)
-
-	usable_seeds, _, _ = _validate_usable_seeds(seeds)
-	print(f"running interval solver "
-		f"({len(usable_seeds)} usable seeds, {num_workers} workers)...")
-
-	t_solve_start = time.time()
-	prior_ivs, on_solved_cb = _load_prior_results(intervals_path)
-	with encoder.VideoReader(args.input_file) as reader:
-		diagnostics = interval_solver.solve_all_intervals(
-			reader, solver_seeds, det, cfg,
-			num_workers=num_workers, debug=args.debug,
-			on_interval_complete=_on_interval_complete,
-			prior_intervals=prior_ivs,
-			on_interval_solved=on_solved_cb,
-		)
-	diagnostics["fps"] = fps
-	t_solve_elapsed = time.time() - t_solve_start
-	print(f"  solve complete ({t_solve_elapsed:.1f}s)")
-
-	# report weak intervals
-	weak_count_during_solve = weak_queue.qsize()
-	if weak_count_during_solve > 0:
-		print(f"  {weak_count_during_solve} weak intervals detected during solve")
-
-	state_io.write_solver_diagnostics(diagnostics, diag_path, fps)
-	print(f"  diagnostics written to {diag_path}")
-	_print_quality_summary(diagnostics, fps)
-
-	# prompt for immediate seed collection if weak intervals were found
-	seed_interval = getattr(args, "seed_interval", 10.0)
-	severity = getattr(args, "severity", None)
-	interactive_refine = getattr(args, "interactive_refine", True)
-
-	if weak_count_during_solve > 0 and interactive_refine:
-		target_frames = review.generate_refinement_targets(
-			diagnostics,
-			mode="suggested",
-			seed_interval=int(seed_interval * fps),
-			severity=severity,
-		)
-		if target_frames:
-			sev_label = f"{severity}+ severity " if severity is not None else ""
-			prompt_msg = (
-				f"  {weak_count_during_solve} weak intervals found "
-				f"({len(target_frames)} {sev_label}seed targets). "
-				f"Add seeds now? [Y/n]: "
-			)
-			answer = input(prompt_msg).strip().lower()
-			if answer in ("", "y", "yes"):
-				existing_passes = [s["pass"] for s in seeds]
-				next_pass = max(existing_passes) + 1 if existing_passes else 2
-				predictions = _build_predictions_from_diagnostics(diagnostics)
-				print("  collecting seeds at weak intervals...")
-				seeds = seeding.collect_seeds_at_frames(
-					args.input_file,
-					target_frames,
-					cfg,
-					pass_number=next_pass,
-					mode="solve_refine",
-					existing_seeds=seeds,
-					predictions=predictions,
-					debug=args.debug,
-					save_callback=_make_save_callback(seeds_path),
-				)
-				seeds_added_during_solve = len(seeds) - len(solver_seeds)
-				_save_seeds_to_disk(seeds, seeds_path)
-				print(f"  saved {len(seeds)} seeds to {seeds_path}")
-				if seeds_added_during_solve > 0:
-					solver_seeds = seeds
-					print(
-						f"  {seeds_added_during_solve} new seeds added. "
-						f"Re-solving with updated seeds..."
-					)
-					t_resolve_start = time.time()
-					prior_ivs, on_solved_cb = _load_prior_results(intervals_path)
-					with encoder.VideoReader(args.input_file) as reader:
-						diagnostics = interval_solver.solve_all_intervals(
-							reader, solver_seeds, det, cfg,
-							num_workers=num_workers, debug=args.debug,
-							prior_intervals=prior_ivs,
-							on_interval_solved=on_solved_cb,
-						)
-					diagnostics["fps"] = fps
-					t_resolve_elapsed = time.time() - t_resolve_start
-					print(f"  re-solve complete ({t_resolve_elapsed:.1f}s)")
-					state_io.write_solver_diagnostics(
-						diagnostics, diag_path, fps,
-					)
-					_print_quality_summary(diagnostics, fps)
-
-	# interactive refinement loop
-	max_interactive_passes = 5
-	interactive_pass = 0
-	refine_arg = getattr(args, "refine", None)
-	if refine_arg is None and interactive_refine:
-		while interactive_pass < max_interactive_passes:
-			if not review.needs_refinement(diagnostics):
-				break
-			target_frames = review.generate_refinement_targets(
-				diagnostics,
-				mode="suggested",
-				seed_interval=int(seed_interval * fps),
-				severity=severity,
-			)
-			if not target_frames:
-				break
-			intervals = diagnostics.get("intervals", [])
-			weak_count = sum(
-				1 for iv in intervals
-				if iv["interval_score"].get("confidence", "low")
-				in ("low", "fair")
-			)
-			sev_label = f"{severity}+ severity " if severity is not None else ""
-			prompt_msg = (
-				f"Found {weak_count} weak intervals "
-				f"({len(target_frames)} {sev_label}seed targets). "
-				f"Add seeds now? [Y/n]: "
-			)
-			answer = input(prompt_msg).strip().lower()
-			if answer not in ("", "y", "yes"):
-				break
-			interactive_pass += 1
-			existing_passes = [s["pass"] for s in seeds]
-			next_pass = max(existing_passes) + 1 if existing_passes else 2
-			predictions = _build_predictions_from_diagnostics(diagnostics)
-			print(f"interactive refinement pass {interactive_pass}...")
-			seeds = seeding.collect_seeds_at_frames(
-				args.input_file,
-				target_frames,
-				cfg,
-				pass_number=next_pass,
-				mode="interactive_refine",
-				existing_seeds=seeds,
-				predictions=predictions,
-				debug=args.debug,
-				save_callback=_make_save_callback(seeds_path),
-			)
-			_save_seeds_to_disk(seeds, seeds_path)
-			print(f"  saved {len(seeds)} seeds to {seeds_path}")
-			solver_seeds = seeds
-			print("re-solving with updated seeds...")
-			t_resolve_start = time.time()
-			prior_ivs, on_solved_cb = _load_prior_results(intervals_path)
-			with encoder.VideoReader(args.input_file) as reader:
-				diagnostics = interval_solver.solve_all_intervals(
-					reader, solver_seeds, det, cfg,
-					prior_intervals=prior_ivs,
-					on_interval_solved=on_solved_cb,
-				)
-			diagnostics["fps"] = fps
-			t_resolve_elapsed = time.time() - t_resolve_start
-			print(f"  re-solve complete ({t_resolve_elapsed:.1f}s)")
-			state_io.write_solver_diagnostics(diagnostics, diag_path, fps)
-			_print_quality_summary(diagnostics, fps)
-
-	# explicit refinement pass
-	if refine_arg is not None:
-		ignore_diag = getattr(args, "ignore_diagnostics", False)
-		should_refine = (
-			ignore_diag or review.needs_refinement(diagnostics)
-		)
-		if not should_refine:
-			print("all intervals trusted -- skipping refinement")
-		else:
-			print(f"refinement mode: {refine_arg}")
-			gap_threshold = getattr(args, "gap_threshold", 8.0)
-			gap_threshold_frames = int(gap_threshold * fps)
-			target_frames = review.generate_refinement_targets(
-				diagnostics,
-				mode=refine_arg,
-				seed_interval=int(seed_interval * fps),
-				gap_threshold=gap_threshold_frames,
-				time_range=time_range,
-				severity=severity,
-			)
-			if not target_frames:
-				print("no refinement targets identified")
-			else:
-				print(f"  {len(target_frames)} refinement target frames")
-				existing_passes = [s["pass"] for s in seeds]
-				next_pass = max(existing_passes) + 1 if existing_passes else 2
-				predictions = _build_predictions_from_diagnostics(diagnostics)
-				seeds = seeding.collect_seeds_at_frames(
-					args.input_file,
-					target_frames,
-					cfg,
-					pass_number=next_pass,
-					mode=refine_arg.split(",")[0] + "_refine",
-					existing_seeds=seeds,
-					predictions=predictions,
-					debug=args.debug,
-					save_callback=_make_save_callback(seeds_path),
-				)
-				_save_seeds_to_disk(seeds, seeds_path)
-				print(f"  saved {len(seeds)} seeds to {seeds_path}")
-				solver_seeds = seeds
-				print("re-solving with updated seeds...")
-				t_resolve_start = time.time()
-				prior_ivs, on_solved_cb = _load_prior_results(intervals_path)
-				with encoder.VideoReader(args.input_file) as reader:
-					diagnostics = interval_solver.solve_all_intervals(
-						reader, solver_seeds, det, cfg,
-						prior_intervals=prior_ivs,
-						on_interval_solved=on_solved_cb,
-					)
-				diagnostics["fps"] = fps
-				t_resolve_elapsed = time.time() - t_resolve_start
-				print(f"  re-solve complete ({t_resolve_elapsed:.1f}s)")
-				state_io.write_solver_diagnostics(diagnostics, diag_path, fps)
-				_print_quality_summary(diagnostics, fps)
-
-	# encode the cropped output
-	_mode_encode(args, cfg, video_info, diag_path, intervals_path)
-
-
-#============================================
 def main() -> None:
 	"""Main entry point for the track_runner v2 CLI."""
 	t_total_start = time.time()
@@ -1728,8 +1378,6 @@ def main() -> None:
 		_mode_refine(args, cfg, video_info, seeds_path, diag_path, intervals_path)
 	elif mode == "encode":
 		_mode_encode(args, cfg, video_info, diag_path, intervals_path)
-	elif mode == "run":
-		_mode_run(args, cfg, video_info, seeds_path, diag_path, intervals_path)
 	else:
 		raise RuntimeError(f"unknown mode: {mode}")
 
