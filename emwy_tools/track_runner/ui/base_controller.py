@@ -34,6 +34,23 @@ class BaseAnnotationController(QObject):
 	Subclasses implement abstract methods for mode-specific behavior.
 	"""
 
+	@staticmethod
+	def add_argparse_args(parser: object) -> None:
+		"""Register shared interactive-mode CLI arguments on a parser.
+
+		Call this from cli.py for each interactive subparser (seed,
+		edit, target, run) to avoid duplicating argument definitions.
+
+		Args:
+			parser: An argparse subparser to add arguments to.
+		"""
+		parser.add_argument(
+			"-S", "--start", dest="start_time", type=float, default=None,
+			help="Start time in seconds (seek UI to this position on launch).",
+		)
+
+	#============================================
+
 	def __init__(
 		self,
 		reader: object,
