@@ -73,6 +73,7 @@ class EditController(BaseAnnotationController):
 		seed_confidences: dict | None = None,
 		yolo_detector_list: list | None = None,
 		frame_filter: set | None = None,
+		start_frame: int | None = None,
 	) -> None:
 		"""Initialize the EditController.
 
@@ -87,6 +88,7 @@ class EditController(BaseAnnotationController):
 			seed_confidences: Optional dict mapping frame_index to confidence dicts.
 			yolo_detector_list: Optional [None] list for lazy YOLO loading.
 			frame_filter: Optional set of frame indices for filtering seeds.
+			start_frame: Optional frame index to seek to on first activate.
 		"""
 		super().__init__(
 			reader=reader,
@@ -131,6 +133,9 @@ class EditController(BaseAnnotationController):
 
 		# Current seed being reviewed
 		self._current_seed: dict | None = None
+
+		# Start frame for initial seek
+		self._start_frame = start_frame
 
 		# Keybindings label
 		self._keybindings_label: QLabel | None = None
@@ -193,7 +198,18 @@ class EditController(BaseAnnotationController):
 		)
 		self._window.statusBar().addPermanentWidget(self._keybindings_label)
 
-		# Load and display the first frame
+		# Seek to nearest seed at or after start_frame if provided
+		if self._start_frame is not None and self._filtered_indices:
+			for i, idx in enumerate(self._filtered_indices):
+				frame_idx = int(self._work_seeds[idx]["frame_index"])
+				if frame_idx >= self._start_frame:
+					self._nav_idx = i
+					break
+			else:
+				# all seeds before start_frame, go to last
+				self._nav_idx = len(self._filtered_indices) - 1
+
+		# Load and display the current seed
 		self._load_current_seed()
 
 	#============================================

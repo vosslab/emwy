@@ -7,30 +7,12 @@ Graphics items for annotation overlays in the frame view.
 
 # PIP3 modules
 from PySide6 import QtWidgets
-from PySide6.QtWidgets import QApplication, QGraphicsRectItem, QGraphicsTextItem
+from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsTextItem
 from PySide6.QtGui import QColor, QPen, QBrush, QFont, QPainter
 from PySide6.QtCore import Qt, QRectF
 
 # local repo modules
 import overlay_config
-
-#============================================
-
-def _get_device_pixel_ratio() -> float:
-	"""Get the device pixel ratio for DPI-aware line scaling.
-
-	Returns:
-		Device pixel ratio (2.0 on Retina, 1.0 on standard displays).
-	"""
-	app = QApplication.instance()
-	if app is None:
-		return 1.0
-	# Use the primary screen device pixel ratio
-	screens = app.screens()
-	if not screens:
-		return 1.0
-	dpr = screens[0].devicePixelRatio()
-	return dpr
 
 #============================================
 
@@ -83,15 +65,10 @@ class RectItem(QGraphicsRectItem):
 		fill_color.setAlpha(fill_alpha)
 		self.setBrush(QBrush(fill_color))
 
-		# border thickness scales with box area, adjusted for DPI
-		# small boxes (~50x80) get thickness 1, large (~200x300) get 2
-		dpr = _get_device_pixel_ratio()
-		box_area = w * h
-		base_thickness = 1.0 if box_area < 20000 else 2.0
-		# divide by DPI ratio so lines look the same on retina vs standard
-		thickness = (base_thickness * thickness_scale) / dpr
+		# border thickness: 2px baseline, cosmetic so it stays constant on screen
+		base_thickness = 2.0 * thickness_scale
 		pen = QPen(color)
-		pen.setWidthF(thickness)
+		pen.setWidthF(base_thickness)
 		# cosmetic pen stays constant width regardless of view zoom
 		pen.setCosmetic(True)
 		if dashed:
@@ -99,6 +76,15 @@ class RectItem(QGraphicsRectItem):
 			pen.setStyle(Qt.PenStyle.CustomDashLine)
 			pen.setDashPattern([6, 10])
 		self.setPen(pen)
+
+		# dark contrast outline drawn behind the colored border
+		outline_pen = QPen(QColor(0, 0, 0, 180))
+		outline_pen.setWidthF(base_thickness + 2.0)
+		outline_pen.setCosmetic(True)
+		if dashed:
+			outline_pen.setStyle(Qt.PenStyle.CustomDashLine)
+			outline_pen.setDashPattern([6, 10])
+		self._outline_pen = outline_pen
 
 		if label:
 			# label font scales with box height, uses mono family
@@ -110,6 +96,25 @@ class RectItem(QGraphicsRectItem):
 			label_item.setFont(label_font)
 			# position label just above the top-left corner
 			label_item.setPos(x, y - font_size - 6)
+
+	#============================================
+
+	def paint(
+		self, painter: QPainter, option: object, widget: object = None
+	) -> None:
+		"""Paint with dark outline behind the colored border for contrast.
+
+		Args:
+			painter: QPainter instance.
+			option: Style option (unused).
+			widget: Target widget (unused).
+		"""
+		# draw dark outline first (wider, behind)
+		painter.setPen(self._outline_pen)
+		painter.setBrush(Qt.BrushStyle.NoBrush)
+		painter.drawRect(self.rect())
+		# draw normal fill + colored border on top
+		super().paint(painter, option, widget)
 
 	#============================================
 
@@ -149,15 +154,38 @@ class PreviewBoxItem(QGraphicsRectItem):
 		fill_color.setAlpha(int(preview_opacity * 255))
 		self.setBrush(QBrush(fill_color))
 
-		# Solid border, DPI-adjusted, with heavy thickness tier
-		dpr = _get_device_pixel_ratio()
+		# Solid border with cosmetic 3px width
 		border_color = QColor(preview_color)
-		thickness = overlay_config.get_thickness_scale("heavy")
 		pen = QPen(border_color)
-		pen.setWidthF(thickness / dpr)
+		pen.setWidthF(3.0)
 		# cosmetic pen stays constant width regardless of view zoom
 		pen.setCosmetic(True)
 		self.setPen(pen)
+
+		# dark contrast outline drawn behind the colored border
+		outline_pen = QPen(QColor(0, 0, 0, 180))
+		outline_pen.setWidthF(5.0)
+		outline_pen.setCosmetic(True)
+		self._outline_pen = outline_pen
+
+	#============================================
+
+	def paint(
+		self, painter: QPainter, option: object, widget: object = None
+	) -> None:
+		"""Paint with dark outline behind the colored border for contrast.
+
+		Args:
+			painter: QPainter instance.
+			option: Style option (unused).
+			widget: Target widget (unused).
+		"""
+		# draw dark outline first (wider, behind)
+		painter.setPen(self._outline_pen)
+		painter.setBrush(Qt.BrushStyle.NoBrush)
+		painter.drawRect(self.rect())
+		# draw normal fill + colored border on top
+		super().paint(painter, option, widget)
 
 	#============================================
 

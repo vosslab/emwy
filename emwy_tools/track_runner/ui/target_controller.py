@@ -28,6 +28,7 @@ class TargetController(seed_controller_module.SeedController):
 		pass_number: int = 2,
 		mode_str: str = "suggested_refine",
 		predictions: dict | None = None,
+		start_frame: int | None = None,
 	) -> None:
 		"""Initialize the TargetController.
 
@@ -41,6 +42,7 @@ class TargetController(seed_controller_module.SeedController):
 			pass_number: Which collection pass this is (default 2).
 			mode_str: Seed collection mode string (default "suggested_refine").
 			predictions: Optional dict mapping frame_index to prediction dicts.
+			start_frame: Optional frame index to seek to on first activate.
 		"""
 		super().__init__(
 			seed_frame_indices=sorted_targets,
@@ -52,4 +54,5 @@ class TargetController(seed_controller_module.SeedController):
 			pass_number=pass_number,
 			mode_str=mode_str,
 			predictions=predictions,
+			start_frame=start_frame,
 		)

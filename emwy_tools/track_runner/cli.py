@@ -45,27 +45,25 @@ def parse_args() -> argparse.Namespace:
 	Returns:
 		Parsed argparse.Namespace with a 'mode' attribute.
 	"""
-	parser = argparse.ArgumentParser(
-		description="track_runner v2: multi-pass runner tracking and crop tool.",
-	)
-	# shared args on parent parser
-	parser.add_argument(
+	# shared parent parser for args common to ALL modes
+	global_parent = argparse.ArgumentParser(add_help=False)
+	global_parent.add_argument(
 		"-i", "--input", dest="input_file", required=True,
 		help="Input video file path.",
 	)
-	parser.add_argument(
+	global_parent.add_argument(
 		"-c", "--config", dest="config_file", default=None,
 		help="Config YAML file path.",
 	)
-	parser.add_argument(
+	global_parent.add_argument(
 		"-d", "--debug", dest="debug", action="store_true",
 		help="Enable debug video output with tracking overlays.",
 	)
-	parser.add_argument(
+	global_parent.add_argument(
 		"-w", "--workers", dest="workers", type=int, default=None,
 		help="Number of parallel workers (default: half of CPU cores).",
 	)
-	parser.add_argument(
+	global_parent.add_argument(
 		"--time-range", dest="time_range", type=str, default=None,
 		help=(
 			"Limit operations to time range in seconds. "
@@ -73,21 +71,32 @@ def parse_args() -> argparse.Namespace:
 			"Examples: '30:120', '200:'."
 		),
 	)
-	parser.add_argument(
+	global_parent.add_argument(
 		"--write-default-config", dest="write_default_config",
 		action="store_true",
 		help="Write the default config for this input and exit.",
 	)
-	parser.set_defaults(
+	global_parent.set_defaults(
 		write_default_config=False,
 		debug=False,
 	)
 
+	# shared parent for interactive UI modes (seed, edit, target)
+	interactive_parent = argparse.ArgumentParser(add_help=False)
+	interactive_parent.add_argument(
+		"-S", "--start", dest="start_time", type=float, default=None,
+		help="Start time in seconds (seek UI to this position on launch).",
+	)
+
+	parser = argparse.ArgumentParser(
+		description="track_runner v2: multi-pass runner tracking and crop tool.",
+	)
 	subparsers = parser.add_subparsers(dest="mode")
 
 	# -- seed mode --
 	seed_parser = subparsers.add_parser(
 		"seed", help="Collect seeds, save, and exit.",
+		parents=[global_parent, interactive_parent],
 	)
 	seed_parser.add_argument(
 		"--seed-interval", dest="seed_interval", type=float, default=10.0,
@@ -97,6 +106,7 @@ def parse_args() -> argparse.Namespace:
 	# -- edit mode --
 	edit_parser = subparsers.add_parser(
 		"edit", help="Review/fix/delete existing seeds interactively.",
+		parents=[global_parent, interactive_parent],
 	)
 	edit_parser.add_argument(
 		"-s", "--severity", dest="severity", type=str, default=None,
@@ -107,6 +117,7 @@ def parse_args() -> argparse.Namespace:
 	# -- target mode --
 	target_parser = subparsers.add_parser(
 		"target", help="Add seeds at weak interval frames with FWD/BWD overlays.",
+		parents=[global_parent, interactive_parent],
 	)
 	target_parser.add_argument(
 		"-s", "--severity", dest="severity", type=str, default=None,
@@ -121,16 +132,19 @@ def parse_args() -> argparse.Namespace:
 	# -- solve mode --
 	subparsers.add_parser(
 		"solve", help="Full re-solve: clears prior results and solves all intervals fresh.",
+		parents=[global_parent],
 	)
 
 	# -- refine mode --
 	subparsers.add_parser(
 		"refine", help="Re-solve only changed/new intervals, reuse prior results.",
+		parents=[global_parent],
 	)
 
 	# -- encode mode --
 	encode_parser = subparsers.add_parser(
 		"encode", help="Encode cropped video from existing trajectory.",
+		parents=[global_parent],
 	)
 	encode_parser.add_argument(
 		"-o", "--output", dest="output_file", default=None,
@@ -156,6 +170,7 @@ def parse_args() -> argparse.Namespace:
 	# -- run mode (full pipeline) --
 	run_parser = subparsers.add_parser(
 		"run", help="Full pipeline: seed -> solve -> encode.",
+		parents=[global_parent, interactive_parent],
 	)
 	run_parser.add_argument(
 		"-o", "--output", dest="output_file", default=None,
@@ -213,9 +228,16 @@ def parse_args() -> argparse.Namespace:
 		interactive_refine=True,
 	)
 
-	args = parser.parse_args()
-	# default to 'run' mode when no subcommand is given
+	# when no subcommand given, re-parse with run defaults
+	# (first pass to check if a subcommand was provided)
+	args, remaining = parser.parse_known_args()
 	if args.mode is None:
+		# no subcommand: re-parse as 'run' to get parent parser args
+		run_fallback = argparse.ArgumentParser(
+			parents=[global_parent, interactive_parent],
+			add_help=False,
+		)
+		args = run_fallback.parse_args(remaining, namespace=args)
 		args.mode = "run"
 		# set run-mode defaults that would normally come from subparser
 		if not hasattr(args, "output_file"):
@@ -238,6 +260,8 @@ def parse_args() -> argparse.Namespace:
 			args.interactive_refine = True
 		if not hasattr(args, "encode_filters"):
 			args.encode_filters = None
+	else:
+		args = parser.parse_args()
 	return args
 
 
@@ -781,6 +805,11 @@ def _mode_seed(
 				print(f"  loaded predictions for {len(predictions)} frames "
 					"(from solved intervals)")
 
+	# convert --start time to frame index
+	start_frame = None
+	if getattr(args, "start_time", None) is not None:
+		start_frame = int(args.start_time * video_info["fps"])
+
 	# seed collection
 	print(f"launching seed collection (pass {pass_number})...")
 	seeds = seeding.collect_seeds(
@@ -794,6 +823,7 @@ def _mode_seed(
 		save_callback=_make_save_callback(seeds_path),
 		time_range=time_range,
 		predictions=predictions,
+		start_frame=start_frame,
 	)
 	if not seeds:
 		raise RuntimeError("no seeds collected")
@@ -897,6 +927,11 @@ def _mode_edit(
 		else:
 			print(f"  no seeds match severity={severity} filter, showing all")
 
+	# convert --start time to frame index
+	start_frame = None
+	if getattr(args, "start_time", None) is not None:
+		start_frame = int(args.start_time * video_info["fps"])
+
 	# run the editor
 	edited_seeds, summary = seed_editor.edit_seeds(
 		args.input_file, seeds, cfg,
@@ -904,6 +939,7 @@ def _mode_edit(
 		frame_filter=frame_filter,
 		seed_confidences=seed_confidences,
 		debug=args.debug,
+		start_frame=start_frame,
 	)
 
 	# save if changes were made
@@ -1000,6 +1036,11 @@ def _mode_target(
 	existing_passes = [s["pass"] for s in seeds]
 	next_pass = max(existing_passes) + 1 if existing_passes else 2
 
+	# convert --start time to frame index
+	start_frame = None
+	if getattr(args, "start_time", None) is not None:
+		start_frame = int(args.start_time * video_info["fps"])
+
 	# collect seeds at target frames with predictions overlay
 	print(f"  collecting seeds at {len(target_frames)} weak interval frames...")
 	updated_seeds = seeding.collect_seeds_at_frames(
@@ -1012,6 +1053,7 @@ def _mode_target(
 		predictions=predictions,
 		debug=args.debug,
 		save_callback=_make_save_callback(seeds_path),
+		start_frame=start_frame,
 	)
 	# save updated seeds
 	new_count = len(updated_seeds) - len(seeds)

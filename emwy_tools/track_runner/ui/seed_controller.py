@@ -158,7 +158,15 @@ class SeedController(BaseAnnotationController):
 		# One-shot seek to start_frame if provided
 		if self._start_frame is not None and not self._start_frame_used:
 			self._start_frame_used = True
-			self._current_frame = self._start_frame
+			# advance _list_idx to first candidate at or after start_frame
+			for i, fi in enumerate(self._seed_frame_indices):
+				if fi >= self._start_frame:
+					self._list_idx = i
+					break
+			else:
+				# all candidates before start_frame, go to last
+				self._list_idx = len(self._seed_frame_indices) - 1
+			self._current_frame = self._seed_frame_indices[self._list_idx]
 
 		# Load and display the first frame
 		self._refresh_frame()

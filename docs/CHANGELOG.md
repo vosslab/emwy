@@ -3,6 +3,11 @@
 ## 2026-03-13
 
 ### Additions and New Features
+- Added `-S`/`--start` argument to interactive track runner modes (seed, edit, target) in [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py): accepts a start time in seconds and seeks the UI to that position on launch. Seed and target modes seek to the nearest candidate frame; edit mode seeks to the nearest seed at or after the given time. Wired through [emwy_tools/track_runner/seeding.py](emwy_tools/track_runner/seeding.py), [emwy_tools/track_runner/seed_editor.py](emwy_tools/track_runner/seed_editor.py), [emwy_tools/track_runner/ui/target_controller.py](emwy_tools/track_runner/ui/target_controller.py), and [emwy_tools/track_runner/ui/edit_controller.py](emwy_tools/track_runner/ui/edit_controller.py).
+
+### Fixes and Maintenance
+- Fixed `--time-range` and other shared arguments not appearing in subcommand `--help` output by restructuring argparse to use parent parsers (`global_parent` for all modes, `interactive_parent` for UI modes) in [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py). Running `track_runner.py seed --help` now shows all relevant flags.
+
 - Created [docs/TRACK_RUNNER_KEYBINDINGS.md](docs/TRACK_RUNNER_KEYBINDINGS.md): comprehensive keybinding reference for all track runner annotation modes (seed, target, edit), including common keys, mouse/trackpad input, zoom behavior, draw modes, toolbar buttons, and polish workflow.
 - Added trackpad pan support in [emwy_tools/track_runner/ui/frame_view.py](emwy_tools/track_runner/ui/frame_view.py): two-finger trackpad swipes now pan the image instead of zooming. Uses `event.phase()` and `event.hasPixelDelta()` to distinguish macOS trackpad events (pan) from mouse scroll wheel (zoom). Expands scene rect with pan margin on first trackpad gesture so scroll bars have range even at fit-to-view zoom. `fit_to_view()` resets scene rect to image bounds before fitting.
 - Added zoom controls widget in [emwy_tools/track_runner/ui/zoom_controls.py](emwy_tools/track_runner/ui/zoom_controls.py): status bar widget with +/- buttons, percentage label, Fit button, and horizontal slider (10%-3000%). Bidirectionally synced with `FrameView` zoom via `zoom_changed` signal.
@@ -43,6 +48,8 @@
 - Updated [docs/FILE_STRUCTURE.md](docs/FILE_STRUCTURE.md) tools listing to reflect script replacement.
 
 ### Fixes and Maintenance
+- Improved overlay box visibility in [emwy_tools/track_runner/ui/overlay_items.py](emwy_tools/track_runner/ui/overlay_items.py): added dark contrast outline behind colored borders on both `RectItem` and `PreviewBoxItem`. Increased base border thickness to 2px cosmetic. Boxes are now visible against any background (dark, light, or matching the box color). Removed DPI-division logic that made borders sub-pixel on Retina displays.
+- Fixed `setTextFormat` crash in edit mode in [emwy_tools/track_runner/ui/status_presenter.py](emwy_tools/track_runner/ui/status_presenter.py): PySide6 requires `Qt.TextFormat.RichText` / `Qt.TextFormat.PlainText` enum values, not raw ints `1` / `0`.
 - Fixed `cv2.cvtColor` crash when drawing a box that extends outside the frame in [emwy_tools/track_runner/seeding.py](emwy_tools/track_runner/seeding.py): added `_clamp_box()` helper that clamps box coordinates to frame bounds. `extract_jersey_color()` returns `(0, 0, 0)` and `extract_color_histogram()` returns a zero histogram for out-of-bounds regions instead of crashing.
 - Limited trackpad pan range in [emwy_tools/track_runner/ui/frame_view.py](emwy_tools/track_runner/ui/frame_view.py): scene rect pan margin set to 2% of image size on each side. Keeps image on screen while giving scroll bars enough range to pan.
 - Fixed image shift when pressing P (partial mode) or A (approx mode) in [emwy_tools/track_runner/ui/frame_view.py](emwy_tools/track_runner/ui/frame_view.py): changed `resizeAnchor` from `AnchorUnderMouse` to `AnchorViewCenter`. Status bar stylesheet changes (mode badge) caused a resize event on the FrameView, and `AnchorUnderMouse` shifted the view based on the cursor position during the internal layout change.

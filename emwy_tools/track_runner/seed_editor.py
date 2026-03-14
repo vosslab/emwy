@@ -343,6 +343,7 @@ def edit_seeds(
 	seed_confidences: dict | None = None,
 	debug: bool = False,
 	save_callback: object = None,
+	start_frame: int | None = None,
 ) -> tuple:
 	"""Main loop for reviewing and editing seeds interactively.
 
@@ -360,6 +361,7 @@ def edit_seeds(
 			dicts with 'score' and 'label' keys.
 		debug: Enable verbose output.
 		save_callback: Optional callable(work_seeds) for incremental saves.
+		start_frame: Optional frame index to seek the UI to on launch.
 
 	Returns:
 		Tuple of (edited_seeds, summary) where edited_seeds is the cleaned
@@ -421,6 +423,7 @@ def edit_seeds(
 		seed_confidences=seed_confidences,
 		yolo_detector_list=yolo_detector,
 		frame_filter=frame_filter,
+		start_frame=start_frame,
 	)
 	window = AnnotationWindow("Track Runner - Seed Editor", initial_mode="edit")
 	window.set_controller(controller)

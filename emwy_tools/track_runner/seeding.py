@@ -718,6 +718,7 @@ def collect_seeds(
 	save_callback: object = None,
 	time_range: tuple | None = None,
 	predictions: dict | None = None,
+	start_frame: int | None = None,
 ) -> list:
 	"""Collect initial seed points for runner tracking (pass 1).
 
@@ -743,6 +744,7 @@ def collect_seeds(
 			Either value may be None for open-ended ranges.
 		predictions: Optional dict mapping frame_index to prediction dicts
 			with "forward"/"backward" state dicts for overlay display.
+		start_frame: Optional frame index to seek the UI to on launch.
 
 	Returns:
 		List of seed dicts in v2 format (existing + newly collected).
@@ -835,6 +837,7 @@ def collect_seeds(
 		pass_number=pass_number,
 		mode_str="initial",
 		predictions=predictions,
+		start_frame=start_frame,
 	)
 	window.set_controller(controller)
 	window.show()
@@ -856,6 +859,7 @@ def collect_seeds_at_frames(
 	predictions: dict | None = None,
 	debug: bool = False,
 	save_callback: object = None,
+	start_frame: int | None = None,
 ) -> list:
 	"""Collect seed points at specific frame indices (refinement passes).
 
@@ -876,6 +880,7 @@ def collect_seeds_at_frames(
 		debug: Enable verbose frame-reading output.
 		save_callback: Optional callable(seeds_list) invoked after each new
 			seed is collected, for crash-safe incremental saving.
+		start_frame: Optional frame index to seek the UI to on launch.
 
 	Returns:
 		List of seed dicts in v2 format (existing + newly collected).
@@ -929,6 +934,7 @@ def collect_seeds_at_frames(
 		pass_number=pass_number,
 		mode_str=mode,
 		predictions=predictions,
+		start_frame=start_frame,
 	)
 	window.set_controller(controller)
 	window.show()
