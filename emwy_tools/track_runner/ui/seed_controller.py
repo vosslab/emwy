@@ -329,13 +329,13 @@ class SeedController(BaseAnnotationController):
 			return
 
 		# import seeding module for suggestion function
-		import seeding as seeding_module
+		import seed_color
 
 		# get confirmed seeds from all_seeds + new_seeds
 		confirmed_seeds = self._all_seeds + self._new_seeds
 
 		# compute suggestion
-		suggestion = seeding_module.suggest_seed_candidates(
+		suggestion = seed_color.suggest_seed_candidates(
 			self._current_bgr,
 			detections,
 			confirmed_seeds,
@@ -561,20 +561,20 @@ class SeedController(BaseAnnotationController):
 
 		# extract torso_box and compute jersey color
 		torso_box = candidate["torso_box"]
-		import seeding as seeding_module
+		import seed_color
 
-		jersey_hsv = seeding_module.extract_jersey_color(
+		jersey_hsv = seed_color.extract_jersey_color(
 			self._current_bgr, torso_box
 		)
 		# use candidate's histogram if available, or extract new one
 		hist = candidate.get("histogram")
 		if hist is None:
-			hist = seeding_module.extract_color_histogram(
+			hist = seed_color.extract_color_histogram(
 				self._current_bgr, torso_box
 			)
 
 		# build seed dict
-		seed = seeding_module._build_seed_dict(
+		seed = seed_color._build_seed_dict(
 			self._current_frame,
 			self._current_frame / self._fps,
 			torso_box,
@@ -613,12 +613,12 @@ class SeedController(BaseAnnotationController):
 				return
 
 		# Import here to avoid circular dependency
-		import seeding as seeding_module
+		import seed_color
 
 		if self._approx_mode:
 			self._approx_mode = False
 			self._update_mode_badge()
-			norm_box = seeding_module.normalize_seed_box(box, self._config)
+			norm_box = seed_color.normalize_seed_box(box, self._config)
 			tx, ty, tw, th = norm_box
 			cx = float(tx + tw / 2.0)
 			cy = float(ty + th / 2.0)
@@ -643,14 +643,14 @@ class SeedController(BaseAnnotationController):
 		elif self._partial_mode:
 			self._partial_mode = False
 			self._update_mode_badge()
-			norm_box = seeding_module.normalize_seed_box(box, self._config)
-			jersey_hsv = seeding_module.extract_jersey_color(
+			norm_box = seed_color.normalize_seed_box(box, self._config)
+			jersey_hsv = seed_color.extract_jersey_color(
 				self._current_bgr, norm_box
 			)
-			hist = seeding_module.extract_color_histogram(
+			hist = seed_color.extract_color_histogram(
 				self._current_bgr, norm_box
 			)
-			seed = seeding_module._build_seed_dict(
+			seed = seed_color._build_seed_dict(
 				self._current_frame,
 				self._current_frame / self._fps,
 				norm_box,
@@ -663,14 +663,14 @@ class SeedController(BaseAnnotationController):
 			self._commit_seed(seed)
 			self._advance()
 		else:
-			norm_box = seeding_module.normalize_seed_box(box, self._config)
-			jersey_hsv = seeding_module.extract_jersey_color(
+			norm_box = seed_color.normalize_seed_box(box, self._config)
+			jersey_hsv = seed_color.extract_jersey_color(
 				self._current_bgr, norm_box
 			)
-			hist = seeding_module.extract_color_histogram(
+			hist = seed_color.extract_color_histogram(
 				self._current_bgr, norm_box
 			)
-			seed = seeding_module._build_seed_dict(
+			seed = seed_color._build_seed_dict(
 				self._current_frame,
 				self._current_frame / self._fps,
 				norm_box,

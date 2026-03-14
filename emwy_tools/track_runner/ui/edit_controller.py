@@ -519,7 +519,7 @@ class EditController(BaseAnnotationController):
 		Args:
 			box: Box as [x, y, w, h].
 		"""
-		import seeding as seeding_module
+		import seed_color
 
 		seed_list_idx = self._filtered_indices[self._nav_idx]
 		seed = self._work_seeds[seed_list_idx]
@@ -529,7 +529,7 @@ class EditController(BaseAnnotationController):
 			self._approx_mode = False
 			self._update_mode_badge()
 			# Build approximate seed with approx area box
-			norm_box = seeding_module.normalize_seed_box(box, self._config)
+			norm_box = seed_color.normalize_seed_box(box, self._config)
 			tx, ty, tw, th = norm_box
 			cx = float(tx + tw / 2.0)
 			cy = float(ty + th / 2.0)
@@ -560,11 +560,11 @@ class EditController(BaseAnnotationController):
 		if self._partial_mode:
 			self._partial_mode = False
 			self._update_mode_badge()
-			norm_box = seeding_module.normalize_seed_box(box, self._config)
-			jersey_hsv = seeding_module.extract_jersey_color(
+			norm_box = seed_color.normalize_seed_box(box, self._config)
+			jersey_hsv = seed_color.extract_jersey_color(
 				self._current_bgr, norm_box
 			)
-			new_seed = seeding_module._build_seed_dict(
+			new_seed = seed_color._build_seed_dict(
 				frame_idx,
 				frame_idx / self._fps,
 				norm_box,
@@ -581,11 +581,11 @@ class EditController(BaseAnnotationController):
 			self._save_callback(self._work_seeds)
 			self._advance()
 		else:
-			norm_box = seeding_module.normalize_seed_box(box, self._config)
-			jersey_hsv = seeding_module.extract_jersey_color(
+			norm_box = seed_color.normalize_seed_box(box, self._config)
+			jersey_hsv = seed_color.extract_jersey_color(
 				self._current_bgr, norm_box
 			)
-			new_seed = seeding_module._build_seed_dict(
+			new_seed = seed_color._build_seed_dict(
 				frame_idx,
 				frame_idx / self._fps,
 				norm_box,
@@ -790,12 +790,12 @@ class EditController(BaseAnnotationController):
 		rx = int(refined["cx"] - refined["w"] / 2.0)
 		ry = int(refined["cy"] - refined["h"] / 2.0)
 		polish_box = [rx, ry, int(refined["w"]), int(refined["h"])]
-		import seeding as seeding_module
-		norm_box = seeding_module.normalize_seed_box(polish_box, self._config)
-		jersey_hsv = seeding_module.extract_jersey_color(
+		import seed_color
+		norm_box = seed_color.normalize_seed_box(polish_box, self._config)
+		jersey_hsv = seed_color.extract_jersey_color(
 			self._current_bgr, norm_box
 		)
-		new_seed = seeding_module._build_seed_dict(
+		new_seed = seed_color._build_seed_dict(
 			frame_idx, time_sec, norm_box, jersey_hsv, seed["pass"],
 			"bbox_polish",
 		)

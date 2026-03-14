@@ -638,10 +638,10 @@ def _solve_interval_worker(
 		Interval result dict from solve_interval().
 	"""
 	# each worker creates its own VideoReader pair and detector
-	import encoder as _enc
+	import video_io as _vio
 	import tr_detection as _det
-	reader = _enc.VideoReader(video_path)
-	backward_reader = _enc.VideoReader(video_path)
+	reader = _vio.VideoReader(video_path)
+	backward_reader = _vio.VideoReader(video_path)
 	detector = _det.create_detector(config)
 	# use the module-level shared counter set by _init_worker()
 	result = solve_interval(

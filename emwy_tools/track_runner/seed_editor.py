@@ -19,7 +19,7 @@ import overlay_config
 
 # local repo modules
 import common_tools.frame_reader as frame_reader
-import seeding
+import seed_color
 import ui.workspace as workspace_module
 import ui.edit_controller as edit_controller_module
 
@@ -214,14 +214,14 @@ def _refine_box_yolo(
 		"w": 0.7 * sw + 0.3 * best_det_box["w"],
 		"h": 0.7 * sh + 0.3 * best_det_box["h"],
 	}
-	# normalize via seeding utility
+	# normalize via seed_color utility
 	box_list = [
 		int(refined["cx"] - refined["w"] / 2.0),
 		int(refined["cy"] - refined["h"] / 2.0),
 		int(refined["w"]),
 		int(refined["h"]),
 	]
-	norm = seeding.normalize_seed_box(box_list, config)
+	norm = seed_color.normalize_seed_box(box_list, config)
 	result = {
 		"cx": norm[0] + norm[2] / 2.0,
 		"cy": norm[1] + norm[3] / 2.0,

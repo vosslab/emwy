@@ -26,6 +26,11 @@ for subpkg in ("track_runner", "silence_annotator", "stabilize_building"):
 	if os.path.isdir(subpkg_dir) and subpkg_dir not in sys.path:
 		sys.path.insert(0, subpkg_dir)
 
+# add emwy_tools/tests/ so tr_test_helpers is importable from test files
+EMWY_TESTS_DIR = os.path.join(EMWY_TOOLS_DIR, "tests")
+if EMWY_TESTS_DIR not in sys.path:
+	sys.path.insert(0, EMWY_TESTS_DIR)
+
 
 @pytest.fixture
 def repo_root() -> str:
