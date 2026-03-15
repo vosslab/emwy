@@ -141,12 +141,13 @@ def encode_cropped_video(
 	# choose interpolation: lanczos when filters are active for quality
 	interp = cv2.INTER_LANCZOS4 if encode_filters else cv2.INTER_LINEAR
 	frame_count = len(crop_rects)
-	# wrap reader with rich progress bar
+	# wrap reader with rich progress bar (refresh every 1s to avoid flicker)
 	with rich.progress.Progress(
 		rich.progress.TextColumn("{task.description}"),
 		interval_solver.BlockBarColumn(),
 		rich.progress.TaskProgressColumn(),
 		rich.progress.TimeRemainingColumn(),
+		refresh_per_second=1,
 	) as progress:
 		task = progress.add_task("  encoding", total=frame_count)
 		for frame_idx, frame in reader:
@@ -606,12 +607,13 @@ def _encode_segment(
 	# choose interpolation: lanczos when filters are active for quality
 	interp = cv2.INTER_LANCZOS4 if encode_filters else cv2.INTER_LINEAR
 	chunk_size = len(crop_rects_chunk)
-	# rich progress bar for this worker
+	# rich progress bar for this worker (refresh every 1s to avoid flicker)
 	with rich.progress.Progress(
 		rich.progress.TextColumn("{task.description}"),
 		interval_solver.BlockBarColumn(),
 		rich.progress.TaskProgressColumn(),
 		rich.progress.TimeRemainingColumn(),
+		refresh_per_second=1,
 	) as progress:
 		task = progress.add_task(
 			f"  worker {worker_id + 1}/{total_workers}",

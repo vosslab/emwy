@@ -1488,14 +1488,15 @@ def _force_kill_pool(pool: concurrent.futures.ProcessPoolExecutor) -> None:
 	is non-daemon and stays alive. This function kills workers, deregisters
 	the management thread from both hooks, and calls shutdown.
 	"""
-	# collect worker PIDs before killing
-	worker_pids = [proc.pid for proc in pool._processes.values()]
+	# snapshot processes to avoid dict-changed-size race with management thread
+	procs = list(pool._processes.values())
+	worker_pids = [proc.pid for proc in procs]
 	key_input._quit_trace("POOL_KILL_START", workers=worker_pids)
 	# kill worker processes
-	for proc in pool._processes.values():
+	for proc in procs:
 		proc.kill()
 	# wait briefly and log per-worker status
-	for proc in pool._processes.values():
+	for proc in procs:
 		proc.join(timeout=2)
 		key_input._quit_trace(
 			"POOL_KILL_DONE", worker_pid=proc.pid,
