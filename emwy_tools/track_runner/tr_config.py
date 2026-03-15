@@ -33,11 +33,14 @@ def default_config() -> dict:
 			"confidence_threshold": 0.25,
 		},
 		"processing": {
-			"crop_aspect": "1:1",
-			"crop_fill_ratio": 0.30,
+			"crop_mode": "direct_center",
+			"crop_aspect": "16:9",
+			"crop_fill_ratio": 0.1,
+			"crop_post_smooth_strength": 0.03,
+			"crop_post_smooth_max_velocity": 15.0,
 			"video_codec": "libx264",
 			"crf": 18,
-			"encode_filters": [],
+			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],
 		},
 	}
 	return config
@@ -115,20 +118,6 @@ def write_config(path: str, config: dict) -> None:
 		config[TOOL_CONFIG_HEADER_KEY] = TOOL_CONFIG_HEADER_VALUE
 	with open(path, "w") as fh:
 		yaml.dump(config, fh, default_flow_style=False, sort_keys=False)
-
-#============================================
-
-def default_config_path(input_file: str) -> str:
-	"""
-	Build the default config path based on the input file.
-
-	Args:
-		input_file: Input media file path.
-
-	Returns:
-		str: Config file path.
-	"""
-	return f"{input_file}.track_runner.config.yaml"
 
 #============================================
 

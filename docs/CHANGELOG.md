@@ -2,6 +2,19 @@
 
 ## 2026-03-15
 
+### Additions and New Features
+- Created [docs/TRACK_RUNNER_YAML_CONFIG.md](docs/TRACK_RUNNER_YAML_CONFIG.md): reference documentation for the track runner YAML config file covering detection, crop modes, smoothing tuning, encode filters, CLI overrides, and recommended presets for handheld vs tripod footage.
+- Created [emwy_tools/track_runner/tr_paths.py](emwy_tools/track_runner/tr_paths.py): centralized path construction for track_runner config and state files. All data files now default to `./tr_config/` subdirectory under cwd instead of next to the input video. Encoded output stays next to the source video. The `tr_config/` directory is auto-created on first run and can be replaced with a symlink to a network drive.
+- Created [emwy_tools/track_runner/tr_video_identity.py](emwy_tools/track_runner/tr_video_identity.py): video identity fingerprinting module. Builds metadata-based identity blocks (basename, size, resolution, fps, frame count, duration) and compares stored vs current identity with tolerant matching (fps within 0.01, duration within 0.5s). Mismatches produce warnings, not errors.
+- All data file writes (seeds, diagnostics, intervals) now include a `video_identity` block for mismatch detection when loading files created for a different video.
+- Track runner now prints full absolute paths for config, seeds, diagnostics, and intervals files at startup.
+- Created [emwy_tools/tests/test_tr_paths.py](emwy_tools/tests/test_tr_paths.py): 11 tests covering path construction, basename extraction, directory creation, and output path preservation.
+- Created [emwy_tools/tests/test_tr_video_identity.py](emwy_tools/tests/test_tr_video_identity.py): 14 tests covering identity construction, exact and tolerant field comparison, missing fields, and multiple mismatches.
+
+### Behavior or Interface Changes
+- **Storage policy change**: track_runner config YAML and state JSON files now default to `./tr_config/` subdirectory instead of next to the input video. This separates small metadata files (suitable for network drives/backup) from large video files (on fast local SSD). Existing files next to videos still work when pointed to explicitly with `-c` flag.
+- Removed `default_seeds_path()`, `default_diagnostics_path()`, and `default_intervals_path()` from [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py). Removed `default_config_path()` from [emwy_tools/track_runner/tr_config.py](emwy_tools/track_runner/tr_config.py). All path construction now lives in [emwy_tools/track_runner/tr_paths.py](emwy_tools/track_runner/tr_paths.py).
+
 ### Behavior or Interface Changes
 - Changed scrub step sizes in seed mode from fixed time presets (`[0.1, 0.2, 0.5, 1.0, 2.0, 5.0]` seconds) to frame-based halve/double logic with `[`/`]` keys. Internal representation is now frame counts (floor 1 frame, ceiling fps*10). Default step changed from 0.2s (~6 frames) to 2 frames. Display shows both frames and seconds (e.g. `2f (0.07s)`).
 - Auto-centering in zoomed view now targets the REFINED (fused) prediction box when available, falling back to FWD/BWD average. Previously always used FWD/BWD average. Affects `_get_prediction_center()` in [emwy_tools/track_runner/ui/base_controller.py](emwy_tools/track_runner/ui/base_controller.py).

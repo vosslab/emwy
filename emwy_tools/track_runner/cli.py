@@ -26,6 +26,8 @@ import time
 import cli_args
 import tr_config
 import state_io
+import tr_paths
+import tr_video_identity
 import tr_detection
 import encoder
 import video_io
@@ -38,7 +40,8 @@ import tr_crop
 import key_input
 import common_tools.frame_filters as frame_filters
 
-
+# module-level video identity, set once in main() and treated as read-only
+VIDEO_IDENTITY = None
 
 
 #============================================
@@ -111,6 +114,34 @@ def _probe_video(input_file: str) -> dict:
 		"duration_s": duration_s,
 	}
 	return info
+
+
+#============================================
+def _check_identity_mismatch(label: str, path: str) -> None:
+	"""Check a data file for video identity mismatch and print warnings.
+
+	Loads the file as JSON (if it exists), extracts the stored
+	video_identity block, and compares it against VIDEO_IDENTITY.
+	Mismatches produce warning messages but do not raise errors.
+
+	Args:
+		label: Human-readable name for the data file (e.g. "seeds").
+		path: Path to the JSON data file.
+	"""
+	if VIDEO_IDENTITY is None:
+		return
+	if not os.path.isfile(path):
+		return
+	with open(path, "r") as fh:
+		data = json.load(fh)
+	stored = data.get("video_identity")
+	if stored is None:
+		return
+	mismatches = tr_video_identity.compare_video_identity(stored, VIDEO_IDENTITY)
+	if mismatches:
+		print(f"  warning: {label} file video identity mismatch:")
+		for msg in mismatches:
+			print(f"    {msg}")
 
 
 #============================================
@@ -297,6 +328,9 @@ def _load_prior_results(intervals_path: str) -> tuple:
 		"""Persist a newly solved interval to disk."""
 		solved[fingerprint] = result
 		intervals_file["solved_intervals"] = solved
+		# embed video identity in each write
+		if VIDEO_IDENTITY is not None:
+			intervals_file["video_identity"] = VIDEO_IDENTITY
 		state_io.write_intervals(intervals_path, intervals_file)
 
 	return (solved, _on_interval_solved)
@@ -337,6 +371,8 @@ def _invalidate_intervals_for_frames(
 	for key in keys_to_remove:
 		del solved[key]
 	intervals_file["solved_intervals"] = solved
+	if VIDEO_IDENTITY is not None:
+		intervals_file["video_identity"] = VIDEO_IDENTITY
 	state_io.write_intervals(intervals_path, intervals_file)
 	remaining = len(solved)
 	print(f"  invalidated {len(keys_to_remove)} solved intervals "
@@ -403,7 +439,7 @@ def _load_and_deduplicate_seeds(seeds_path: str) -> list:
 
 #============================================
 def _save_seeds_to_disk(seeds: list, seeds_path: str) -> None:
-	"""Write seeds list to disk with proper header.
+	"""Write seeds list to disk with proper header and video identity.
 
 	Args:
 		seeds: List of seed dicts.
@@ -413,6 +449,8 @@ def _save_seeds_to_disk(seeds: list, seeds_path: str) -> None:
 		state_io.SEEDS_HEADER_KEY: state_io.SEEDS_HEADER_VALUE,
 		"seeds": seeds,
 	}
+	if VIDEO_IDENTITY is not None:
+		seeds_data["video_identity"] = VIDEO_IDENTITY
 	state_io.write_seeds(seeds_path, seeds_data)
 
 
@@ -541,8 +579,12 @@ def _run_solve(
 	else:
 		intervals_file["solve_complete"] = True
 		print(f"  solve complete ({t_solve_elapsed:.1f}s)")
+	if VIDEO_IDENTITY is not None:
+		intervals_file["video_identity"] = VIDEO_IDENTITY
 	state_io.write_intervals(intervals_path, intervals_file)
 	# write diagnostics to disk
+	if VIDEO_IDENTITY is not None:
+		diagnostics["video_identity"] = VIDEO_IDENTITY
 	state_io.write_solver_diagnostics(diagnostics, diag_path, fps)
 	print(f"  diagnostics written to {diag_path}")
 	_print_quality_summary(diagnostics, fps)
@@ -580,8 +622,8 @@ def _mode_seed(
 		pass_number = 1
 	# load predictions from diagnostics or solved intervals if available
 	predictions = None
-	diag_path = state_io.default_diagnostics_path(args.input_file)
-	intervals_path = state_io.default_intervals_path(args.input_file)
+	diag_path = tr_paths.default_diagnostics_path(args.input_file)
+	intervals_path = tr_paths.default_intervals_path(args.input_file)
 	if os.path.isfile(diag_path):
 		diag_data = state_io.load_diagnostics(diag_path)
 		if diag_data.get("intervals"):
@@ -1016,7 +1058,7 @@ def _mode_encode(
 
 	# reconstruct trajectory from solved intervals
 	if intervals_path is None:
-		intervals_path = state_io.default_intervals_path(args.input_file)
+		intervals_path = tr_paths.default_intervals_path(args.input_file)
 	if not os.path.isfile(intervals_path):
 		raise RuntimeError(
 			f"no solved intervals found at {intervals_path}; "
@@ -1061,7 +1103,7 @@ def _mode_encode(
 					bwd_trajectory_for_debug[fi] = bwd_state
 
 	# apply multi-seed anchored interpolation to reduce drift
-	seeds_path = state_io.default_seeds_path(args.input_file)
+	seeds_path = tr_paths.default_seeds_path(args.input_file)
 	if os.path.isfile(seeds_path):
 		seeds_data = state_io.load_seeds(seeds_path)
 		all_seeds = seeds_data.get("seeds", [])
@@ -1083,13 +1125,12 @@ def _mode_encode(
 	print("computing crop trajectory...")
 	crop_rects = tr_crop.trajectory_to_crop_rects(trajectory, video_info, cfg)
 
-	# resolve output path
+	# resolve output path (encoded output stays next to input video)
 	output_file = getattr(args, "output_file", None)
 	if output_file is not None:
 		output_path = output_file
 	else:
-		stem, ext = os.path.splitext(args.input_file)
-		output_path = f"{stem}_tracked{ext}"
+		output_path = tr_paths.default_output_path(args.input_file)
 
 	# compute output dimensions: explicit config > median of crop rects > fallback
 	proc_cfg = cfg.get("processing", {})
@@ -1223,15 +1264,24 @@ def main() -> None:
 		if shutil.which(tool) is None:
 			raise RuntimeError(f"{tool} not found in PATH")
 
+	# ensure tr_config/ data directory exists
+	tr_paths.ensure_data_dir()
+
 	# resolve config path
 	config_path = args.config_file
 	if config_path is None:
-		config_path = tr_config.default_config_path(args.input_file)
+		config_path = tr_paths.default_config_path(args.input_file)
 
 	# paths for seeds, diagnostics, and solved intervals
-	seeds_path = state_io.default_seeds_path(args.input_file)
-	diag_path = state_io.default_diagnostics_path(args.input_file)
-	intervals_path = state_io.default_intervals_path(args.input_file)
+	seeds_path = tr_paths.default_seeds_path(args.input_file)
+	diag_path = tr_paths.default_diagnostics_path(args.input_file)
+	intervals_path = tr_paths.default_intervals_path(args.input_file)
+
+	# print all config and data file paths
+	print(f"config:      {os.path.abspath(config_path)}")
+	print(f"seeds:       {os.path.abspath(seeds_path)}")
+	print(f"diagnostics: {os.path.abspath(diag_path)}")
+	print(f"intervals:   {os.path.abspath(intervals_path)}")
 
 	# handle --write-default-config: write and exit
 	if args.write_default_config:
@@ -1257,6 +1307,17 @@ def main() -> None:
 	print(f"  fps:        {fps:.4f}")
 	print(f"  frames:     {video_info['frame_count']}")
 	print(f"  duration:   {video_info['duration_s']:.2f}s")
+
+	# build video identity fingerprint for data file tagging
+	global VIDEO_IDENTITY
+	VIDEO_IDENTITY = tr_video_identity.make_video_identity(
+		args.input_file, video_info,
+	)
+
+	# check existing data files for video identity mismatches
+	_check_identity_mismatch("seeds", seeds_path)
+	_check_identity_mismatch("diagnostics", diag_path)
+	_check_identity_mismatch("intervals", intervals_path)
 
 	# dispatch to mode function
 	mode = args.mode

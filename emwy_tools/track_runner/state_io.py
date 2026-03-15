@@ -68,36 +68,6 @@ def validate_seed(seed: dict) -> int | None:
 
 #============================================
 
-def default_seeds_path(input_file: str) -> str:
-	"""Return the default seeds JSON file path for a given input file.
-
-	Args:
-		input_file: Input media file path.
-
-	Returns:
-		str: Seeds JSON file path.
-	"""
-	seeds_path = f"{input_file}.track_runner.seeds.json"
-	return seeds_path
-
-
-#============================================
-
-def default_diagnostics_path(input_file: str) -> str:
-	"""Return the default diagnostics JSON file path for a given input file.
-
-	Args:
-		input_file: Input media file path.
-
-	Returns:
-		str: Diagnostics JSON file path.
-	"""
-	diag_path = f"{input_file}.track_runner.diagnostics.json"
-	return diag_path
-
-
-#============================================
-
 def load_seeds(path: str) -> dict:
 	"""Load a seeds JSON file and validate the header.
 
@@ -275,21 +245,6 @@ def write_diagnostics(path: str, diagnostics_data: dict) -> None:
 
 #============================================
 
-def default_intervals_path(input_file: str) -> str:
-	"""Return the default solved-intervals JSON file path for a given input file.
-
-	Args:
-		input_file: Input media file path.
-
-	Returns:
-		str: Solved-intervals JSON file path.
-	"""
-	intervals_path = f"{input_file}.track_runner.intervals.json"
-	return intervals_path
-
-
-#============================================
-
 def load_intervals(path: str) -> dict:
 	"""Load a solved-intervals JSON file and validate the header.
 
@@ -454,6 +409,10 @@ def write_solver_diagnostics(
 		"intervals": intervals_summary,
 		"cyclical_prior": cyclical_safe,
 	}
+	# preserve video_identity if provided in the input diagnostics
+	video_identity = diagnostics.get("video_identity")
+	if video_identity is not None:
+		diag_out["video_identity"] = video_identity
 	write_diagnostics(path, diag_out)
 
 
