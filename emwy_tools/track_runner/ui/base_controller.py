@@ -425,7 +425,10 @@ class BaseAnnotationController(QObject):
 	#============================================
 
 	def _get_prediction_center(self) -> tuple | None:
-		"""Get average center of FWD/BWD predictions for the current frame.
+		"""Get center of best prediction for the current frame.
+
+		Prefers the REFINED (fused) box when available, falling back
+		to averaging FWD/BWD centers.
 
 		Returns:
 			Tuple of (cx, cy) or None if no predictions available.
@@ -436,6 +439,12 @@ class BaseAnnotationController(QObject):
 		if preds is None:
 			return None
 
+		# Prefer REFINED (fused second-pass) center
+		fused = preds.get("fused")
+		if fused is not None:
+			return (float(fused["cx"]), float(fused["cy"]))
+
+		# Fall back to averaging FWD/BWD centers
 		centers = []
 		fwd = preds.get("forward")
 		if fwd is not None:
@@ -447,7 +456,6 @@ class BaseAnnotationController(QObject):
 		if not centers:
 			return None
 
-		# Average the available centers
 		avg_cx = sum(c[0] for c in centers) / len(centers)
 		avg_cy = sum(c[1] for c in centers) / len(centers)
 		return (avg_cx, avg_cy)

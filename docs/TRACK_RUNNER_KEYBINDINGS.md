@@ -22,15 +22,15 @@ Draw torso bounding boxes on seed frames.
 
 | Key | Action | Description |
 | --- | --- | --- |
-| LEFT | Scrub backward | Move backward by current step size (requires zoom > 1x or Shift held) |
-| RIGHT | Scrub forward | Move forward by current step size (requires zoom > 1x or Shift held) |
-| Shift+LEFT | Force scrub backward | Scrub backward regardless of zoom level |
-| Shift+RIGHT | Force scrub forward | Scrub forward regardless of zoom level |
-| Alt+LEFT | Scrub backward 5x | Multiply scrub distance by 5 |
-| Alt+RIGHT | Scrub forward 5x | Multiply scrub distance by 5 |
+| Shift+LEFT | Scrub backward | Move backward by current step size |
+| Shift+RIGHT | Scrub forward | Move forward by current step size |
+| Shift+Alt+LEFT | Scrub backward 5x | Multiply scrub distance by 5 |
+| Shift+Alt+RIGHT | Scrub forward 5x | Multiply scrub distance by 5 |
+| LEFT | Pan left | Pan the view when zoomed in (no-op at fit-zoom) |
+| RIGHT | Pan right | Pan the view when zoomed in (no-op at fit-zoom) |
 | SPACE | Skip | Skip current frame and advance to next seed frame |
-| [ | Decrease step | Decrease scrub step size |
-| ] | Increase step | Increase scrub step size |
+| [ | Decrease step | Halve scrub step size (floor 0.01s) |
+| ] | Increase step | Double scrub step size (ceiling 10.0s) |
 | ENTER | Accept suggestion | Accept the current YOLO suggestion (shown when available) |
 | 1-9 | Select candidate | Select a specific YOLO candidate by number |
 | N | Not in frame | Mark current position as "not in frame" |
@@ -57,8 +57,9 @@ Review and refine existing seed annotations.
 | Key | Action | Description |
 | --- | --- | --- |
 | SPACE | Keep / accept polish | Keep seed and advance to next; or accept polish preview if pending |
-| RIGHT | Keep / accept polish | Same as SPACE (requires zoom > 1x or Shift held) |
-| LEFT | Previous | Go to previous seed (requires zoom > 1x or Shift held) |
+| Shift+RIGHT | Keep / accept polish | Same as SPACE |
+| Shift+LEFT | Previous | Go to previous seed |
+| LEFT / RIGHT | Pan | Pan the view when zoomed in (no-op at fit-zoom) |
 | D | Delete | Delete current seed from the list |
 | N | Not in frame | Mark seed as "not in frame" |
 | Y | YOLO polish | Run YOLO refinement and show preview box (press SPACE to accept) |
@@ -82,8 +83,8 @@ The Z key cycles through fixed zoom levels centered on the prediction or seed po
 fit -> 1x -> 1.5x -> 2.25x -> 3.375x -> 5x -> 8x -> 12x -> fit
 ```
 
-When zoomed in beyond 1x, LEFT/RIGHT arrow keys scroll the view instead of
-navigating frames. Hold Shift to force frame navigation while zoomed.
+Arrow keys always pan at any zoom level. Use Shift+Arrow for time navigation
+(frame scrub in seed mode, seed navigation in edit mode).
 
 The zoom controls in the status bar provide additional options:
 - `-` / `+` buttons for incremental zoom

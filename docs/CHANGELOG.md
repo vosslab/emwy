@@ -2,6 +2,12 @@
 
 ## 2026-03-15
 
+### Behavior or Interface Changes
+- Changed scrub step sizes in seed mode from fixed time presets (`[0.1, 0.2, 0.5, 1.0, 2.0, 5.0]` seconds) to frame-based halve/double logic with `[`/`]` keys. Internal representation is now frame counts (floor 1 frame, ceiling fps*10). Default step changed from 0.2s (~6 frames) to 2 frames. Display shows both frames and seconds (e.g. `2f (0.07s)`).
+- Auto-centering in zoomed view now targets the REFINED (fused) prediction box when available, falling back to FWD/BWD average. Previously always used FWD/BWD average. Affects `_get_prediction_center()` in [emwy_tools/track_runner/ui/base_controller.py](emwy_tools/track_runner/ui/base_controller.py).
+- Arrow keys now have consistent behavior regardless of zoom level: plain LEFT/RIGHT always pan (no-op at fit-zoom), Shift+LEFT/RIGHT always do time navigation (frame scrub in seed mode, seed navigation in edit mode). Previously arrow keys changed meaning based on zoom level, which was confusing. Updated in [emwy_tools/track_runner/ui/seed_controller.py](emwy_tools/track_runner/ui/seed_controller.py) and [emwy_tools/track_runner/ui/edit_controller.py](emwy_tools/track_runner/ui/edit_controller.py).
+- Updated [docs/TRACK_RUNNER_KEYBINDINGS.md](docs/TRACK_RUNNER_KEYBINDINGS.md) to document consistent arrow key behavior.
+
 ### Additions and New Features
 - Created [emwy_tools/track_runner/key_input.py](emwy_tools/track_runner/key_input.py): keyboard input and signal handling module for interactive controls during `solve`, `refine`, and `encode` modes. Provides `RunControl` flag object, `KeyInputReader` context manager for non-blocking cbreak-mode key detection, `GracefulQuit` exception, and `install_sigint_handler()` for graceful Ctrl-C handling.
 - Added keyboard controls to track runner solve and encode modes: press Q to quit after the current interval (progress saved to disk), P to pause/resume, Ctrl-C for graceful quit with clean message instead of traceback. Second Ctrl-C force-quits. Startup hint `(press Q to quit, P to pause)` printed before solve and encode.

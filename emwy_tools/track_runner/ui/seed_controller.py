@@ -75,8 +75,8 @@ class SeedController(BaseAnnotationController):
 		self._current_frame = seed_frame_indices[0] if seed_frame_indices else 0
 		self._new_seeds: list = []
 
-		# scrub step in seconds, adjustable via [ and ]
-		self._scrub_step_s: float = 0.2
+		# scrub step in frames, adjustable via [ and ]
+		self._scrub_step_frames: int = 2
 		self._step_value_label: QLabel | None = None
 
 		# auto-seed suggestion state
@@ -99,12 +99,12 @@ class SeedController(BaseAnnotationController):
 
 		# Navigation buttons
 		btn_prev = QPushButton("<  Prev")
-		btn_prev.setToolTip("Previous frame (LEFT or Shift+LEFT when zoomed)")
+		btn_prev.setToolTip("Previous frame (Shift+LEFT)")
 		btn_prev.clicked.connect(self._on_prev)
 		layout.addWidget(btn_prev)
 
 		btn_next = QPushButton("Next  >")
-		btn_next.setToolTip("Next frame (RIGHT or Shift+RIGHT when zoomed)")
+		btn_next.setToolTip("Next frame (Shift+RIGHT)")
 		btn_next.clicked.connect(self._on_next)
 		layout.addWidget(btn_next)
 
@@ -202,7 +202,7 @@ class SeedController(BaseAnnotationController):
 			String with keybinding hints.
 		"""
 		hints = (
-			"LR=scrub  []=step  SPACE=skip  N=not-in-frame  "
+			"Shift+LR=frames  LR=pan  []=step  SPACE=skip  N=not-in-frame  "
 			"F=avg  P=part  A=approx  V=hide preds  Z=zoom"
 		)
 		# add ENTER hint if suggestion available
@@ -394,7 +394,7 @@ class SeedController(BaseAnnotationController):
 
 	def _refresh_frame_title(self) -> str:
 		"""Update window title with frame, step, zoom, and interval quality info."""
-		step_frames = max(1, int(round(self._fps * self._scrub_step_s)))
+		step_frames = self._scrub_step_frames
 		zoom = self._window.get_frame_view().get_zoom_factor()
 		title = (
 			f"Seed {self._list_idx + 1}/{len(self._seed_frame_indices)} | "
@@ -486,18 +486,20 @@ class SeedController(BaseAnnotationController):
 			self._on_skip()
 			return True
 		elif key == Qt.Key.Key_Left:
-			mult = self._step_multiplier(modifiers)
-			is_zoomed = self._window.get_frame_view().get_zoom_factor() > 1.05
-			if shift_held or not is_zoomed:
+			if shift_held:
+				# Shift+LEFT always scrubs backward (time nav)
+				mult = self._step_multiplier(modifiers)
 				self._on_prev(mult)
 				return True
+			# plain LEFT: let QGraphicsView handle pan (no-op at fit-zoom)
 			return False
 		elif key == Qt.Key.Key_Right:
-			mult = self._step_multiplier(modifiers)
-			is_zoomed = self._window.get_frame_view().get_zoom_factor() > 1.05
-			if shift_held or not is_zoomed:
+			if shift_held:
+				# Shift+RIGHT always scrubs forward (time nav)
+				mult = self._step_multiplier(modifiers)
 				self._on_next(mult)
 				return True
+			# plain RIGHT: let QGraphicsView handle pan (no-op at fit-zoom)
 			return False
 		elif key == Qt.Key.Key_BracketLeft:
 			self._decrease_step()
@@ -743,8 +745,7 @@ class SeedController(BaseAnnotationController):
 		Args:
 			multiplier: Temporary speed multiplier (default 1).
 		"""
-		scrub_step = max(1, int(round(self._fps * self._scrub_step_s)))
-		self._current_frame = max(0, self._current_frame - scrub_step * multiplier)
+		self._current_frame = max(0, self._current_frame - self._scrub_step_frames * multiplier)
 		self._refresh_frame()
 
 	#============================================
@@ -755,45 +756,36 @@ class SeedController(BaseAnnotationController):
 		Args:
 			multiplier: Temporary speed multiplier (default 1).
 		"""
-		scrub_step = max(1, int(round(self._fps * self._scrub_step_s)))
 		# Use last seed frame as upper bound for scrubbing
 		max_frame = self._seed_frame_indices[-1] if self._seed_frame_indices else 0
-		self._current_frame = min(max_frame, self._current_frame + scrub_step * multiplier)
+		self._current_frame = min(max_frame, self._current_frame + self._scrub_step_frames * multiplier)
 		self._refresh_frame()
 
 	#============================================
-
-	# available step sizes in seconds, cycled with Shift+LR
-	_STEP_SIZES = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
 
 	def _step_label(self) -> str:
 		"""Format the current step size for display.
 
 		Returns:
-			String like "0.2s (6f)" showing seconds and frames.
+			String like "2f (0.07s)" showing frames and seconds.
 		"""
-		frames = max(1, int(round(self._fps * self._scrub_step_s)))
-		label = f"{self._scrub_step_s}s ({frames}f)"
+		step_sec = self._scrub_step_frames / self._fps
+		label = f"{self._scrub_step_frames}f ({step_sec:.2f}s)"
 		return label
 
 	#============================================
 
 	def _increase_step(self) -> None:
-		"""Increase the scrub step to the next larger preset."""
-		for s in self._STEP_SIZES:
-			if s > self._scrub_step_s + 0.001:
-				self._scrub_step_s = s
-				break
+		"""Double the scrub step in frames, ceiling at fps*10."""
+		max_frames = int(self._fps * 10)
+		self._scrub_step_frames = min(self._scrub_step_frames * 2, max_frames)
 		self._update_step_display()
 
 	#============================================
 
 	def _decrease_step(self) -> None:
-		"""Decrease the scrub step to the next smaller preset."""
-		for s in reversed(self._STEP_SIZES):
-			if s < self._scrub_step_s - 0.001:
-				self._scrub_step_s = s
-				break
+		"""Halve the scrub step in frames, floor at 1 frame."""
+		self._scrub_step_frames = max(self._scrub_step_frames // 2, 1)
 		self._update_step_display()
 
 	#============================================

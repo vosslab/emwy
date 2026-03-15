@@ -155,7 +155,7 @@ class EditController(BaseAnnotationController):
 
 		# Navigation buttons
 		btn_prev = QPushButton("<  Prev")
-		btn_prev.setToolTip("Previous seed (LEFT or Shift+LEFT when zoomed)")
+		btn_prev.setToolTip("Previous seed (Shift+LEFT)")
 		btn_prev.clicked.connect(self._on_prev)
 		layout.addWidget(btn_prev)
 
@@ -470,19 +470,21 @@ class EditController(BaseAnnotationController):
 			self._on_keep()
 			return True
 		elif key == Qt.Key.Key_Right:
-			is_zoomed = self._window.get_frame_view().get_zoom_factor() > 1.05
-			if shift_held or not is_zoomed:
+			if shift_held:
+				# Shift+RIGHT always does time nav (keep/accept)
 				if self._polish_mode == "pending":
 					self._on_accept_polish()
 					return True
 				self._on_keep()
 				return True
+			# plain RIGHT: let QGraphicsView handle pan (no-op at fit-zoom)
 			return False
 		elif key == Qt.Key.Key_Left:
-			is_zoomed = self._window.get_frame_view().get_zoom_factor() > 1.05
-			if shift_held or not is_zoomed:
+			if shift_held:
+				# Shift+LEFT always does time nav (previous seed)
 				self._on_prev()
 				return True
+			# plain LEFT: let QGraphicsView handle pan (no-op at fit-zoom)
 			return False
 		elif key == Qt.Key.Key_D:
 			self._on_delete()
