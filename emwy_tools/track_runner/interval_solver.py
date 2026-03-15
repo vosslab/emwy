@@ -9,22 +9,155 @@ stitches results into a full trajectory.
 import math
 import time
 import multiprocessing
+import threading
 import concurrent.futures
+import concurrent.futures.process
 
 # PIP3 modules
 import numpy
 import scipy.interpolate
 import rich.progress
+import rich.text
+import rich.measure
 
 # local repo modules
 import propagator
 import hypothesis
 import scoring
 import state_io
+import key_input
 
 # module-level shared counter for parallel workers
 # set by _init_worker() via ProcessPoolExecutor initializer
 _FRAME_COUNTER = None
+
+
+#============================================
+class BlockBarColumn(rich.progress.ProgressColumn):
+	"""Progress bar column using block characters for visual prominence.
+
+	Renders filled portion with full-block and remaining with light-shade.
+	Expands to fill available terminal width by querying terminal size.
+	"""
+	# full block for completed, light shade for remaining
+	FILLED = "\u2588"
+	EMPTY = "\u2591"
+	# fixed overhead: task description + percentage + ETA/elapsed text + padding
+	# "  solving intervals" ~20 + "  50%" ~5 + "ETA 3:42  elapsed 1:15" ~24 + spaces ~10
+	_OTHER_COLUMNS_WIDTH = 60
+
+	def render(self, task) -> rich.text.Text:
+		"""Render the progress bar with block characters.
+
+		Uses terminal width minus space for other columns to make the
+		bar as wide as possible.
+
+		Args:
+			task: Rich progress task with completed and total fields.
+
+		Returns:
+			Styled Text object containing the block bar.
+		"""
+		# compute bar width from terminal size
+		import shutil
+		term_width = shutil.get_terminal_size((80, 24)).columns
+		width = max(20, term_width - self._OTHER_COLUMNS_WIDTH)
+		if task.total is None or task.total == 0:
+			bar = self.EMPTY * width
+			return rich.text.Text(bar)
+		fraction = min(1.0, task.completed / task.total)
+		filled = int(width * fraction)
+		bar = self.FILLED * filled + self.EMPTY * (width - filled)
+		style = "bright_green" if fraction >= 1.0 else "green"
+		return rich.text.Text(bar, style=style)
+
+	def __rich_measure__(self, console, options) -> rich.measure.Measurement:
+		"""Claim all available width so the bar expands to fill the terminal."""
+		return rich.measure.Measurement(4, options.max_width)
+
+
+#============================================
+class FrameETAColumn(rich.progress.ProgressColumn):
+	"""ETA column based on a shared frame counter and total frame count.
+
+	Works with both multiprocessing.Value (parallel) and list wrappers
+	(sequential) for the frame counter.
+
+	Args:
+		frame_counter: Object with a .value attribute (multiprocessing.Value)
+			or a list with one int element ([frames_done]).
+		total_frames: Total number of frames to process.
+	"""
+
+	def __init__(self, frame_counter, total_frames: int):
+		super().__init__()
+		self.frame_counter = frame_counter
+		self.total_frames = total_frames
+		self.start_time = time.time()
+		# cache the last rendered text and update timestamp
+		self._last_text = "ETA --:--  elapsed --:--"
+		self._last_update = 0.0
+
+	def _get_done(self) -> int:
+		"""Read the current frame count from the counter."""
+		# multiprocessing.Value has a get_lock() method
+		if hasattr(self.frame_counter, "get_lock"):
+			with self.frame_counter.get_lock():
+				return self.frame_counter.value
+		# list wrapper: [frames_done]
+		return self.frame_counter[0]
+
+	@staticmethod
+	def _format_duration(seconds: float) -> str:
+		"""Format seconds into M:SS or H:MM:SS string.
+
+		Args:
+			seconds: Duration in seconds.
+
+		Returns:
+			Formatted time string.
+		"""
+		total_s = int(seconds)
+		if total_s < 3600:
+			m = total_s // 60
+			s = total_s % 60
+			return f"{m}:{s:02d}"
+		h = total_s // 3600
+		m = (total_s % 3600) // 60
+		s = total_s % 60
+		return f"{h}:{m:02d}:{s:02d}"
+
+	def render(self, task) -> rich.text.Text:
+		"""Render ETA and elapsed time based on frame throughput.
+
+		Updates at most once every 2 seconds to reduce flicker.
+
+		Args:
+			task: Rich progress task (unused, ETA comes from frame counter).
+
+		Returns:
+			Text object with formatted ETA and elapsed time.
+		"""
+		now = time.time()
+		elapsed = now - self.start_time
+		# throttle updates to once per 2 seconds
+		if now - self._last_update < 2.0 and self._last_update > 0.0:
+			return rich.text.Text(self._last_text)
+		self._last_update = now
+		elapsed_str = self._format_duration(elapsed)
+		if elapsed < 1.0:
+			self._last_text = f"ETA --:--  elapsed {elapsed_str}"
+			return rich.text.Text(self._last_text)
+		done = self._get_done()
+		if done < 1:
+			self._last_text = f"ETA --:--  elapsed {elapsed_str}"
+			return rich.text.Text(self._last_text)
+		fps_rate = done / elapsed
+		remaining = self.total_frames - done
+		eta_s = max(0, remaining / fps_rate)
+		eta_str = self._format_duration(eta_s)
+		self._last_text = f"ETA {eta_str}  elapsed {elapsed_str}"
+		return rich.text.Text(self._last_text)
 
 
 #============================================
@@ -437,9 +570,9 @@ def solve_interval(
 	if show_progress:
 		progress_ctx = rich.progress.Progress(
 			rich.progress.TextColumn("{task.description}"),
-			rich.progress.BarColumn(),
+			BlockBarColumn(),
 			rich.progress.TaskProgressColumn(),
-			rich.progress.TimeElapsedColumn(),
+			rich.progress.TimeRemainingColumn(),
 		)
 		progress_ctx.start()
 		progress_task = progress_ctx.add_task(
@@ -1344,6 +1477,36 @@ def _prepare_usable_seed(seed: dict) -> dict:
 
 
 #============================================
+def _force_kill_pool(pool: concurrent.futures.ProcessPoolExecutor) -> None:
+	"""Kill all worker processes and prevent blocking at interpreter shutdown.
+
+	ProcessPoolExecutor has two shutdown hooks that can block:
+	1. concurrent.futures.process._python_exit (atexit) joins the management thread
+	2. threading._shutdown joins all non-daemon threads at interpreter exit
+
+	Simply killing worker processes is not enough because the management thread
+	is non-daemon and stays alive. This function kills workers, deregisters
+	the management thread from both hooks, and calls shutdown.
+	"""
+	# kill worker processes
+	for proc in pool._processes.values():
+		proc.kill()
+	pool._processes.clear()
+	# deregister the management thread from both shutdown hooks
+	if hasattr(pool, '_executor_manager_thread') and pool._executor_manager_thread is not None:
+		mgmt_thread = pool._executor_manager_thread
+		# remove from atexit registry so _python_exit does not join it
+		concurrent.futures.process._threads_wakeups.pop(mgmt_thread, None)
+		# remove tstate lock from threading._shutdown_locks so
+		# threading._shutdown does not join this non-daemon thread at exit
+		tstate_lock = mgmt_thread._tstate_lock
+		if tstate_lock is not None:
+			with threading._shutdown_locks_lock:
+				threading._shutdown_locks.discard(tstate_lock)
+	pool.shutdown(wait=False, cancel_futures=True)
+
+
+#============================================
 def solve_all_intervals(
 	reader: object,
 	seeds: list,
@@ -1354,6 +1517,8 @@ def solve_all_intervals(
 	on_interval_complete: object = None,
 	prior_intervals: dict = None,
 	on_interval_solved: object = None,
+	run_control: object = None,
+	key_reader: object = None,
 ) -> dict:
 	"""Solve all seed-to-seed intervals and stitch into a full trajectory.
 
@@ -1556,11 +1721,16 @@ def solve_all_intervals(
 			parallel_results = {}
 			collected = set()
 			done_count = 0
+			# compute total new frames for ETA calculation
+			total_new_frames = sum(
+				int(all_pairs[ui][1]["frame_index"]) - int(all_pairs[ui][0]["frame_index"])
+				for ui in new_indices
+			)
 			with rich.progress.Progress(
 				rich.progress.TextColumn("{task.description}"),
-				rich.progress.BarColumn(),
+				BlockBarColumn(),
 				rich.progress.TaskProgressColumn(),
-				rich.progress.TimeElapsedColumn(),
+				FrameETAColumn(frame_counter, total_new_frames),
 			) as progress:
 				interval_task = progress.add_task(
 					"  intervals solved", total=new_count,
@@ -1572,6 +1742,8 @@ def solve_all_intervals(
 						for future in list(future_to_pair_idx):
 							if future.done() and future not in collected:
 								collected.add(future)
+								if future.cancelled():
+									continue
 								pair_idx = future_to_pair_idx[future]
 								result = future.result()
 								parallel_results[pair_idx] = result
@@ -1600,13 +1772,64 @@ def solve_all_intervals(
 							elapsed = now - t_start
 							current_frames = frame_counter.value
 							fps_rate = current_frames / max(0.1, elapsed)
+							# estimate remaining time from frame throughput
+							frames_left = total_new_frames - current_frames
+							eta_s = frames_left / fps_rate if fps_rate > 0 else 0
+							eta_m = int(eta_s) // 60
+							eta_sec = int(eta_s) % 60
 							progress.console.print(
 								f"  wall time {elapsed:.0f}s  "
 								f"intervals={done_count}/{new_count}  "
-								f"frames={current_frames}  "
-								f"({fps_rate:.1f} frames/s)"
+								f"frames={current_frames}/{total_new_frames}  "
+								f"({fps_rate:.1f} frames/s)  "
+								f"ETA {eta_m}:{eta_sec:02d}"
 							)
 							last_wall_print = now
+						# poll for keyboard input during wait
+						if key_reader is not None and run_control is not None:
+							ch = key_reader.poll()
+							key_input.handle_key(ch, run_control, key_reader, progress)
+						if run_control is not None and run_control.quit_requested:
+							# count in-progress vs pending futures
+							running = sum(
+								1 for f in future_to_pair_idx
+								if f.running()
+							)
+							pending = sum(
+								1 for f in future_to_pair_idx
+								if not f.done() and not f.running()
+							)
+							progress.console.print(
+								f"  quit requested: cancelling {pending} pending, "
+								f"terminating {running} running workers..."
+							)
+							# cancel pending futures
+							for future in future_to_pair_idx:
+								if not future.done():
+									future.cancel()
+							# collect any futures that already completed (not cancelled)
+							saved_on_quit = 0
+							for future in list(future_to_pair_idx):
+								if future.done() and future not in collected:
+									if future.cancelled():
+										continue
+									collected.add(future)
+									pair_idx = future_to_pair_idx[future]
+									result = future.result()
+									parallel_results[pair_idx] = result
+									done_count += 1
+									_persist_and_notify(pair_idx, result)
+									saved_on_quit += 1
+							if saved_on_quit > 0:
+								progress.console.print(
+									f"  saved {saved_on_quit} additional intervals during shutdown"
+								)
+							progress.console.print(
+								f"  {done_count}/{new_count} intervals saved to disk"
+							)
+							# forcibly kill pool so context manager exit is instant
+							_force_kill_pool(pool)
+							break
 						# brief sleep to avoid busy-waiting
 						time.sleep(0.2)
 				except KeyboardInterrupt:
@@ -1614,30 +1837,50 @@ def solve_all_intervals(
 					print("\n  interrupted: cancelling workers...", flush=True)
 					for future in future_to_pair_idx:
 						future.cancel()
-					pool.shutdown(wait=False, cancel_futures=True)
+					# forcibly kill pool so context manager exit is instant
+					_force_kill_pool(pool)
 					raise
-				# all futures collected: set progress to 100%
-				progress.update(
-					interval_task, completed=new_count,
-				)
+				# set progress to final count (100% only if not interrupted)
+				if run_control is None or not run_control.quit_requested:
+					progress.update(
+						interval_task, completed=new_count,
+					)
 		# merge prior and newly solved results in original order
 		for pair_idx in range(total_intervals):
 			if prior_results[pair_idx] is not None:
 				interval_results.append(prior_results[pair_idx])
-			else:
+			elif pair_idx in parallel_results:
 				interval_results.append(parallel_results[pair_idx])
+			else:
+				# interval was not solved (quit mid-run)
+				interval_results.append(None)
 	elif new_count > 0:
 		# sequential solving path with rich progress bar
+		# compute total new frames for ETA and use a list wrapper as counter
+		total_new_frames = sum(
+			int(all_pairs[ui][1]["frame_index"]) - int(all_pairs[ui][0]["frame_index"])
+			for ui in new_indices
+		)
+		seq_frame_counter = [0]
 		with rich.progress.Progress(
 			rich.progress.TextColumn("{task.description}"),
-			rich.progress.BarColumn(),
+			BlockBarColumn(),
 			rich.progress.TaskProgressColumn(),
-			rich.progress.TimeElapsedColumn(),
+			FrameETAColumn(seq_frame_counter, total_new_frames),
 		) as progress:
 			task = progress.add_task(
 				"  solving intervals", total=new_count,
 			)
 			for ui in new_indices:
+				# check for quit before starting next interval
+				if run_control is not None and run_control.quit_requested:
+					break
+				# poll for keyboard input between intervals
+				if key_reader is not None and run_control is not None:
+					ch = key_reader.poll()
+					key_input.handle_key(ch, run_control, key_reader, progress)
+				if run_control is not None and run_control.quit_requested:
+					break
 				seed_start, seed_end = all_pairs[ui]
 
 				start_frame = int(seed_start["frame_index"])
@@ -1658,6 +1901,9 @@ def solve_all_intervals(
 				_print_interval_result_rich(result, fps, progress)
 				if on_interval_complete is not None:
 					on_interval_complete(result)
+				# update frame counter for ETA calculation
+				n_frames = result["end_frame"] - result["start_frame"]
+				seq_frame_counter[0] += n_frames
 				progress.update(task, advance=1)
 		# merge all results in original order
 		for pair_idx in range(total_intervals):
@@ -1666,6 +1912,15 @@ def solve_all_intervals(
 		# all intervals reused from prior solve, no new solving needed
 		for pair_idx in range(total_intervals):
 			interval_results.append(prior_results[pair_idx])
+
+	# print quit summary when interrupted
+	if run_control is not None and run_control.quit_requested:
+		done = sum(1 for r in interval_results if r is not None)
+		print(f"  quit requested: {done}/{total_intervals} intervals saved to disk")
+		print("  hint: re-run 'solve' to resume from saved intervals")
+
+	# filter out None entries from incomplete runs (quit mid-solve)
+	interval_results = [r for r in interval_results if r is not None]
 
 	# stitch all intervals into full trajectory
 	trajectory = stitch_trajectories(interval_results)

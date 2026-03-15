@@ -14,10 +14,12 @@ import cv2
 import numpy
 import rich.progress
 
-# local repo modules
+# local repo modules (BlockBarColumn for wide block-character progress bars)
+import interval_solver
 import tr_crop
 import overlay_config
 import video_io
+import key_input
 import common_tools.frame_filters as frame_filters
 
 
@@ -106,6 +108,8 @@ def encode_cropped_video(
 	frame_states: list | None = None,
 	debug: bool = False,
 	encode_filters: list | None = None,
+	run_control: object = None,
+	key_reader_obj: object = None,
 ) -> None:
 	"""Read all frames, apply crops, and write encoded output.
 
@@ -140,7 +144,7 @@ def encode_cropped_video(
 	# wrap reader with rich progress bar
 	with rich.progress.Progress(
 		rich.progress.TextColumn("{task.description}"),
-		rich.progress.BarColumn(),
+		interval_solver.BlockBarColumn(),
 		rich.progress.TaskProgressColumn(),
 		rich.progress.TimeRemainingColumn(),
 	) as progress:
@@ -165,6 +169,16 @@ def encode_cropped_video(
 				)
 			writer.write_frame(resized)
 			progress.update(task, advance=1)
+			# poll for keyboard input every 30 frames
+			if run_control is not None and frame_idx % 30 == 0:
+				if key_reader_obj is not None:
+					ch = key_reader_obj.poll()
+					key_input.handle_key(ch, run_control, key_reader_obj, progress)
+				if run_control.quit_requested:
+					progress.console.print(
+						f"  encoding interrupted at frame {frame_idx}/{frame_count}"
+					)
+					break
 	writer.close()
 
 
@@ -585,7 +599,7 @@ def _encode_segment(
 	# rich progress bar for this worker
 	with rich.progress.Progress(
 		rich.progress.TextColumn("{task.description}"),
-		rich.progress.BarColumn(),
+		interval_solver.BlockBarColumn(),
 		rich.progress.TaskProgressColumn(),
 		rich.progress.TimeRemainingColumn(),
 	) as progress:

@@ -35,6 +35,7 @@ import seed_editor
 import interval_solver
 import review
 import tr_crop
+import key_input
 import common_tools.frame_filters as frame_filters
 
 
@@ -504,6 +505,7 @@ def _run_solve(
 	usable_seeds, _, _ = _validate_usable_seeds(seeds)
 	print(f"running interval solver "
 		f"({len(usable_seeds)} usable seeds, {num_workers} workers)...")
+	print("  (press Q to quit, P to pause)")
 	t_solve_start = time.time()
 	prior_ivs, on_solved_cb = _load_prior_results(intervals_path)
 	# build solver kwargs
@@ -515,19 +517,37 @@ def _run_solve(
 	}
 	if on_interval_complete is not None:
 		solve_kwargs["on_interval_complete"] = on_interval_complete
-	with video_io.VideoReader(args.input_file) as reader:
-		diagnostics = interval_solver.solve_all_intervals(
-			reader, seeds,
-			tr_detection.create_detector(cfg),
-			cfg, **solve_kwargs,
-		)
+	# set up keyboard controls and signal handler
+	rc = key_input.RunControl()
+	key_input.install_sigint_handler(rc)
+	with key_input.KeyInputReader() as kreader:
+		solve_kwargs["run_control"] = rc
+		solve_kwargs["key_reader"] = kreader
+		with video_io.VideoReader(args.input_file) as reader:
+			diagnostics = interval_solver.solve_all_intervals(
+				reader, seeds,
+				tr_detection.create_detector(cfg),
+				cfg, **solve_kwargs,
+			)
+	# restore default signal handler
+	key_input.restore_default_sigint()
 	diagnostics["fps"] = fps
 	t_solve_elapsed = time.time() - t_solve_start
-	print(f"  solve complete ({t_solve_elapsed:.1f}s)")
+	# mark whether the solve completed or was interrupted
+	intervals_file = state_io.load_intervals(intervals_path)
+	if rc.quit_requested:
+		intervals_file["solve_complete"] = False
+		print(f"  solve interrupted ({t_solve_elapsed:.1f}s)")
+	else:
+		intervals_file["solve_complete"] = True
+		print(f"  solve complete ({t_solve_elapsed:.1f}s)")
+	state_io.write_intervals(intervals_path, intervals_file)
 	# write diagnostics to disk
 	state_io.write_solver_diagnostics(diagnostics, diag_path, fps)
 	print(f"  diagnostics written to {diag_path}")
 	_print_quality_summary(diagnostics, fps)
+	if rc.quit_requested:
+		print(f"  quit to exit: {rc.quit_elapsed():.1f}s")
 	return diagnostics
 
 
@@ -863,10 +883,25 @@ def _mode_solve(
 		raise RuntimeError(f"no seeds found in {seeds_path}")
 	print(f"loaded {len(seeds)} seeds from {seeds_path}")
 
-	# clear existing solved intervals to force full re-solve
+	# only clear intervals if a prior solve completed successfully;
+	# if the prior solve was interrupted, resume from saved intervals
 	if os.path.isfile(intervals_path):
-		os.remove(intervals_path)
-		print("  cleared solved intervals (full re-solve)")
+		intervals_file = state_io.load_intervals(intervals_path)
+		prior_complete = intervals_file.get("solve_complete", False)
+		prior_count = len(intervals_file.get("solved_intervals", {}))
+		if prior_complete and prior_count > 0:
+			print(f"  prior solve completed ({prior_count} intervals)")
+			answer = input("  clear and re-solve from scratch? [y/N] ").strip().lower()
+			if answer in ("y", "yes"):
+				os.remove(intervals_path)
+				print("  cleared solved intervals (full re-solve)")
+			else:
+				print("  keeping prior results (use 'refine' for incremental updates)")
+				return
+		elif prior_count > 0:
+			print(f"  resuming interrupted solve ({prior_count} intervals saved)")
+		else:
+			os.remove(intervals_path)
 
 	num_workers = _resolve_workers(args)
 	_run_solve(
@@ -1086,7 +1121,12 @@ def _mode_encode(
 	workers_enc_label = f" ({num_workers} workers)" if num_workers > 1 else ""
 	filters_label = f" filters={encode_filters}" if encode_filters else ""
 	print(f"encoding cropped video: {crop_w}x{crop_h}{workers_enc_label}{filters_label}")
+	print("  (press Q to quit, P to pause)")
 	t_encode_start = time.time()
+
+	# set up keyboard controls for encoding
+	enc_rc = key_input.RunControl()
+	key_input.install_sigint_handler(enc_rc)
 
 	# build frame_states for debug overlay
 	frame_states_for_debug = None
@@ -1123,28 +1163,36 @@ def _mode_encode(
 				debug_state = None
 			frame_states_for_debug.append(debug_state)
 
-	if num_workers > 1:
-		encoder.encode_cropped_video_parallel(
-			args.input_file, crop_rects, temp_video,
-			crop_w, crop_h,
-			codec=video_codec, crf=crf_value,
-			frame_states=frame_states_for_debug,
-			debug=args.debug,
-			workers=num_workers,
-			encode_filters=encode_filters,
-		)
-	else:
-		with video_io.VideoReader(args.input_file) as reader:
-			encoder.encode_cropped_video(
-				reader, crop_rects, temp_video,
+	with key_input.KeyInputReader() as enc_kreader:
+		if num_workers > 1:
+			encoder.encode_cropped_video_parallel(
+				args.input_file, crop_rects, temp_video,
 				crop_w, crop_h,
 				codec=video_codec, crf=crf_value,
 				frame_states=frame_states_for_debug,
 				debug=args.debug,
+				workers=num_workers,
 				encode_filters=encode_filters,
 			)
+		else:
+			with video_io.VideoReader(args.input_file) as reader:
+				encoder.encode_cropped_video(
+					reader, crop_rects, temp_video,
+					crop_w, crop_h,
+					codec=video_codec, crf=crf_value,
+					frame_states=frame_states_for_debug,
+					debug=args.debug,
+					encode_filters=encode_filters,
+					run_control=enc_rc,
+					key_reader_obj=enc_kreader,
+				)
+	# restore default signal handler
+	key_input.restore_default_sigint()
 	t_encode_elapsed = time.time() - t_encode_start
-	print(f"  encode complete ({t_encode_elapsed:.1f}s)")
+	if enc_rc.quit_requested:
+		print(f"  encode interrupted ({t_encode_elapsed:.1f}s)")
+	else:
+		print(f"  encode complete ({t_encode_elapsed:.1f}s)")
 
 	# mux audio
 	print("muxing audio...")

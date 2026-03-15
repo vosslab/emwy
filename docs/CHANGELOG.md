@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-03-15
+
+### Additions and New Features
+- Created [emwy_tools/track_runner/key_input.py](emwy_tools/track_runner/key_input.py): keyboard input and signal handling module for interactive controls during `solve`, `refine`, and `encode` modes. Provides `RunControl` flag object, `KeyInputReader` context manager for non-blocking cbreak-mode key detection, `GracefulQuit` exception, and `install_sigint_handler()` for graceful Ctrl-C handling.
+- Added keyboard controls to track runner solve and encode modes: press Q to quit after the current interval (progress saved to disk), P to pause/resume, Ctrl-C for graceful quit with clean message instead of traceback. Second Ctrl-C force-quits. Startup hint `(press Q to quit, P to pause)` printed before solve and encode.
+- Created [tests/test_key_input.py](tests/test_key_input.py): 14 pytest tests covering `RunControl` flag logic, `GracefulQuit` exception propagation, `KeyInputReader` non-TTY fallback, `handle_key` quit/pause behavior, and `install_sigint_handler` first/second Ctrl-C behavior.
+
+### Behavior or Interface Changes
+- Improved track runner progress bars in [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py) and [emwy_tools/track_runner/encoder.py](emwy_tools/track_runner/encoder.py): replaced thin line-drawing bar with block characters (full-block/light-shade), added dynamic terminal width expansion via `__rich_measure__`, and switched elapsed-time counters to ETA countdown displays.
+- Added `BlockBarColumn` and `FrameETAColumn` classes in [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py) for reusable wide block-character progress bars and frame-throughput-based ETA estimation. `FrameETAColumn` supports both `multiprocessing.Value` (parallel) and list wrapper (sequential) counters.
+- `FrameETAColumn` now throttles updates to once per 2 seconds and shows both ETA and elapsed time (e.g. `ETA 3:42  elapsed 1:15`).
+- `BlockBarColumn` progress bar now expands to fill available terminal width instead of using a fixed 40-character width.
+- Parallel solve wall-time log now includes total frame count and ETA in the periodic status line.
+
+### Fixes and Maintenance
+- Fixed ~50 second exit delay after Q-quit in parallel solve: added `_force_kill_pool()` helper that kills worker processes and deregisters the executor's management thread from both `concurrent.futures.process._python_exit` (atexit handler) and `threading._shutdown_locks` (interpreter shutdown). Both hooks block at exit by joining the non-daemon management thread.
+- Fixed `CancelledError` crash when pressing Q during parallel solve: cancelled futures are now skipped instead of calling `.result()` on them.
+- Fixed slow quit in parallel solve mode: `pool.shutdown(wait=False, cancel_futures=True)` is now called immediately on Q-quit instead of waiting for in-progress workers to finish.
+- `solve` mode now resumes from saved intervals when the prior solve was interrupted instead of always clearing and starting over. A `solve_complete` flag in the intervals file tracks whether the last solve finished; only a completed solve triggers a full re-solve on the next run.
+- Fixed Q keypress leaking to the shell prompt after exit: `KeyInputReader` now flushes stdin with `termios.tcflush()` before restoring terminal settings.
+- Progress bar no longer jumps to 100% when solve is interrupted mid-run.
+- Quit summary now includes elapsed time since Q was pressed (e.g. `quit took 0.3s`).
+
 ## 2026-03-13
 
 ### Additions and New Features
