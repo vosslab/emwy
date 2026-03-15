@@ -175,11 +175,21 @@ def encode_cropped_video(
 					ch = key_reader_obj.poll()
 					key_input.handle_key(ch, run_control, key_reader_obj, progress)
 				if run_control.quit_requested:
+					key_input._quit_trace(
+						"MAIN_LOOP", context="encode_sequential",
+						quit_requested=True, frame=frame_idx,
+					)
 					progress.console.print(
 						f"  encoding interrupted at frame {frame_idx}/{frame_count}"
 					)
 					break
 	writer.close()
+	# trace early return on quit
+	if run_control is not None and run_control.quit_requested:
+		key_input._quit_trace(
+			"FUNCTION_RETURN", context="encode_sequential",
+			quit_requested=True,
+		)
 
 
 #============================================
@@ -646,6 +656,8 @@ def encode_cropped_video_parallel(
 	debug: bool = False,
 	workers: int = 4,
 	encode_filters: list | None = None,
+	run_control: object = None,
+	key_reader_obj: object = None,
 ) -> None:
 	"""Encode cropped video using parallel worker processes.
 
@@ -667,6 +679,8 @@ def encode_cropped_video_parallel(
 		debug: If True, draw tracking overlay on cropped frames.
 		workers: Number of parallel encoding workers.
 		encode_filters: Ordered list of filter names to apply during encode.
+		run_control: Optional RunControl for quit detection.
+		key_reader_obj: Optional KeyInputReader for keyboard polling.
 	"""
 	# fall back to sequential if only 1 worker
 	if workers <= 1:
@@ -711,8 +725,9 @@ def encode_cropped_video_parallel(
 
 	# launch workers with ProcessPoolExecutor
 	seg_paths = []
+	quit_interrupted = False
 	with concurrent.futures.ProcessPoolExecutor(max_workers=actual_workers) as pool:
-		futures = []
+		future_to_seg = {}
 		for seg in segments:
 			future = pool.submit(
 				_encode_segment,
@@ -728,11 +743,78 @@ def encode_cropped_video_parallel(
 				actual_workers,
 				encode_filters,
 			)
-			futures.append((future, seg["path"]))
-		# collect results in order
-		for future, seg_path in futures:
-			future.result()
-			seg_paths.append(seg_path)
+			future_to_seg[future] = seg["path"]
+		# polling loop: use concurrent.futures.wait() with short timeout
+		# to properly detect completion via internal condition variables
+		# (manual f.done() polling does not work reliably)
+		all_futures = set(future_to_seg.keys())
+		key_input._quit_trace(
+			"WAIT_ENTER", context="encode_parallel",
+			futures=len(all_futures),
+		)
+		done_futures = set()
+		# heartbeat counter: only trace every 30 iterations (~6s)
+		heartbeat_counter = 0
+		while len(done_futures) < len(all_futures):
+			# poll for keyboard input
+			if key_reader_obj is not None and run_control is not None:
+				ch = key_reader_obj.poll()
+				key_input.handle_key(ch, run_control, key_reader_obj)
+			# check quit flag
+			if run_control is not None and run_control.quit_requested:
+				key_input._quit_trace(
+					"MAIN_LOOP", context="encode_parallel",
+					quit_requested=True,
+				)
+				# cancel pending futures
+				for f in all_futures:
+					if not f.done():
+						f.cancel()
+				# kill worker processes
+				from interval_solver import _force_kill_pool
+				_force_kill_pool(pool)
+				quit_interrupted = True
+				break
+			# wait with 0.2s timeout for any future to complete
+			# this uses the internal condition variable, unlike f.done()
+			remaining = all_futures - done_futures
+			completed_batch, _ = concurrent.futures.wait(
+				remaining, timeout=0.2,
+				return_when=concurrent.futures.FIRST_COMPLETED,
+			)
+			for f in completed_batch:
+				done_futures.add(f)
+				if not f.cancelled():
+					# propagate any exception from the worker
+					f.result()
+			# heartbeat trace every ~6s (30 iterations at 0.2s)
+			heartbeat_counter += 1
+			if heartbeat_counter % 30 == 0:
+				key_input._quit_trace(
+					"ENCODE_WAIT", context="encode_parallel",
+					pending=len(all_futures) - len(done_futures),
+					completed=len(done_futures),
+					quit=run_control.quit_requested if run_control else False,
+				)
+		key_input._quit_trace(
+			"WAIT_EXIT", context="encode_parallel",
+			completed=len(done_futures),
+		)
+		# collect segment paths in original order
+		if not quit_interrupted:
+			for seg in segments:
+				seg_paths.append(seg["path"])
+	# early return if quit interrupted encoding
+	if quit_interrupted:
+		key_input._quit_trace(
+			"FUNCTION_RETURN", context="encode_parallel",
+			quit_requested=True,
+		)
+		# clean up any partial segment files
+		for seg in segments:
+			if os.path.isfile(seg["path"]):
+				os.remove(seg["path"])
+		return
 
 	# concatenate segments with mkvmerge
 	mkvmerge_path = shutil.which("mkvmerge")

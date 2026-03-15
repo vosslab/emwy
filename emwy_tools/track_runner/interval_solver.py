@@ -1488,9 +1488,19 @@ def _force_kill_pool(pool: concurrent.futures.ProcessPoolExecutor) -> None:
 	is non-daemon and stays alive. This function kills workers, deregisters
 	the management thread from both hooks, and calls shutdown.
 	"""
+	# collect worker PIDs before killing
+	worker_pids = [proc.pid for proc in pool._processes.values()]
+	key_input._quit_trace("POOL_KILL_START", workers=worker_pids)
 	# kill worker processes
 	for proc in pool._processes.values():
 		proc.kill()
+	# wait briefly and log per-worker status
+	for proc in pool._processes.values():
+		proc.join(timeout=2)
+		key_input._quit_trace(
+			"POOL_KILL_DONE", worker_pid=proc.pid,
+			alive=proc.is_alive(), exitcode=proc.exitcode,
+		)
 	pool._processes.clear()
 	# deregister the management thread from both shutdown hooks
 	if hasattr(pool, '_executor_manager_thread') and pool._executor_manager_thread is not None:
@@ -1736,6 +1746,10 @@ def solve_all_intervals(
 					"  intervals solved", total=new_count,
 				)
 				last_wall_print = time.time()
+				key_input._quit_trace(
+					"WAIT_ENTER", context="solve_parallel",
+					futures=len(future_to_pair_idx),
+				)
 				try:
 					while done_count < new_count:
 						# check for newly completed futures (non-blocking)
@@ -1790,6 +1804,10 @@ def solve_all_intervals(
 							ch = key_reader.poll()
 							key_input.handle_key(ch, run_control, key_reader, progress)
 						if run_control is not None and run_control.quit_requested:
+							key_input._quit_trace(
+								"MAIN_LOOP", context="solve_parallel",
+								quit_requested=True,
+							)
 							# count in-progress vs pending futures
 							running = sum(
 								1 for f in future_to_pair_idx
@@ -1840,6 +1858,10 @@ def solve_all_intervals(
 					# forcibly kill pool so context manager exit is instant
 					_force_kill_pool(pool)
 					raise
+				key_input._quit_trace(
+					"WAIT_EXIT", context="solve_parallel",
+					completed=done_count,
+				)
 				# set progress to final count (100% only if not interrupted)
 				if run_control is None or not run_control.quit_requested:
 					progress.update(
@@ -1874,12 +1896,20 @@ def solve_all_intervals(
 			for ui in new_indices:
 				# check for quit before starting next interval
 				if run_control is not None and run_control.quit_requested:
+					key_input._quit_trace(
+						"MAIN_LOOP", context="solve_sequential",
+						quit_requested=True,
+					)
 					break
 				# poll for keyboard input between intervals
 				if key_reader is not None and run_control is not None:
 					ch = key_reader.poll()
 					key_input.handle_key(ch, run_control, key_reader, progress)
 				if run_control is not None and run_control.quit_requested:
+					key_input._quit_trace(
+						"MAIN_LOOP", context="solve_sequential",
+						quit_requested=True, source="key_poll",
+					)
 					break
 				seed_start, seed_end = all_pairs[ui]
 
@@ -1916,6 +1946,11 @@ def solve_all_intervals(
 	# print quit summary when interrupted
 	if run_control is not None and run_control.quit_requested:
 		done = sum(1 for r in interval_results if r is not None)
+		key_input._quit_trace(
+			"FUNCTION_RETURN", context="solve_all_intervals",
+			quit_requested=True, intervals_done=done,
+			intervals_total=total_intervals,
+		)
 		print(f"  quit requested: {done}/{total_intervals} intervals saved to disk")
 		print("  hint: re-run 'solve' to resume from saved intervals")
 

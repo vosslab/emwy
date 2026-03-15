@@ -558,6 +558,9 @@ def _run_solve(
 	# set up keyboard controls and signal handler
 	rc = key_input.RunControl()
 	key_input.install_sigint_handler(rc)
+	# enable quit-chain tracing when debug flag is set
+	if args.debug:
+		key_input.QUIT_TRACE = True
 	with key_input.KeyInputReader() as kreader:
 		solve_kwargs["run_control"] = rc
 		solve_kwargs["key_reader"] = kreader
@@ -1168,6 +1171,9 @@ def _mode_encode(
 	# set up keyboard controls for encoding
 	enc_rc = key_input.RunControl()
 	key_input.install_sigint_handler(enc_rc)
+	# enable quit-chain tracing when debug flag is set
+	if args.debug:
+		key_input.QUIT_TRACE = True
 
 	# build frame_states for debug overlay
 	frame_states_for_debug = None
@@ -1214,6 +1220,8 @@ def _mode_encode(
 				debug=args.debug,
 				workers=num_workers,
 				encode_filters=encode_filters,
+				run_control=enc_rc,
+				key_reader_obj=enc_kreader,
 			)
 		else:
 			with video_io.VideoReader(args.input_file) as reader:
@@ -1232,8 +1240,9 @@ def _mode_encode(
 	t_encode_elapsed = time.time() - t_encode_start
 	if enc_rc.quit_requested:
 		print(f"  encode interrupted ({t_encode_elapsed:.1f}s)")
-	else:
-		print(f"  encode complete ({t_encode_elapsed:.1f}s)")
+		print("  skipping mux and finalize (quit requested)")
+		return
+	print(f"  encode complete ({t_encode_elapsed:.1f}s)")
 
 	# mux audio
 	print("muxing audio...")

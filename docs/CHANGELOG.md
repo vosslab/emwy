@@ -3,6 +3,12 @@
 ## 2026-03-15
 
 ### Additions and New Features
+- Added quit-chain tracing to track runner for debugging Q-quit failures. New `QUIT_TRACE` flag in [emwy_tools/track_runner/key_input.py](emwy_tools/track_runner/key_input.py) enables timestamped boundary markers (KEY_POLL, KEY_HANDLE, MAIN_LOOP, WAIT_ENTER/WAIT_EXIT, POOL_KILL_START/DONE, ENCODE_WAIT, FUNCTION_RETURN) with PID. Enabled automatically when `-d` debug flag is set.
+- Replaced blocking `future.result()` loop in `encode_cropped_video_parallel()` with a polling loop that checks keyboard input and quit flag every 0.2s. This is a prerequisite for encode Q-quit to be observable at all -- previously the parallel encode path could not respond to Q because the main thread was blocked.
+- Wired `run_control` and `key_reader_obj` through to `encode_cropped_video_parallel()` from [emwy_tools/track_runner/cli.py](emwy_tools/track_runner/cli.py), enabling Q-quit during parallel encoding.
+- Added `_force_kill_pool()` per-worker join and trace logging: each worker is joined with a 2s timeout and its alive/exitcode state is logged via POOL_KILL_DONE markers.
+- Created three diagnostic test scripts for isolating quit-chain failure points: `_temp_test_quit_input.py` (Test A: input path), `_temp_test_quit_loop.py` (Test B: main-loop responsiveness), `_temp_test_quit_procs.py` (Test C: process tree shutdown).
+
 - Created [docs/TRACK_RUNNER_YAML_CONFIG.md](docs/TRACK_RUNNER_YAML_CONFIG.md): reference documentation for the track runner YAML config file covering detection, crop modes, smoothing tuning, encode filters, CLI overrides, and recommended presets for handheld vs tripod footage.
 - Created [emwy_tools/track_runner/tr_paths.py](emwy_tools/track_runner/tr_paths.py): centralized path construction for track_runner config and state files. All data files now default to `./tr_config/` subdirectory under cwd instead of next to the input video. Encoded output stays next to the source video. The `tr_config/` directory is auto-created on first run and can be replaced with a symlink to a network drive.
 - Created [emwy_tools/track_runner/tr_video_identity.py](emwy_tools/track_runner/tr_video_identity.py): video identity fingerprinting module. Builds metadata-based identity blocks (basename, size, resolution, fps, frame count, duration) and compares stored vs current identity with tolerant matching (fps within 0.01, duration within 0.5s). Mismatches produce warnings, not errors.

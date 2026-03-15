@@ -8,8 +8,32 @@ losing already-computed progress.
 # Standard Library
 import os
 import sys
+import time
 import signal
 import select
+
+
+# module-level debug flag, set by callers to enable quit-chain tracing
+QUIT_TRACE = False
+
+
+#============================================
+def _quit_trace(marker: str, **kwargs) -> None:
+	"""Emit a timestamped quit-chain trace line when QUIT_TRACE is enabled.
+
+	Args:
+		marker: Trace marker name (e.g. KEY_POLL, KEY_HANDLE).
+		**kwargs: Key-value pairs to include in the trace line.
+	"""
+	if not QUIT_TRACE:
+		return
+	pid = os.getpid()
+	ts = time.time()
+	parts = [f"{marker} pid={pid} t={ts:.3f}"]
+	for k, v in kwargs.items():
+		parts.append(f"{k}={v}")
+	line = " ".join(parts)
+	print(f"  [QUIT_TRACE] {line}", flush=True)
 
 
 #============================================
@@ -117,6 +141,7 @@ class KeyInputReader:
 		readable, _, _ = select.select([sys.stdin], [], [], 0)
 		if readable:
 			ch = sys.stdin.read(1)
+			_quit_trace("KEY_POLL", ch=repr(ch))
 			return ch
 		return None
 
@@ -153,6 +178,7 @@ def install_sigint_handler(run_control: RunControl) -> None:
 		received["count"] += 1
 		if received["count"] == 1:
 			run_control.request_quit()
+			_quit_trace("KEY_HANDLE", source="sigint", quit_requested=True)
 			# print message directly (Rich may not be available here)
 			print(
 				"\n  Ctrl-C received, finishing current interval... "
@@ -192,6 +218,7 @@ def handle_key(
 	lower = ch.lower()
 	if lower == "q":
 		run_control.request_quit()
+		_quit_trace("KEY_HANDLE", quit_requested=True)
 		msg = "  Q pressed, finishing current interval..."
 		if progress is not None:
 			progress.console.print(msg)
