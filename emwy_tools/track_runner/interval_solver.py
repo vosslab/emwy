@@ -1733,10 +1733,11 @@ def solve_all_intervals(
 			collected = set()
 			done_count = 0
 			# compute total new frames for ETA calculation
+			# add len(new_indices) because each interval scores end-start+1 frames (inclusive endpoints)
 			total_new_frames = sum(
 				int(all_pairs[ui][1]["frame_index"]) - int(all_pairs[ui][0]["frame_index"])
 				for ui in new_indices
-			)
+			) + len(new_indices)
 			with rich.progress.Progress(
 				rich.progress.TextColumn("{task.description}"),
 				BlockBarColumn(),
@@ -1880,10 +1881,11 @@ def solve_all_intervals(
 	elif new_count > 0:
 		# sequential solving path with rich progress bar
 		# compute total new frames for ETA and use a list wrapper as counter
+		# add len(new_indices) because each interval scores end-start+1 frames (inclusive endpoints)
 		total_new_frames = sum(
 			int(all_pairs[ui][1]["frame_index"]) - int(all_pairs[ui][0]["frame_index"])
 			for ui in new_indices
-		)
+		) + len(new_indices)
 		seq_frame_counter = [0]
 		with rich.progress.Progress(
 			rich.progress.TextColumn("{task.description}"),

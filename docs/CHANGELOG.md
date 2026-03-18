@@ -14,6 +14,7 @@
 - `direct_center_crop_trajectory()` now applies containment clamping and zoom constraint by default. Existing configs without the new keys get containment_radius=0.20 and max_height_change=0.005 automatically. Crop position is no longer clamped to frame bounds (black fill at edges is allowed).
 
 ### Fixes and Maintenance
+- **Bug fix**: fixed negative ETA in track runner interval solver. `total_new_frames` undercounted by 1 per interval (off-by-one from inclusive seed endpoints), causing the frame counter to overshoot and produce negative ETA. Added `+ len(new_indices)` to both parallel and sequential paths in [emwy_tools/track_runner/interval_solver.py](emwy_tools/track_runner/interval_solver.py).
 - **Bug fix**: removed hidden size-smoothing default in [emwy_tools/track_runner/tr_crop.py](emwy_tools/track_runner/tr_crop.py). When `crop_post_smooth_size_strength=0`, the code previously fell back to `alpha_pos / 2.0`, applying unwanted size smoothing. Now `alpha_size=0` truly disables size post-smoothing. This contaminated all prior experiment results where size smoothing appeared to be off but was actually running at half the position smoothing strength.
 
 ### Decisions and Failures
