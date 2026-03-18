@@ -239,8 +239,17 @@ def write_diagnostics(path: str, diagnostics_data: dict) -> None:
 	"""
 	# ensure header version is set correctly before writing
 	diagnostics_data[DIAGNOSTICS_HEADER_KEY] = DIAGNOSTICS_HEADER_VALUE
-	with open(path, "w") as fh:
-		json.dump(diagnostics_data, fh, indent=2)
+	# atomic write: temp file + rename to avoid corrupt file on interruption
+	dir_path = os.path.dirname(os.path.abspath(path))
+	fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp.json")
+	try:
+		with os.fdopen(fd, "w") as fh:
+			json.dump(diagnostics_data, fh, indent=2)
+		os.replace(tmp_path, path)
+	except Exception:
+		if os.path.exists(tmp_path):
+			os.unlink(tmp_path)
+		raise
 
 
 #============================================
@@ -289,8 +298,17 @@ def write_intervals(path: str, intervals_data: dict) -> None:
 	"""
 	# ensure header version is set correctly before writing
 	intervals_data[INTERVALS_HEADER_KEY] = INTERVALS_HEADER_VALUE
-	with open(path, "w") as fh:
-		json.dump(intervals_data, fh, indent=2)
+	# atomic write: temp file + rename to avoid corrupt file on interruption
+	dir_path = os.path.dirname(os.path.abspath(path))
+	fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp.json")
+	try:
+		with os.fdopen(fd, "w") as fh:
+			json.dump(intervals_data, fh, indent=2)
+		os.replace(tmp_path, path)
+	except Exception:
+		if os.path.exists(tmp_path):
+			os.unlink(tmp_path)
+		raise
 
 
 #============================================

@@ -53,7 +53,7 @@ processing:
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `crop_mode` | `smooth` | Crop algorithm: `smooth` or `direct_center` |
+| `crop_mode` | `smooth` | Crop algorithm: `smooth`, `direct_center`, or `smart` |
 
 **`smooth`** (default): Online controller that tracks the subject with exponential
 smoothing, deadband, and velocity capping. Reacts to the trajectory frame by frame.
@@ -64,6 +64,12 @@ with offline post-smoothing for better results on shaky footage.
 trajectory, then applies forward-backward EMA smoothing. Sees the full trajectory
 (past and future) before deciding crop positions, so it handles sudden jumps
 better than `smooth` mode. Recommended for handheld or shaky camera footage.
+
+**`smart`**: Experimental regime-switching crop controller. Classifies trajectory
+spans into regimes (clear, uncertain, distance) and applies different crop targets
+per regime. Uses `direct_center`-style offline processing with per-frame fill_ratio
+and zoom rate from the regime policy. Includes vertical asymmetry and torso
+protection composition rules. Thresholds are provisional.
 
 ### Smooth mode tuning
 

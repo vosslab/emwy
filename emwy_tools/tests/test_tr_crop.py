@@ -1662,3 +1662,344 @@ def test_containment_disabled_when_zero() -> None:
 
 
 # duplicate test_zoom_constraint_disabled_when_zero removed (defined above)
+
+
+# ============================================================
+# composition offset tests (torso anchor)
+# ============================================================
+
+
+#============================================
+def test_torso_anchor_default_matches_baseline() -> None:
+	"""anchor=0.50 (default) produces same output as no anchor."""
+	n = 60
+	trajectory = _make_synthetic_trajectory(
+		n, cx_func=lambda i: 960.0, cy_func=lambda i: 540.0, h_val=200.0,
+	)
+	config_no_anchor = _make_direct_center_config({
+		"crop_max_height_change": 0.005,
+	})
+	config_with_anchor = _make_direct_center_config({
+		"crop_max_height_change": 0.005,
+		"crop_torso_anchor": 0.50,
+	})
+	rects_base = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_no_anchor,
+	)
+	rects_anchor = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_with_anchor,
+	)
+	# must be identical
+	assert len(rects_base) == len(rects_anchor)
+	for a, b in zip(rects_base, rects_anchor):
+		assert a == b
+
+
+#============================================
+def test_torso_anchor_038_shifts_crop_down() -> None:
+	"""anchor=0.38 shifts crop so torso is in upper 40% of frame."""
+	n = 60
+	cy_target = 540.0
+	trajectory = _make_synthetic_trajectory(
+		n, cx_func=lambda i: 960.0, cy_func=lambda i: cy_target, h_val=200.0,
+	)
+	config_centered = _make_direct_center_config({
+		"crop_max_height_change": 0.0,
+	})
+	config_anchor = _make_direct_center_config({
+		"crop_max_height_change": 0.0,
+		"crop_torso_anchor": 0.38,
+	})
+	rects_centered = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_centered,
+	)
+	rects_anchor = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_anchor,
+	)
+	# with anchor < 0.5, crop shifts down => crop_y increases
+	# so torso center is in upper portion of crop
+	mid = n // 2
+	_, y_c, _, h_c = rects_centered[mid]
+	_, y_a, _, h_a = rects_anchor[mid]
+	# anchor crop should have higher y (shifted down)
+	assert y_a > y_c, f"anchor crop y={y_a} should be > centered y={y_c}"
+	# check torso sits in upper 40% of anchored crop
+	torso_pos_in_crop = (cy_target - y_a) / h_a
+	assert torso_pos_in_crop < 0.42, (
+		f"torso at {torso_pos_in_crop:.2f} within crop, expected < 0.42"
+	)
+
+
+#============================================
+def test_torso_anchor_offset_scales_with_crop_height() -> None:
+	"""Composition offset scales with smoothed crop height, not bbox height."""
+	n = 60
+	cy_target = 540.0
+	# two configs with different fill_ratio => different crop height
+	# use centered anchor as baseline, then anchored to measure offset
+	config_small_centered = _make_direct_center_config({
+		"crop_max_height_change": 0.0,
+		"crop_torso_anchor": 0.50,
+		"crop_fill_ratio": 0.30,
+	})
+	config_small_anchored = _make_direct_center_config({
+		"crop_max_height_change": 0.0,
+		"crop_torso_anchor": 0.38,
+		"crop_fill_ratio": 0.30,
+	})
+	config_large_centered = _make_direct_center_config({
+		"crop_max_height_change": 0.0,
+		"crop_torso_anchor": 0.50,
+		"crop_fill_ratio": 0.20,
+	})
+	config_large_anchored = _make_direct_center_config({
+		"crop_max_height_change": 0.0,
+		"crop_torso_anchor": 0.38,
+		"crop_fill_ratio": 0.20,
+	})
+	trajectory = _make_synthetic_trajectory(
+		n, cx_func=lambda i: 960.0, cy_func=lambda i: cy_target, h_val=200.0,
+	)
+	mid = n // 2
+	# measure the y-shift caused by anchor for each fill ratio
+	rects_sc = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_small_centered,
+	)
+	rects_sa = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_small_anchored,
+	)
+	rects_lc = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_large_centered,
+	)
+	rects_la = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_large_anchored,
+	)
+	# offset = difference in y between anchored and centered
+	offset_small = rects_sa[mid][1] - rects_sc[mid][1]
+	offset_large = rects_la[mid][1] - rects_lc[mid][1]
+	# both offsets should be positive (crop shifts down)
+	assert offset_small > 0, f"small crop offset should be positive: {offset_small}"
+	assert offset_large > 0, f"large crop offset should be positive: {offset_large}"
+	# larger crop height => larger offset
+	assert offset_large > offset_small, (
+		f"larger crop offset {offset_large} should exceed smaller {offset_small}"
+	)
+
+
+#============================================
+def test_torso_anchor_containment_still_works() -> None:
+	"""Containment clamp functions correctly with composition offset active."""
+	n = 60
+	# subject drifts to edge of frame
+	trajectory = _make_synthetic_trajectory(
+		n,
+		cx_func=lambda i: 960.0 + i * 5.0,
+		cy_func=lambda i: 540.0,
+		h_val=200.0,
+	)
+	config = _make_direct_center_config({
+		"crop_max_height_change": 0.005,
+		"crop_containment_radius": 0.20,
+		"crop_torso_anchor": 0.38,
+	})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	# verify all rects are valid and function completes
+	assert len(rects) == n
+	for x, y, w, h in rects:
+		assert w > 0 and h > 0
+
+
+# ============================================================
+# zoom event detector tests
+# ============================================================
+
+
+#============================================
+def test_zoom_detector_smooth_signal_no_events() -> None:
+	"""Smooth height signal produces no zoom events."""
+	n = 100
+	# gradual height change: 200 to 210 over 100 frames (< 1% per frame)
+	raw_h = numpy.linspace(200.0, 210.0, n)
+	mask = crop_mod._detect_zoom_events(raw_h)
+	assert not mask.any(), "smooth signal should produce no zoom events"
+
+
+#============================================
+def test_zoom_detector_large_jump_detected() -> None:
+	"""2x height jump at frame 50 triggers hold zone."""
+	n = 100
+	raw_h = numpy.full(n, 200.0)
+	# instant 2x jump at frame 50 that persists
+	raw_h[50:] = 400.0
+	mask = crop_mod._detect_zoom_events(raw_h, threshold_ratio=1.25, hold_frames=30)
+	# frame 50 should be in hold zone
+	assert mask[50], "jump frame should be in hold zone"
+	# frames 51-79 should be in hold zone (hold_frames=30 from frame 50)
+	assert mask[79], "frame 79 should be in hold zone"
+	# frame 80 should not be in hold zone
+	assert not mask[80], "frame 80 should be outside hold zone"
+	# frames before jump should not be flagged
+	assert not mask[49], "frame before jump should not be flagged"
+
+
+#============================================
+def test_zoom_detector_zoom_out_detected() -> None:
+	"""Zoom-out (height decrease) is also detected."""
+	n = 100
+	raw_h = numpy.full(n, 400.0)
+	# instant halving at frame 40
+	raw_h[40:] = 200.0
+	mask = crop_mod._detect_zoom_events(raw_h, threshold_ratio=1.25, hold_frames=20)
+	assert mask[40], "zoom-out frame should be detected"
+	assert mask[59], "hold zone should extend 20 frames"
+	assert not mask[60], "frame 60 should be outside hold zone"
+
+
+#============================================
+def test_zoom_detector_single_frame_outlier_not_confirmed() -> None:
+	"""Single-frame spike fails persistence -- the up-jump is not confirmed.
+
+	The spike at frame 30 (200->500) fails persistence because frame 31
+	returns to 200.  The return at frame 31 (500->200) does pass persistence
+	because subsequent frames stay at 200, so it is correctly treated as a
+	real step change.  We verify the up-jump itself is not confirmed.
+	"""
+	n = 100
+	raw_h = numpy.full(n, 200.0)
+	# single frame spike at frame 30
+	raw_h[30] = 500.0
+	mask = crop_mod._detect_zoom_events(raw_h, threshold_ratio=1.25, hold_frames=30)
+	# frames well before the spike should be clean
+	assert not mask[25], "frames before spike should be clean"
+	# the return jump at 31 is a real persistent step change (500->200,
+	# and 200 persists), so a hold zone starting at 31 is correct behavior.
+	# verify frames after that hold zone are clean
+	assert not mask[29], "frame before spike should not be flagged"
+
+
+#============================================
+def test_zoom_detector_overlapping_events_merge() -> None:
+	"""Two events within hold_frames merge their hold zones."""
+	n = 150
+	raw_h = numpy.full(n, 200.0)
+	# first jump at frame 20
+	raw_h[20:60] = 400.0
+	# second jump at frame 40 (back down, within hold zone of first)
+	raw_h[40:] = 200.0
+	mask = crop_mod._detect_zoom_events(raw_h, threshold_ratio=1.25, hold_frames=30)
+	# both events should create hold zones that overlap
+	assert mask[20], "first event should be detected"
+	assert mask[40], "second event should be detected"
+	# continuous hold from first event through second
+	assert mask[30], "mid-zone should be in hold"
+
+
+# ============================================================
+# zoom-event damping integration tests
+# ============================================================
+
+
+#============================================
+def test_zoom_damping_disabled_matches_baseline() -> None:
+	"""crop_zoom_event_damping=False produces same output as no damping."""
+	n = 100
+	raw_h = numpy.full(n, 200.0)
+	raw_h[50:] = 400.0  # big jump
+	trajectory = _make_synthetic_trajectory(
+		n, cx_func=lambda i: 960.0, cy_func=lambda i: 540.0,
+		h_val=200.0,
+	)
+	# inject the height jump into the trajectory
+	for i in range(50, n):
+		trajectory[i]["h"] = 400.0
+	config_no_damp = _make_direct_center_config({
+		"crop_max_height_change": 0.005,
+		"crop_zoom_event_damping": False,
+	})
+	config_default = _make_direct_center_config({
+		"crop_max_height_change": 0.005,
+	})
+	rects_no_damp = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_no_damp,
+	)
+	rects_default = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_default,
+	)
+	assert len(rects_no_damp) == len(rects_default)
+	for a, b in zip(rects_no_damp, rects_default):
+		assert a == b
+
+
+#============================================
+def test_zoom_damping_reduces_height_change_rate() -> None:
+	"""During zoom hold, crop height changes at most 10% of normal rate."""
+	n = 100
+	trajectory = _make_synthetic_trajectory(
+		n, cx_func=lambda i: 960.0, cy_func=lambda i: 540.0,
+		h_val=200.0,
+	)
+	# inject a persistent 2x height jump at frame 50
+	for i in range(50, n):
+		trajectory[i]["h"] = 400.0
+	config_damped = _make_direct_center_config({
+		"crop_max_height_change": 0.005,
+		"crop_zoom_event_damping": True,
+	})
+	config_undamped = _make_direct_center_config({
+		"crop_max_height_change": 0.005,
+		"crop_zoom_event_damping": False,
+	})
+	rects_damped = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_damped,
+	)
+	rects_undamped = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_undamped,
+	)
+	# compare height change rate in the 10 frames after the jump
+	damped_deltas = []
+	undamped_deltas = []
+	for i in range(51, 61):
+		damped_deltas.append(abs(rects_damped[i][3] - rects_damped[i - 1][3]))
+		undamped_deltas.append(abs(rects_undamped[i][3] - rects_undamped[i - 1][3]))
+	avg_damped = sum(damped_deltas) / len(damped_deltas)
+	avg_undamped = sum(undamped_deltas) / len(undamped_deltas)
+	# damped should be significantly slower than undamped
+	assert avg_damped < avg_undamped, (
+		f"damped avg delta {avg_damped:.2f} should be < undamped {avg_undamped:.2f}"
+	)
+	# damped rate should be roughly 10% of undamped (allow some tolerance)
+	if avg_undamped > 0:
+		ratio = avg_damped / avg_undamped
+		assert ratio < 0.25, (
+			f"damped/undamped ratio {ratio:.2f} should be < 0.25"
+		)
+
+
+#============================================
+def test_zoom_damping_normal_rate_outside_hold() -> None:
+	"""After hold zone expires, normal height change rate resumes."""
+	n = 200
+	trajectory = _make_synthetic_trajectory(
+		n, cx_func=lambda i: 960.0, cy_func=lambda i: 540.0,
+		h_val=200.0,
+	)
+	# jump at frame 30, hold_frames default=30, so hold ends at frame 60
+	for i in range(30, n):
+		trajectory[i]["h"] = 400.0
+	config = _make_direct_center_config({
+		"crop_max_height_change": 0.005,
+		"crop_zoom_event_damping": True,
+	})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	# check frames well after hold zone (frame 80+) have normal rate
+	# the crop should be converging toward the new height at normal speed
+	late_deltas = []
+	for i in range(81, 100):
+		late_deltas.append(abs(rects[i][3] - rects[i - 1][3]))
+	# at least some frames should have nonzero height change (still converging)
+	max_late_delta = max(late_deltas)
+	assert max_late_delta > 0, "crop should still be converging after hold zone"

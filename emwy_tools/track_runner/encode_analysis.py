@@ -853,6 +853,7 @@ def format_analysis_report(
 	analysis: dict,
 	solver_context: dict,
 	output_yaml_path: str,
+	regime_summary_line: str = "",
 ) -> str:
 	"""Format the analysis results as a human-readable console report.
 
@@ -860,6 +861,7 @@ def format_analysis_report(
 		analysis: Dict from analyze_crop_stability().
 		solver_context: Dict from analyze_solver_context().
 		output_yaml_path: Path where the YAML report was written.
+		regime_summary_line: Optional one-line regime summary string.
 
 	Returns:
 		Formatted multi-line string for console output.
@@ -927,6 +929,10 @@ def format_analysis_report(
 	if chatter > 0.03:
 		lines.append("    secondary: quantization chatter in stationary sections")
 		lines.append("    suggestion: crop controller subpixel smoothing")
+	# regime classification summary (smart mode)
+	if regime_summary_line:
+		lines.append("")
+		lines.append(f"  {regime_summary_line}")
 	lines.append("")
 	lines.append(f"  wrote: {output_yaml_path}")
 	report = "\n".join(lines)
@@ -938,6 +944,7 @@ def write_analysis_yaml(
 	analysis: dict,
 	solver_context: dict,
 	output_path: str,
+	regime_spans: list = None,
 ) -> None:
 	"""Write the analysis results as a diagnostic YAML file.
 
@@ -945,6 +952,7 @@ def write_analysis_yaml(
 		analysis: Dict from analyze_crop_stability().
 		solver_context: Dict from analyze_solver_context().
 		output_path: File path for the YAML output.
+		regime_spans: Optional list of regime span dicts to include.
 	"""
 	# build output dict
 	doc = {
@@ -971,6 +979,23 @@ def write_analysis_yaml(
 		diagnosis["suggestion_secondary"] = "crop controller subpixel smoothing"
 	if diagnosis:
 		doc["diagnosis"] = diagnosis
+	# add regime classification if available
+	if regime_spans:
+		total_frames = analysis["summary"]["frames"]
+		# compute per-regime frame counts
+		regime_counts = {}
+		for span in regime_spans:
+			regime = span["regime"]
+			span_len = span["end_frame"] - span["start_frame"]
+			regime_counts[regime] = regime_counts.get(regime, 0) + span_len
+		regime_pcts = {}
+		for regime, count in regime_counts.items():
+			regime_pcts[regime] = round(100.0 * count / total_frames, 1)
+		doc["regime_summary"] = {
+			"frame_percentages": regime_pcts,
+			"num_transitions": max(0, len(regime_spans) - 1),
+			"spans": regime_spans,
+		}
 	# write with comment header
 	parent_dir = os.path.dirname(os.path.abspath(output_path))
 	os.makedirs(parent_dir, exist_ok=True)

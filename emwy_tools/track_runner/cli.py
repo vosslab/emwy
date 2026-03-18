@@ -39,6 +39,7 @@ import review
 import tr_crop
 import key_input
 import encode_analysis
+import regime_classifier
 import common_tools.frame_filters as frame_filters
 
 # module-level video identity, set once in main() and treated as read-only
@@ -1134,13 +1135,25 @@ def _mode_analyze(
 		interval_results, all_seeds, fps,
 	)
 
+	# run regime classification for smart mode diagnostics
+	regime_spans = regime_classifier.classify_regimes(
+		trajectory, video_info,
+	)
+	regime_summary_line = regime_classifier.format_regime_summary(
+		regime_spans, video_info["frame_count"],
+	)
+
 	# write YAML report
 	analysis_path = tr_paths.default_encode_analysis_path(args.input_file)
-	encode_analysis.write_analysis_yaml(analysis, solver_context, analysis_path)
+	encode_analysis.write_analysis_yaml(
+		analysis, solver_context, analysis_path,
+		regime_spans=regime_spans,
+	)
 
 	# print console report
 	report = encode_analysis.format_analysis_report(
 		analysis, solver_context, analysis_path,
+		regime_summary_line=regime_summary_line,
 	)
 	print(report)
 

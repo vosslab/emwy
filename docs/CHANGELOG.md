@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-03-18
+
+### Additions and New Features
+- Added vertical composition offset to `direct_center_crop_trajectory()` in [emwy_tools/track_runner/tr_crop.py](emwy_tools/track_runner/tr_crop.py). New `crop_torso_anchor` config key (default 0.50 = centered) places the torso at a specified vertical fraction within the crop frame. Anchor < 0.5 shifts the crop down so the torso appears higher, leaving more room below for legs and feet. Offset is derived from smoothed crop height (not raw bbox height) to avoid coupling tracking noise into vertical camera motion.
+- Added zoom-event detector `_detect_zoom_events()` to [emwy_tools/track_runner/tr_crop.py](emwy_tools/track_runner/tr_crop.py). Detects discrete camera zoom jumps (e.g. iPhone lens switches) by finding frames where bbox height ratio exceeds 1.25x with persistence confirmation. Hold zones of 30 frames are marked after each confirmed event.
+- Added zoom-event damping to `direct_center_crop_trajectory()`. New `crop_zoom_event_damping` config key (default False) replaces the scalar `crop_max_height_change` constraint with a per-frame array that reduces the size update rate to 10% of normal during zoom-hold zones. Normal zoom drift is unaffected.
+- Added composition offset tests and zoom-event stabilization tests to [emwy_tools/tests/test_tr_crop.py](emwy_tools/tests/test_tr_crop.py): anchor default passthrough, anchor 0.38 shifts crop, offset scales with crop height, containment still works with offset, smooth signal no events, large jump detected, zoom-out detected, single-frame outlier not confirmed, overlapping events merge, damping disabled matches baseline, damping reduces height change rate, normal rate outside hold zone.
+- Updated [tools/batch_encode_experiment.py](tools/batch_encode_experiment.py) to Experiment 7: 2x2 factorial design with 4 variants (A_baseline_dc, B_torso_38, C_zoom_hold, D_zoom_hold_torso_38) isolating composition offset and zoom-event damping independently.
+- Added `crop_mode: smart` regime-switching crop controller to track runner. Classifies trajectory spans into 3 regimes (clear, uncertain, distance) using geometric + confidence signals, then applies per-regime crop targets (fill_ratio and size_update_mode). Uses offline two-pass processing with global smoothing. New modules: [emwy_tools/track_runner/regime_classifier.py](emwy_tools/track_runner/regime_classifier.py), [emwy_tools/track_runner/regime_policies.py](emwy_tools/track_runner/regime_policies.py).
+- Classifier invariant: confidence alone cannot trigger uncertain regime -- requires geometric or source-type corroboration (edge pressure, height instability, or degraded source type).
+- Added regime classification summary to `analyze` subcommand console output (percentage per regime, transition count). Regime spans also written to analysis YAML.
+- Added 3 test files: [emwy_tools/tests/test_regime_classifier.py](emwy_tools/tests/test_regime_classifier.py) (21 tests), [emwy_tools/tests/test_regime_policies.py](emwy_tools/tests/test_regime_policies.py) (13 tests), [emwy_tools/tests/test_smart_crop.py](emwy_tools/tests/test_smart_crop.py) (10 tests including regression fixture for direct_center).
+- Documented `crop_mode: smart` in [docs/TRACK_RUNNER_YAML_CONFIG.md](docs/TRACK_RUNNER_YAML_CONFIG.md). All thresholds are provisional pending 7-video experiment.
+- Added Experiment 6 batch script [tools/batch_smart_experiment.py](tools/batch_smart_experiment.py) for smart vs baseline comparison across all 7 test videos.
+
+### Decisions and Failures
+- Experiment 6 (smart mode v1a vs baseline direct_center): smart mode passed the quantitative metric gate (SizeCV improved on 6/7 videos, CJerk improved on 3/7) but failed visual review on key failure case IMG_3702. Baseline direct_center is visually better. Smart mode introduces "rocking boat" low-frequency drift and visible zoom inconsistency from too-frequent regime transitions (21 transitions in 92s). Broad regime-level policy switching is too coarse for this video -- the real problem is a small number of specific major zoom-shift events that need targeted counteraction, not whole-span policy changes. Smart mode v1a is a diagnostic experiment, not a promotion candidate.
+- Vertical asymmetry composition (torso offset) was prototyped and reverted. The initial implementation tied vertical offset to per-frame raw bbox height, coupling tracking noise into vertical camera motion. Correct approach: express composition as a torso anchor fraction within the crop (e.g., torso at 35-40% from top), derived from smoothed crop height, and test as a separate composition-only experiment on baseline_dc.
+- Next direction: keep baseline direct_center as the visual winner. Design composition experiment (torso anchor fraction) separately. Design v1b as event-aware local size suppression, not broad regime switching.
+
+### Fixes and Maintenance
+- **Bug fix**: made `write_intervals()` and `write_diagnostics()` in [emwy_tools/track_runner/state_io.py](emwy_tools/track_runner/state_io.py) use atomic writes (temp file + `os.replace`), matching the pattern `write_seeds()` already used. Previously these wrote directly to the target file, so an interrupted refine process could leave a truncated/corrupt JSON file. This caused IMG_3707 intervals to be unreadable during Experiment 5.
+- Renamed four archived plan files in `docs/archive/` from random generated names to descriptive sequenced names: `TRACK_RUNNER_PLAN_01_AXIS_ISOLATION.md`, `TRACK_RUNNER_PLAN_02_CONSTRAINT_STABILIZATION.md`, `TRACK_RUNNER_PLAN_03_SMART_MODE_V1A.md`, `TRACK_RUNNER_PLAN_04_COMPOSITION_ZOOM.md`.
+
 ## 2026-03-17
 
 ### Additions and New Features
