@@ -363,8 +363,8 @@ def direct_center_crop_trajectory(
 
 	Pure offline signal processing: no deadband, no attack/release alpha,
 	no online state. Centers the crop on the dense solved trajectory center,
-	smooths with forward-backward EMA, and applies bounds clamping and
-	optional velocity capping.
+	smooths with forward-backward EMA, applies zoom stability and center
+	containment constraints, and optional velocity capping.
 
 	Args:
 		full_trajectory: Dense list of tracking state dicts (gap-filled,
@@ -420,6 +420,15 @@ def direct_center_crop_trajectory(
 	else:
 		smoothed_h = desired_crop_h.copy()
 
+	# Step 2.5: zoom stability constraint
+	max_height_change_frac = float(processing.get("crop_max_height_change", 0.005))
+	if max_height_change_frac > 0:
+		for i in range(1, n):
+			delta = smoothed_h[i] - smoothed_h[i - 1]
+			max_delta = max_height_change_frac * smoothed_h[i - 1]
+			if abs(delta) > max_delta:
+				smoothed_h[i] = smoothed_h[i - 1] + math.copysign(max_delta, delta)
+
 	# Step 3: guard minimum positive size
 	smoothed_h = numpy.maximum(smoothed_h, float(min_crop_size))
 	# recompute width from smoothed height
@@ -427,17 +436,47 @@ def direct_center_crop_trajectory(
 	# floor width at 1.0
 	smoothed_w = numpy.maximum(smoothed_w, 1.0)
 
+	# Step 3.5: center containment clamp (first pass)
+	containment_radius = float(processing.get("crop_containment_radius", 0.20))
+	if containment_radius > 0:
+		# first containment pass
+		for i in range(n):
+			dx_norm = (raw_cx[i] - smoothed_cx[i]) / smoothed_w[i]
+			dy_norm = (raw_cy[i] - smoothed_cy[i]) / smoothed_h[i]
+			offset_norm = math.hypot(dx_norm, dy_norm)
+			if offset_norm > containment_radius:
+				pull_factor = 1.0 - containment_radius / offset_norm
+				smoothed_cx[i] += (raw_cx[i] - smoothed_cx[i]) * pull_factor
+				smoothed_cy[i] += (raw_cy[i] - smoothed_cy[i]) * pull_factor
+
+		# light re-smoothing to blunt corrective snaps (hardcoded alpha=0.3)
+		smoothed_cx = _forward_backward_ema(smoothed_cx, 0.3)
+		smoothed_cy = _forward_backward_ema(smoothed_cy, 0.3)
+
+		# second containment pass (re-smoothing can reintroduce violations)
+		for i in range(n):
+			dx_norm = (raw_cx[i] - smoothed_cx[i]) / smoothed_w[i]
+			dy_norm = (raw_cy[i] - smoothed_cy[i]) / smoothed_h[i]
+			offset_norm = math.hypot(dx_norm, dy_norm)
+			if offset_norm > containment_radius:
+				pull_factor = 1.0 - containment_radius / offset_norm
+				smoothed_cx[i] += (raw_cx[i] - smoothed_cx[i]) * pull_factor
+				smoothed_cy[i] += (raw_cy[i] - smoothed_cy[i]) * pull_factor
+
 	# Step 4: reconstruct rectangles from center + size
 	x = smoothed_cx - smoothed_w / 2.0
 	y = smoothed_cy - smoothed_h / 2.0
 
-	# Step 5: clamp to frame bounds
-	x = numpy.clip(x, 0.0, numpy.maximum(frame_width - smoothed_w, 0.0))
-	y = numpy.clip(y, 0.0, numpy.maximum(frame_height - smoothed_h, 0.0))
+	# Step 5: BLACK FILL POLICY - clamp crop SIZE to frame, allow position out-of-bounds
+	# clamp crop size to frame dimensions (crop cannot be larger than frame)
+	smoothed_w = numpy.minimum(smoothed_w, float(frame_width))
+	smoothed_h = numpy.minimum(smoothed_h, float(frame_height))
+	# do NOT clamp position to frame bounds -- allow black fill at edges
+	# (apply_crop in encoder.py fills out-of-bounds with black)
 
 	# Step 6: apply final velocity cap on center only
 	if max_velocity > 0:
-		# recompute centers from clamped rects
+		# recompute centers from current rects
 		cx = x + smoothed_w / 2.0
 		cy = y + smoothed_h / 2.0
 		for i in range(1, n):
@@ -452,10 +491,6 @@ def direct_center_crop_trajectory(
 		# rebuild x, y from capped centers
 		x = cx - smoothed_w / 2.0
 		y = cy - smoothed_h / 2.0
-
-		# Step 7: re-clamp to frame bounds after velocity cap
-		x = numpy.clip(x, 0.0, numpy.maximum(frame_width - smoothed_w, 0.0))
-		y = numpy.clip(y, 0.0, numpy.maximum(frame_height - smoothed_h, 0.0))
 
 	# Step 8: convert to integer tuples using round() for stability
 	result = []
@@ -585,12 +620,10 @@ def trajectory_to_crop_rects(
 		alpha_size = float(processing.get("crop_post_smooth_size_strength", 0.0))
 		final_velocity = float(processing.get("crop_post_smooth_max_velocity", 0.0))
 		if alpha_pos > 0 or alpha_size > 0:
-			# default size alpha to half of position alpha (heavier smoothing)
-			effective_alpha_size = alpha_size if alpha_size > 0 else alpha_pos / 2.0
 			crop_rects = smooth_crop_trajectory(
 				crop_rects, frame_width, frame_height,
 				alpha_position=alpha_pos,
-				alpha_size=effective_alpha_size,
+				alpha_size=alpha_size,
 				max_velocity=final_velocity,
 			)
 	else:
@@ -777,3 +810,325 @@ def compute_crop_metrics(crop_rects: list) -> dict:
 		"p95_step_distance": float(numpy.percentile(step_dist, 95)),
 	}
 	return result
+
+
+# ============================================================
+# experiment-only override passes (M1 stabilization)
+# ============================================================
+# These functions take baseline crop rects and optionally the solved
+# trajectory, then replace center or size channels while preserving
+# the other. They are internal hooks for axis-isolation experiments
+# and are not part of the public crop_mode surface.
+
+
+#============================================
+def center_lock_override(
+	crop_rects: list,
+	trajectory: list,
+	frame_width: int,
+	frame_height: int,
+	alpha: float = 0.03,
+	max_velocity: float = 0.0,
+) -> list:
+	"""Replace crop centers with smoothed trajectory centers.
+
+	Preserves baseline width and height for each frame while replacing
+	the center path with a forward-backward EMA of the solved trajectory
+	cx, cy positions. This bypasses the CropController's reactive
+	attack/release behavior to get zero-phase-lag tracking.
+
+	Args:
+		crop_rects: Baseline (x, y, w, h) integer crop rectangles.
+		trajectory: Dense list of tracking state dicts with 'cx', 'cy'.
+		frame_width: Source video frame width in pixels.
+		frame_height: Source video frame height in pixels.
+		alpha: EMA coefficient for center smoothing. Lower = heavier.
+		max_velocity: Max center displacement per frame (px). 0 = no cap.
+
+	Returns:
+		List of (x, y, w, h) integer crop rectangles with locked centers.
+	"""
+	n = len(crop_rects)
+	if n == 0:
+		return []
+
+	# extract baseline width and height (preserve these)
+	arr = numpy.array(crop_rects, dtype=float)
+	base_w = arr[:, 2].copy()
+	base_h = arr[:, 3].copy()
+	# baseline centers used as fallback for frames beyond trajectory
+	base_cx = arr[:, 0] + arr[:, 2] / 2.0
+	base_cy = arr[:, 1] + arr[:, 3] / 2.0
+
+	# extract trajectory centers, padding with baseline centers if shorter
+	traj_len = len(trajectory)
+	traj_cx = numpy.empty(n, dtype=float)
+	traj_cy = numpy.empty(n, dtype=float)
+	for i in range(n):
+		if i < traj_len and trajectory[i] is not None:
+			traj_cx[i] = trajectory[i]["cx"]
+			traj_cy[i] = trajectory[i]["cy"]
+		else:
+			# use baseline crop center as fallback
+			traj_cx[i] = base_cx[i]
+			traj_cy[i] = base_cy[i]
+
+	# smooth trajectory centers with forward-backward EMA
+	if alpha > 0:
+		locked_cx = _forward_backward_ema(traj_cx, alpha)
+		locked_cy = _forward_backward_ema(traj_cy, alpha)
+	else:
+		locked_cx = traj_cx.copy()
+		locked_cy = traj_cy.copy()
+
+	# apply velocity cap on smoothed centers
+	if max_velocity > 0:
+		for i in range(1, n):
+			dx = locked_cx[i] - locked_cx[i - 1]
+			dy = locked_cy[i] - locked_cy[i - 1]
+			dist = math.sqrt(dx * dx + dy * dy)
+			if dist > max_velocity:
+				scale = max_velocity / dist
+				locked_cx[i] = locked_cx[i - 1] + dx * scale
+				locked_cy[i] = locked_cy[i - 1] + dy * scale
+
+	# reconstruct rects from locked centers + baseline sizes
+	x = locked_cx - base_w / 2.0
+	y = locked_cy - base_h / 2.0
+
+	# clamp to frame bounds
+	x = numpy.clip(x, 0.0, numpy.maximum(frame_width - base_w, 0.0))
+	y = numpy.clip(y, 0.0, numpy.maximum(frame_height - base_h, 0.0))
+
+	# convert to integer tuples
+	result = []
+	for i in range(n):
+		rect = (round(x[i]), round(y[i]), round(base_w[i]), round(base_h[i]))
+		result.append(rect)
+	return result
+
+
+#============================================
+def fixed_height_override(
+	crop_rects: list,
+	frame_width: int,
+	frame_height: int,
+	min_crop_size: int = 200,
+) -> list:
+	"""Replace per-frame crop height with a clip-constant height.
+
+	Uses the median baseline crop height as the fixed value. Centers
+	are preserved from the baseline rects; width is recomputed from
+	the fixed height and the baseline aspect ratio.
+
+	Args:
+		crop_rects: Baseline (x, y, w, h) integer crop rectangles.
+		frame_width: Source video frame width in pixels.
+		frame_height: Source video frame height in pixels.
+		min_crop_size: Minimum allowed crop height in pixels.
+
+	Returns:
+		List of (x, y, w, h) integer crop rectangles with constant height.
+	"""
+	n = len(crop_rects)
+	if n == 0:
+		return []
+
+	arr = numpy.array(crop_rects, dtype=float)
+	# extract baseline centers
+	cx = arr[:, 0] + arr[:, 2] / 2.0
+	cy = arr[:, 1] + arr[:, 3] / 2.0
+	base_w = arr[:, 2]
+	base_h = arr[:, 3]
+
+	# compute fixed height from median of baseline heights
+	fixed_h = float(numpy.median(base_h))
+	# clamp to valid range
+	fixed_h = max(float(min_crop_size), min(fixed_h, float(frame_height)))
+
+	# compute aspect ratio from median baseline dimensions
+	median_w = float(numpy.median(base_w))
+	median_h = float(numpy.median(base_h))
+	# avoid division by zero
+	aspect = median_w / median_h if median_h > 0 else 1.0
+
+	# compute fixed width from aspect ratio
+	fixed_w = fixed_h * aspect
+	# clamp width to frame
+	if fixed_w > frame_width:
+		fixed_w = float(frame_width)
+		fixed_h = fixed_w / aspect
+
+	# reconstruct rects from baseline centers + fixed size
+	x = cx - fixed_w / 2.0
+	y = cy - fixed_h / 2.0
+
+	# clamp to frame bounds
+	max_x = max(frame_width - fixed_w, 0.0)
+	max_y = max(frame_height - fixed_h, 0.0)
+	x = numpy.clip(x, 0.0, max_x)
+	y = numpy.clip(y, 0.0, max_y)
+
+	# convert to integer tuples
+	result = []
+	for i in range(n):
+		rect = (round(x[i]), round(y[i]), round(fixed_w), round(fixed_h))
+		result.append(rect)
+	return result
+
+
+#============================================
+def slow_size_override(
+	crop_rects: list,
+	frame_width: int,
+	frame_height: int,
+	alpha: float = 0.01,
+	deadband_fraction: float = 0.03,
+	min_crop_size: int = 200,
+) -> list:
+	"""Replace crop height with a heavily smoothed path.
+
+	Applies a deadband to reject small oscillations, then uses
+	forward-backward EMA on the remaining height signal. Width is
+	recomputed from the smoothed height and baseline aspect ratio.
+	Centers are preserved from baseline.
+
+	Args:
+		crop_rects: Baseline (x, y, w, h) integer crop rectangles.
+		frame_width: Source video frame width in pixels.
+		frame_height: Source video frame height in pixels.
+		alpha: EMA coefficient for size smoothing. Lower = heavier.
+		deadband_fraction: Fraction of current height below which
+			frame-to-frame changes are suppressed.
+		min_crop_size: Minimum allowed crop height in pixels.
+
+	Returns:
+		List of (x, y, w, h) integer crop rectangles with smoothed height.
+	"""
+	n = len(crop_rects)
+	if n == 0:
+		return []
+
+	arr = numpy.array(crop_rects, dtype=float)
+	# extract baseline centers and sizes
+	cx = arr[:, 0] + arr[:, 2] / 2.0
+	cy = arr[:, 1] + arr[:, 3] / 2.0
+	base_w = arr[:, 2]
+	base_h = arr[:, 3]
+
+	# compute aspect ratio from median baseline dimensions
+	median_w = float(numpy.median(base_w))
+	median_h = float(numpy.median(base_h))
+	aspect = median_w / median_h if median_h > 0 else 1.0
+
+	# apply deadband: suppress small frame-to-frame height changes
+	# start from the first frame's height and only update when
+	# the change exceeds the deadband threshold
+	deadbanded_h = numpy.empty(n, dtype=float)
+	deadbanded_h[0] = base_h[0]
+	for i in range(1, n):
+		threshold = deadband_fraction * deadbanded_h[i - 1]
+		delta = base_h[i] - deadbanded_h[i - 1]
+		if abs(delta) > threshold:
+			deadbanded_h[i] = base_h[i]
+		else:
+			# suppress: hold previous value
+			deadbanded_h[i] = deadbanded_h[i - 1]
+
+	# apply forward-backward EMA to the deadbanded signal
+	if alpha > 0:
+		smoothed_h = _forward_backward_ema(deadbanded_h, alpha)
+	else:
+		smoothed_h = deadbanded_h.copy()
+
+	# enforce minimum size
+	smoothed_h = numpy.maximum(smoothed_h, float(min_crop_size))
+	# clamp to frame height
+	smoothed_h = numpy.minimum(smoothed_h, float(frame_height))
+
+	# recompute width from smoothed height
+	smoothed_w = smoothed_h * aspect
+	# clamp width to frame
+	smoothed_w = numpy.minimum(smoothed_w, float(frame_width))
+
+	# reconstruct rects from baseline centers + smoothed size
+	x = cx - smoothed_w / 2.0
+	y = cy - smoothed_h / 2.0
+
+	# clamp to frame bounds
+	x = numpy.clip(x, 0.0, numpy.maximum(frame_width - smoothed_w, 0.0))
+	y = numpy.clip(y, 0.0, numpy.maximum(frame_height - smoothed_h, 0.0))
+
+	# convert to integer tuples
+	result = []
+	for i in range(n):
+		rect = (round(x[i]), round(y[i]), round(smoothed_w[i]), round(smoothed_h[i]))
+		result.append(rect)
+	return result
+
+
+#============================================
+def apply_experiment_overrides(
+	crop_rects: list,
+	trajectory: list,
+	frame_width: int,
+	frame_height: int,
+	config: dict,
+) -> list:
+	"""Apply experiment-only center and/or size overrides to baseline rects.
+
+	Reads experiment override settings from config['processing'] and
+	dispatches to the appropriate override functions. Center overrides
+	are applied first, then size overrides.
+
+	Experiment config keys (all optional, internal-only):
+		exp_center_override: 'center_lock' or None
+		exp_center_alpha: float, EMA alpha for center lock
+		exp_center_max_velocity: float, velocity cap for center lock
+		exp_size_override: 'fixed_crop' or 'slow_size' or None
+		exp_slow_size_alpha: float, EMA alpha for slow size
+		exp_slow_size_deadband: float, deadband fraction for slow size
+
+	Args:
+		crop_rects: Baseline crop rectangles from trajectory_to_crop_rects.
+		trajectory: Dense solved trajectory list.
+		frame_width: Source video frame width in pixels.
+		frame_height: Source video frame height in pixels.
+		config: Project configuration dict.
+
+	Returns:
+		Crop rectangles with experiment overrides applied.
+	"""
+	processing = config.get("processing", {})
+	min_crop_size = int(processing.get("crop_min_size", 200))
+
+	# step 1: apply center override if requested
+	center_mode = processing.get("exp_center_override")
+	if center_mode == "center_lock":
+		center_alpha = float(processing.get("exp_center_alpha", 0.03))
+		center_vel = float(processing.get("exp_center_max_velocity", 0.0))
+		crop_rects = center_lock_override(
+			crop_rects, trajectory,
+			frame_width, frame_height,
+			alpha=center_alpha,
+			max_velocity=center_vel,
+		)
+
+	# step 2: apply size override if requested
+	size_mode = processing.get("exp_size_override")
+	if size_mode == "fixed_crop":
+		crop_rects = fixed_height_override(
+			crop_rects, frame_width, frame_height,
+			min_crop_size=min_crop_size,
+		)
+	elif size_mode == "slow_size":
+		slow_alpha = float(processing.get("exp_slow_size_alpha", 0.01))
+		slow_deadband = float(processing.get("exp_slow_size_deadband", 0.03))
+		crop_rects = slow_size_override(
+			crop_rects, frame_width, frame_height,
+			alpha=slow_alpha,
+			deadband_fraction=slow_deadband,
+			min_crop_size=min_crop_size,
+		)
+
+	return crop_rects

@@ -1,6 +1,7 @@
 """Unit tests for track_runner.tr_crop module."""
 
 # Standard Library
+import math
 import statistics
 
 # PIP3 modules
@@ -473,7 +474,7 @@ def test_direct_center_with_smoothing() -> None:
 
 #============================================
 def test_direct_center_clamps_to_bounds() -> None:
-	"""All rects stay within frame bounds."""
+	"""Crop SIZE stays within frame bounds, position may extend for black fill."""
 	frame_w = 1280
 	frame_h = 720
 	# trajectory near frame edges
@@ -488,10 +489,9 @@ def test_direct_center_clamps_to_bounds() -> None:
 		trajectory, frame_w, frame_h, config,
 	)
 	for i, (x, y, w, h) in enumerate(rects):
-		assert x >= 0, f"Frame {i}: x={x} < 0"
-		assert y >= 0, f"Frame {i}: y={y} < 0"
-		assert x + w <= frame_w, f"Frame {i}: x+w={x + w} > {frame_w}"
-		assert y + h <= frame_h, f"Frame {i}: y+h={y + h} > {frame_h}"
+		# crop size must not exceed frame
+		assert w <= frame_w, f"Frame {i}: w={w} > {frame_w}"
+		assert h <= frame_h, f"Frame {i}: h={h} > {frame_h}"
 
 
 #============================================
@@ -528,7 +528,7 @@ def test_direct_center_velocity_cap() -> None:
 
 #============================================
 def test_direct_center_reclamp_after_velocity_cap() -> None:
-	"""Rects remain in bounds after velocity cap is applied."""
+	"""Crop SIZE stays within bounds after velocity cap applied."""
 	frame_w = 800
 	frame_h = 600
 	# trajectory that jumps near the edge
@@ -545,10 +545,9 @@ def test_direct_center_reclamp_after_velocity_cap() -> None:
 		trajectory, frame_w, frame_h, config,
 	)
 	for i, (x, y, w, h) in enumerate(rects):
-		assert x >= 0, f"Frame {i}: x={x} < 0"
-		assert y >= 0, f"Frame {i}: y={y} < 0"
-		assert x + w <= frame_w, f"Frame {i}: x+w={x + w} > {frame_w}"
-		assert y + h <= frame_h, f"Frame {i}: y+h={y + h} > {frame_h}"
+		# crop size must not exceed frame
+		assert w <= frame_w, f"Frame {i}: w={w} > {frame_w}"
+		assert h <= frame_h, f"Frame {i}: h={h} > {frame_h}"
 
 
 #============================================
@@ -627,9 +626,8 @@ def test_direct_center_steady_motion() -> None:
 		assert abs(crop_cy - expected_cy) <= 1.0, (
 			f"Frame {i}: cy {crop_cy:.1f} vs expected {expected_cy:.1f}"
 		)
-		# bounds check
-		assert x >= 0 and y >= 0
-		assert x + w <= 1920 and y + h <= 1080
+		# size check
+		assert w <= 1920 and h <= 1080
 
 
 #============================================
@@ -716,3 +714,951 @@ def test_crop_controller_velocity_adaptive():
 	assert controller._ema_displacement > initial_ema, (
 		"EMA displacement should increase with fast-moving target"
 	)
+
+
+# ============================================================
+# hidden size-smoothing default bug fix (Patch 1)
+# ============================================================
+
+
+#============================================
+def test_zero_size_alpha_means_no_size_smoothing() -> None:
+	"""crop_post_smooth_size_strength=0 produces no size smoothing.
+
+	This verifies the bug fix: previously alpha_size=0 would fall back
+	to alpha_pos/2, applying unwanted size smoothing.
+	"""
+	# build a trajectory with varying bbox height to detect smoothing
+	trajectory = _make_synthetic_trajectory(
+		60,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+	# override with oscillating height
+	for i in range(60):
+		trajectory[i]["h"] = 100.0 + (50.0 if i % 10 < 5 else 0.0)
+	# config: position smoothing ON, size smoothing explicitly OFF
+	config = {
+		"processing": {
+			"crop_mode": "smooth",
+			"crop_aspect": "1:1",
+			"crop_fill_ratio": 0.30,
+			"crop_min_size": 50,
+			"crop_post_smooth_strength": 0.10,
+			"crop_post_smooth_size_strength": 0.0,
+		},
+	}
+	video_info = {
+		"width": 1920,
+		"height": 1080,
+		"frame_count": 60,
+	}
+	rects = crop_mod.trajectory_to_crop_rects(trajectory, video_info, config)
+	# also compute without any post-smoothing for size reference
+	config_no_post = {
+		"processing": {
+			"crop_mode": "smooth",
+			"crop_aspect": "1:1",
+			"crop_fill_ratio": 0.30,
+			"crop_min_size": 50,
+			"crop_post_smooth_strength": 0.0,
+			"crop_post_smooth_size_strength": 0.0,
+		},
+	}
+	rects_no_post = crop_mod.trajectory_to_crop_rects(
+		trajectory, video_info, config_no_post,
+	)
+	# heights should be identical: position smoothing should not affect size
+	heights_with_pos = [r[3] for r in rects]
+	heights_no_post = [r[3] for r in rects_no_post]
+	assert heights_with_pos == heights_no_post, (
+		"Size smoothing was applied despite alpha_size=0"
+	)
+
+
+# ============================================================
+# experiment override passes (Patch 2)
+# ============================================================
+
+
+#============================================
+def test_center_lock_preserves_baseline_size() -> None:
+	"""Center-lock override keeps baseline width and height unchanged."""
+	trajectory = _make_synthetic_trajectory(
+		50,
+		cx_func=lambda i: 400.0 + i * 5.0,
+		cy_func=lambda i: 300.0 + i * 2.0,
+		h_val=100.0,
+	)
+	config = _make_direct_center_config()
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	locked = crop_mod.center_lock_override(
+		baseline, trajectory, 1920, 1080, alpha=0.05,
+	)
+	# width and height must match baseline for every frame
+	for i in range(len(baseline)):
+		assert locked[i][2] == baseline[i][2], (
+			f"Frame {i}: width {locked[i][2]} != baseline {baseline[i][2]}"
+		)
+		assert locked[i][3] == baseline[i][3], (
+			f"Frame {i}: height {locked[i][3]} != baseline {baseline[i][3]}"
+		)
+
+
+#============================================
+def test_center_lock_reduces_center_jerk() -> None:
+	"""Center-lock produces lower center jerk than raw trajectory centers."""
+	# jittery trajectory
+	numpy.random.seed(77)
+	trajectory = _make_synthetic_trajectory(
+		100,
+		cx_func=lambda i: 640.0 + numpy.random.uniform(-25, 25),
+		cy_func=lambda i: 360.0 + numpy.random.uniform(-25, 25),
+		h_val=100.0,
+	)
+	config = _make_direct_center_config()
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	locked = crop_mod.center_lock_override(
+		baseline, trajectory, 1920, 1080, alpha=0.05,
+	)
+	baseline_metrics = crop_mod.compute_crop_metrics(baseline)
+	locked_metrics = crop_mod.compute_crop_metrics(locked)
+	# locked should have lower velocity std (less jittery)
+	assert locked_metrics["velocity_std"] < baseline_metrics["velocity_std"], (
+		f"Center lock jitter {locked_metrics['velocity_std']:.2f} >= "
+		f"baseline {baseline_metrics['velocity_std']:.2f}"
+	)
+
+
+#============================================
+def test_center_lock_clamps_to_bounds() -> None:
+	"""Center-locked rects stay within frame bounds."""
+	trajectory = _make_synthetic_trajectory(
+		30,
+		cx_func=lambda i: 50.0 + i * 60.0,
+		cy_func=lambda i: 50.0 + i * 35.0,
+		h_val=120.0,
+	)
+	config = _make_direct_center_config()
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1280, 720, config,
+	)
+	locked = crop_mod.center_lock_override(
+		baseline, trajectory, 1280, 720, alpha=0.05,
+	)
+	for i, (x, y, w, h) in enumerate(locked):
+		assert x >= 0, f"Frame {i}: x={x} < 0"
+		assert y >= 0, f"Frame {i}: y={y} < 0"
+		assert x + w <= 1280, f"Frame {i}: x+w={x + w} > 1280"
+		assert y + h <= 720, f"Frame {i}: y+h={y + h} > 720"
+
+
+#============================================
+def test_fixed_height_zero_variance() -> None:
+	"""Fixed-height override produces zero crop-height variance."""
+	# trajectory with varying bbox height
+	trajectory = _make_synthetic_trajectory(
+		80,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+	for i in range(80):
+		trajectory[i]["h"] = 80.0 + i * 1.5
+	config = _make_direct_center_config()
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	fixed = crop_mod.fixed_height_override(
+		baseline, 1920, 1080, min_crop_size=50,
+	)
+	# all heights must be identical
+	heights = [r[3] for r in fixed]
+	assert len(set(heights)) == 1, (
+		f"Expected single height value, got {len(set(heights))} distinct: "
+		f"min={min(heights)}, max={max(heights)}"
+	)
+	# all widths must be identical (same aspect ratio)
+	widths = [r[2] for r in fixed]
+	assert len(set(widths)) == 1, (
+		f"Expected single width value, got {len(set(widths))} distinct"
+	)
+
+
+#============================================
+def test_fixed_height_respects_min_size() -> None:
+	"""Fixed-height output respects crop_min_size."""
+	# very small bbox -> median height would be tiny
+	trajectory = _make_synthetic_trajectory(
+		30,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=10.0,
+	)
+	config = _make_direct_center_config({"crop_min_size": 100})
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	fixed = crop_mod.fixed_height_override(
+		baseline, 1920, 1080, min_crop_size=100,
+	)
+	for i, (x, y, w, h) in enumerate(fixed):
+		assert h >= 100, f"Frame {i}: h={h} < min_size 100"
+
+
+#============================================
+def test_fixed_height_clamps_to_bounds() -> None:
+	"""Fixed-height rects stay within frame bounds."""
+	trajectory = _make_synthetic_trajectory(
+		30,
+		cx_func=lambda i: 50.0 + i * 60.0,
+		cy_func=lambda i: 50.0 + i * 35.0,
+		h_val=200.0,
+	)
+	config = _make_direct_center_config()
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1280, 720, config,
+	)
+	fixed = crop_mod.fixed_height_override(
+		baseline, 1280, 720, min_crop_size=50,
+	)
+	for i, (x, y, w, h) in enumerate(fixed):
+		assert x >= 0, f"Frame {i}: x={x} < 0"
+		assert y >= 0, f"Frame {i}: y={y} < 0"
+		assert x + w <= 1280, f"Frame {i}: x+w={x + w} > 1280"
+		assert y + h <= 720, f"Frame {i}: y+h={y + h} > 720"
+
+
+#============================================
+def test_slow_size_deadband_suppresses_small_oscillations() -> None:
+	"""Slow-size deadband rejects height changes below threshold."""
+	# trajectory with small oscillations (2% of height)
+	trajectory = _make_synthetic_trajectory(
+		60,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+	# add small oscillation: +/- 1% of baseline height -> within 3% deadband
+	for i in range(60):
+		trajectory[i]["h"] = 100.0 + 3.0 * (1.0 if i % 2 == 0 else -1.0)
+	config = _make_direct_center_config()
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	slow = crop_mod.slow_size_override(
+		baseline, 1920, 1080,
+		alpha=0.01, deadband_fraction=0.05, min_crop_size=50,
+	)
+	# height variance should be much lower after slow-size
+	baseline_heights = numpy.array([r[3] for r in baseline], dtype=float)
+	slow_heights = numpy.array([r[3] for r in slow], dtype=float)
+	assert numpy.std(slow_heights) < numpy.std(baseline_heights), (
+		f"Slow-size std {numpy.std(slow_heights):.2f} >= "
+		f"baseline std {numpy.std(baseline_heights):.2f}"
+	)
+
+
+#============================================
+def test_slow_size_allows_large_changes() -> None:
+	"""Slow-size allows real large height changes through (smoothed)."""
+	# trajectory with a big height change in the middle
+	trajectory = _make_synthetic_trajectory(
+		60,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+	# first 30 frames: h=100, next 30: h=200
+	for i in range(60):
+		trajectory[i]["h"] = 100.0 if i < 30 else 200.0
+	config = _make_direct_center_config()
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	slow = crop_mod.slow_size_override(
+		baseline, 1920, 1080,
+		alpha=0.05, deadband_fraction=0.03, min_crop_size=50,
+	)
+	# the large change should eventually come through:
+	# last frame height should be closer to 200/0.30=667 than to 100/0.30=333
+	first_h = slow[0][3]
+	last_h = slow[-1][3]
+	assert last_h > first_h, (
+		f"Slow-size should track the large height increase: "
+		f"first={first_h}, last={last_h}"
+	)
+
+
+#============================================
+def test_slow_size_clamps_to_bounds() -> None:
+	"""Slow-size rects stay within frame bounds."""
+	trajectory = _make_synthetic_trajectory(
+		30,
+		cx_func=lambda i: 50.0 + i * 60.0,
+		cy_func=lambda i: 50.0 + i * 35.0,
+		h_val=200.0,
+	)
+	config = _make_direct_center_config()
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1280, 720, config,
+	)
+	slow = crop_mod.slow_size_override(
+		baseline, 1280, 720,
+		alpha=0.01, deadband_fraction=0.03, min_crop_size=50,
+	)
+	for i, (x, y, w, h) in enumerate(slow):
+		assert x >= 0, f"Frame {i}: x={x} < 0"
+		assert y >= 0, f"Frame {i}: y={y} < 0"
+		assert x + w <= 1280, f"Frame {i}: x+w={x + w} > 1280"
+		assert y + h <= 720, f"Frame {i}: y+h={y + h} > 720"
+
+
+#============================================
+def test_apply_experiment_overrides_no_override() -> None:
+	"""No experiment overrides returns rects identical to input."""
+	trajectory = _make_synthetic_trajectory(
+		30,
+		cx_func=lambda i: 640.0 + i * 3.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+	config = _make_direct_center_config()
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	# no experiment keys in config
+	result = crop_mod.apply_experiment_overrides(
+		baseline, trajectory, 1920, 1080, config,
+	)
+	assert result == baseline, "No-override should return identical rects"
+
+
+#============================================
+def test_apply_experiment_overrides_center_lock() -> None:
+	"""Dispatch with exp_center_override=center_lock applies center lock."""
+	numpy.random.seed(88)
+	trajectory = _make_synthetic_trajectory(
+		50,
+		cx_func=lambda i: 640.0 + numpy.random.uniform(-20, 20),
+		cy_func=lambda i: 360.0 + numpy.random.uniform(-20, 20),
+		h_val=100.0,
+	)
+	config = _make_direct_center_config({
+		"exp_center_override": "center_lock",
+		"exp_center_alpha": 0.05,
+	})
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	result = crop_mod.apply_experiment_overrides(
+		baseline, trajectory, 1920, 1080, config,
+	)
+	# center lock should reduce jitter
+	baseline_metrics = crop_mod.compute_crop_metrics(baseline)
+	result_metrics = crop_mod.compute_crop_metrics(result)
+	assert result_metrics["velocity_std"] < baseline_metrics["velocity_std"]
+
+
+#============================================
+def test_apply_experiment_overrides_fixed_crop() -> None:
+	"""Dispatch with exp_size_override=fixed_crop produces constant height."""
+	trajectory = _make_synthetic_trajectory(
+		40,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+	for i in range(40):
+		trajectory[i]["h"] = 80.0 + i * 2.0
+	config = _make_direct_center_config({
+		"exp_size_override": "fixed_crop",
+	})
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	result = crop_mod.apply_experiment_overrides(
+		baseline, trajectory, 1920, 1080, config,
+	)
+	heights = [r[3] for r in result]
+	assert len(set(heights)) == 1, (
+		f"Expected constant height, got {len(set(heights))} distinct values"
+	)
+
+
+#============================================
+def test_apply_experiment_overrides_slow_size() -> None:
+	"""Dispatch with exp_size_override=slow_size smooths height."""
+	trajectory = _make_synthetic_trajectory(
+		60,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+	for i in range(60):
+		trajectory[i]["h"] = 100.0 + 5.0 * (1.0 if i % 2 == 0 else -1.0)
+	config = _make_direct_center_config({
+		"exp_size_override": "slow_size",
+		"exp_slow_size_alpha": 0.01,
+		"exp_slow_size_deadband": 0.05,
+	})
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	result = crop_mod.apply_experiment_overrides(
+		baseline, trajectory, 1920, 1080, config,
+	)
+	# slow size should reduce height variance
+	baseline_heights = numpy.array([r[3] for r in baseline], dtype=float)
+	result_heights = numpy.array([r[3] for r in result], dtype=float)
+	assert numpy.std(result_heights) < numpy.std(baseline_heights)
+
+
+#============================================
+def test_apply_experiment_overrides_combined() -> None:
+	"""Combined center_lock + fixed_crop applies both overrides."""
+	numpy.random.seed(66)
+	trajectory = _make_synthetic_trajectory(
+		50,
+		cx_func=lambda i: 640.0 + numpy.random.uniform(-20, 20),
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+	for i in range(50):
+		trajectory[i]["h"] = 80.0 + i * 1.5
+	config = _make_direct_center_config({
+		"exp_center_override": "center_lock",
+		"exp_center_alpha": 0.05,
+		"exp_size_override": "fixed_crop",
+	})
+	baseline = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	result = crop_mod.apply_experiment_overrides(
+		baseline, trajectory, 1920, 1080, config,
+	)
+	# height should be constant (fixed crop)
+	heights = [r[3] for r in result]
+	assert len(set(heights)) == 1, "Combined: expected constant height"
+	# center should be smoother (center lock)
+	baseline_metrics = crop_mod.compute_crop_metrics(baseline)
+	result_metrics = crop_mod.compute_crop_metrics(result)
+	assert result_metrics["velocity_std"] < baseline_metrics["velocity_std"]
+
+
+# ============================================================
+# constraint-based stabilization (M3)
+# ============================================================
+
+
+#============================================
+def test_zoom_constraint_limits_height_change_rate() -> None:
+	"""Zoom constraint caps per-frame height change rate."""
+	# config: WITH tight zoom constraint (2% per frame)
+	config_constrained = _make_direct_center_config({
+		"crop_max_height_change": 0.02,
+	})
+
+	# trajectory with changing bbox height to trigger constraint
+	trajectory_changing = _make_synthetic_trajectory(
+		50,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+	for i in range(50):
+		trajectory_changing[i]["h"] = 100.0 + i * 2.0
+
+	rects_changing = crop_mod.direct_center_crop_trajectory(
+		trajectory_changing, 1920, 1080, config_constrained,
+	)
+	# verify constraint is active by checking height changes
+	max_delta_pct = 0.0
+	for i in range(1, len(rects_changing)):
+		h_prev = float(rects_changing[i - 1][3])
+		h_curr = float(rects_changing[i][3])
+		if h_prev > 0:
+			delta_pct = abs(h_curr - h_prev) / h_prev
+			max_delta_pct = max(max_delta_pct, delta_pct)
+	# should be constrained to ~2% or below (allow 0.5% tolerance for rounding)
+	assert max_delta_pct <= 0.02 + 0.005, (
+		f"Height constraint not active: max delta {max_delta_pct:.4f} > 0.025"
+	)
+
+
+#============================================
+def test_zoom_constraint_disabled_when_zero() -> None:
+	"""Zoom constraint with value 0 does not limit height changes."""
+	# trajectory with fast height change
+	trajectory = _make_synthetic_trajectory(
+		20,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+	for i in range(20):
+		trajectory[i]["h"] = 100.0 if i < 10 else 500.0
+
+	# config with zoom constraint disabled
+	config = _make_direct_center_config({
+		"crop_max_height_change": 0.0,
+	})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+
+	# find the biggest height jump (should be at frame 10)
+	max_jump = 0.0
+	for i in range(1, len(rects)):
+		delta = abs(rects[i][3] - rects[i - 1][3])
+		max_jump = max(max_jump, delta)
+
+	# with constraint disabled, we should see a large jump
+	# (larger than 5% of height)
+	h_at_9 = float(rects[9][3])
+	assert max_jump > 0.05 * h_at_9, (
+		f"Expected large height jump with constraint disabled, "
+		f"got max_jump={max_jump}"
+	)
+
+
+#============================================
+def test_containment_clamp_pulls_drifting_center() -> None:
+	"""Containment clamp pulls crop center toward raw trajectory when drifting."""
+	# trajectory that drifts sideways in one direction
+	trajectory = _make_synthetic_trajectory(
+		50,
+		cx_func=lambda i: 640.0 + i * 2.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+
+	# config: apply position smoothing that lags behind, then clamp
+	config = _make_direct_center_config({
+		"crop_post_smooth_strength": 0.05,
+		"crop_containment_radius": 0.20,
+	})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+
+	# all crop centers should be within the containment radius of raw centers
+	for i, (x, y, w, h) in enumerate(rects):
+		raw_cx = trajectory[i]["cx"]
+		raw_cy = trajectory[i]["cy"]
+		crop_cx = x + w / 2.0
+		crop_cy = y + h / 2.0
+		# normalized offset from raw to crop center
+		dx_norm = (raw_cx - crop_cx) / w
+		dy_norm = (raw_cy - crop_cy) / h
+		offset_norm = math.sqrt(dx_norm * dx_norm + dy_norm * dy_norm)
+		assert offset_norm <= 0.20 + 0.01, (
+			f"Frame {i}: offset {offset_norm:.3f} exceeds radius 0.20"
+		)
+
+
+#============================================
+def test_containment_clamp_disabled_when_zero() -> None:
+	"""Containment clamp with radius 0 does not add extra constraint."""
+	# trajectory where smoothing causes lag
+	trajectory = _make_synthetic_trajectory(
+		50,
+		cx_func=lambda i: 640.0 + i * 5.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+
+	# config: position smoothing with NO containment
+	config_no_contain = _make_direct_center_config({
+		"crop_post_smooth_strength": 0.10,
+		"crop_containment_radius": 0.0,
+	})
+	rects_no_contain = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_no_contain,
+	)
+
+	# config: position smoothing WITH tight containment
+	config_with_contain = _make_direct_center_config({
+		"crop_post_smooth_strength": 0.10,
+		"crop_containment_radius": 0.05,
+	})
+	rects_with_contain = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_with_contain,
+	)
+
+	# calculate average offset for each
+	no_contain_offsets = []
+	for i, (x, y, w, h) in enumerate(rects_no_contain):
+		raw_cx = trajectory[i]["cx"]
+		raw_cy = trajectory[i]["cy"]
+		crop_cx = x + w / 2.0
+		crop_cy = y + h / 2.0
+		dx_norm = (raw_cx - crop_cx) / w
+		dy_norm = (raw_cy - crop_cy) / h
+		offset = math.sqrt(dx_norm * dx_norm + dy_norm * dy_norm)
+		no_contain_offsets.append(offset)
+
+	with_contain_offsets = []
+	for i, (x, y, w, h) in enumerate(rects_with_contain):
+		raw_cx = trajectory[i]["cx"]
+		raw_cy = trajectory[i]["cy"]
+		crop_cx = x + w / 2.0
+		crop_cy = y + h / 2.0
+		dx_norm = (raw_cx - crop_cx) / w
+		dy_norm = (raw_cy - crop_cy) / h
+		offset = math.sqrt(dx_norm * dx_norm + dy_norm * dy_norm)
+		with_contain_offsets.append(offset)
+
+	# with containment, peak offsets should be smaller
+	# (average may be similar due to small differences)
+	max_no_contain = max(no_contain_offsets)
+	max_with_contain = max(with_contain_offsets)
+	assert max_with_contain <= max_no_contain, (
+		f"Containment should reduce peak offset: "
+		f"no_contain={max_no_contain:.3f}, with_contain={max_with_contain:.3f}"
+	)
+
+
+#============================================
+def test_crop_position_can_extend_beyond_frame() -> None:
+	"""Crop position can extend beyond frame bounds (black fill policy)."""
+	# trajectory near frame edge, with small crop size
+	trajectory = _make_synthetic_trajectory(
+		10,
+		cx_func=lambda i: 30.0 + i * 20.0,
+		cy_func=lambda i: 40.0 + i * 30.0,
+		h_val=50.0,
+	)
+
+	config = _make_direct_center_config({
+		"crop_containment_radius": 0.0,
+	})
+	frame_w = 400
+	frame_h = 300
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, frame_w, frame_h, config,
+	)
+
+	# check that some crops extend beyond bounds
+	has_negative_x = False
+	has_negative_y = False
+	has_overflow_x = False
+	has_overflow_y = False
+
+	for x, y, w, h in rects:
+		if x < 0:
+			has_negative_x = True
+		if y < 0:
+			has_negative_y = True
+		if x + w > frame_w:
+			has_overflow_x = True
+		if y + h > frame_h:
+			has_overflow_y = True
+
+	# with trajectory moving into corners, we should see some out-of-bounds
+	assert has_negative_x or has_negative_y or has_overflow_x or has_overflow_y, (
+		"Expected at least one crop to extend beyond frame bounds"
+	)
+
+
+#============================================
+def test_crop_size_clamped_to_frame_dimensions() -> None:
+	"""Crop size is clamped to frame dimensions, never larger."""
+	# trajectory with very large subject
+	trajectory = _make_synthetic_trajectory(
+		20,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=1000.0,
+	)
+
+	config = _make_direct_center_config({
+		"crop_fill_ratio": 0.30,
+	})
+	frame_w = 800
+	frame_h = 600
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, frame_w, frame_h, config,
+	)
+
+	# all crop sizes must stay within frame
+	for i, (x, y, w, h) in enumerate(rects):
+		assert w <= frame_w, (
+			f"Frame {i}: crop width {w} exceeds frame width {frame_w}"
+		)
+		assert h <= frame_h, (
+			f"Frame {i}: crop height {h} exceeds frame height {frame_h}"
+		)
+
+
+#============================================
+def test_containment_double_clamp_enforces_after_resmoothing() -> None:
+	"""Double containment clamp enforces constraint after re-smoothing."""
+	# trajectory with a fast sideways jump that gets smoothed
+	trajectory = _make_synthetic_trajectory(
+		50,
+		cx_func=lambda i: 640.0 if i < 25 else 700.0,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+
+	# tight containment + light smoothing (re-smoothing should not reintroduce violations)
+	config = _make_direct_center_config({
+		"crop_post_smooth_strength": 0.10,
+		"crop_containment_radius": 0.15,
+	})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+
+	# check that no frame violates the containment constraint
+	violations = 0
+	for i, (x, y, w, h) in enumerate(rects):
+		raw_cx = trajectory[i]["cx"]
+		raw_cy = trajectory[i]["cy"]
+		crop_cx = x + w / 2.0
+		crop_cy = y + h / 2.0
+		dx_norm = (raw_cx - crop_cx) / w
+		dy_norm = (raw_cy - crop_cy) / h
+		offset_norm = math.sqrt(dx_norm * dx_norm + dy_norm * dy_norm)
+		if offset_norm > 0.15 + 0.01:
+			violations += 1
+
+	assert violations == 0, (
+		f"Double clamp failed: {violations} frames violate containment constraint"
+	)
+
+
+#============================================
+def test_containment_clamp_activates() -> None:
+	"""Containment clamp pulls crop center back when subject drifts far away."""
+	# trajectory with rapid oscillation: subject jumps between left and right
+	# with heavy smoothing, crop lags, creating large offset
+	def cx_func(i: int) -> float:
+		return 300.0 if i % 4 < 2 else 700.0
+
+	trajectory = _make_synthetic_trajectory(
+		40,
+		cx_func=cx_func,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+
+	# heavy position smoothing creates lag, tight containment pulls it back
+	config = _make_direct_center_config({
+		"crop_post_smooth_strength": 0.05,  # heavy smoothing = lag
+		"crop_containment_radius": 0.20,    # tight containment
+	})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+
+	# verify no frame exceeds containment radius
+	max_offset = 0.0
+	for i, (x, y, w, h) in enumerate(rects):
+		raw_cx = trajectory[i]["cx"]
+		crop_cx = x + w / 2.0
+		dx_norm = (raw_cx - crop_cx) / w
+		offset_norm = abs(dx_norm)  # y is constant so only x offset
+		max_offset = max(max_offset, offset_norm)
+		# allow 1% tolerance for rounding
+		assert offset_norm <= 0.20 + 0.01, (
+			f"Frame {i}: offset {offset_norm:.3f} exceeds "
+			f"containment_radius 0.20"
+		)
+
+	# verify that containment actually activated (offset should be significant)
+	assert max_offset >= 0.05, (
+		f"Containment did not activate: max offset {max_offset:.3f} too small"
+	)
+
+
+#============================================
+def test_double_clamp_prevents_resmoothing_violations() -> None:
+	"""Second containment clamp fixes violations reintroduced by re-smoothing."""
+	# extreme position jump at frame 25
+	def cx_func(i: int) -> float:
+		return 400.0 if i < 25 else 1000.0
+
+	trajectory = _make_synthetic_trajectory(
+		50,
+		cx_func=cx_func,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+
+	# light smoothing after first clamp (re-smoothing can reintroduce violations)
+	config = _make_direct_center_config({
+		"crop_post_smooth_strength": 0.20,
+		"crop_containment_radius": 0.15,
+	})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+
+	# verify containment is maintained throughout
+	violations = 0
+	for i, (x, y, w, h) in enumerate(rects):
+		raw_cx = trajectory[i]["cx"]
+		crop_cx = x + w / 2.0
+		dx_norm = (raw_cx - crop_cx) / w
+		offset_norm = abs(dx_norm)
+		if offset_norm > 0.15 + 0.01:  # allow 1% tolerance
+			violations += 1
+
+	assert violations == 0, (
+		f"Second clamp failed: {violations} frames violate containment"
+	)
+
+
+#============================================
+def test_zoom_constraint_limits_height_change() -> None:
+	"""Zoom constraint caps frame-to-frame height change to max_height_change."""
+	# trajectory with a sudden height change at frame 30
+	def h_func(i: int) -> float:
+		if i < 30:
+			return 100.0
+		else:
+			return 200.0  # sudden double
+
+	trajectory = []
+	for i in range(60):
+		state = {
+			"cx": 640.0,
+			"cy": 360.0,
+			"w": h_func(i) * 0.5,
+			"h": h_func(i),
+			"conf": 0.9,
+			"source": "propagated",
+		}
+		trajectory.append(state)
+
+	# tight zoom constraint: max 0.5% per frame
+	config = _make_direct_center_config({
+		"crop_max_height_change": 0.005,
+	})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+
+	# verify frame-to-frame height change never exceeds constraint
+	max_change = 0.0
+	for i in range(1, len(rects)):
+		h_prev = rects[i - 1][3]
+		h_curr = rects[i][3]
+		delta = h_curr - h_prev
+		max_change_frac = abs(delta) / h_prev if h_prev > 0 else 0.0
+		# allow 0.2% tolerance for rounding and integer conversion
+		assert max_change_frac <= 0.005 + 0.002, (
+			f"Frame {i}: height change {max_change_frac:.4f} "
+			f"exceeds limit 0.005"
+		)
+		max_change = max(max_change, max_change_frac)
+
+	# verify constraint actually activated (should smooth the transition)
+	# most frames should be near the 0.5% limit
+	assert max_change > 0.004, (
+		f"Zoom constraint should be active, max change {max_change:.4f}"
+	)
+
+
+#============================================
+def test_crop_position_allows_black_fill() -> None:
+	"""Crop position can extend beyond frame bounds for black fill."""
+	# subject near the frame edge
+	trajectory = _make_synthetic_trajectory(
+		20,
+		cx_func=lambda i: 50.0,  # far left edge
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+
+	config = _make_direct_center_config({
+		"crop_fill_ratio": 0.30,  # fill 30% with subject
+	})
+	frame_w = 1920
+	frame_h = 1080
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, frame_w, frame_h, config,
+	)
+
+	# with subject at x=50 and fill_ratio=0.30, crop_h = 100/0.30 = 333.3
+	# crop_w = 333.3 * (16/9) = 592.6, so crop_x = 50 - 592.6/2 = -246.3
+	# crop position should allow negative x for black fill
+	has_negative_x = any(x < 0 for x, y, w, h in rects)
+	assert has_negative_x, (
+		"Subject at frame edge should allow negative crop_x for black fill"
+	)
+
+	# but crop size must still fit
+	for i, (x, y, w, h) in enumerate(rects):
+		assert w <= frame_w, f"Frame {i}: width {w} exceeds frame"
+		assert h <= frame_h, f"Frame {i}: height {h} exceeds frame"
+
+
+#============================================
+def test_crop_size_stays_within_frame() -> None:
+	"""Crop SIZE always stays within frame, even with large bbox height."""
+	# trajectory with very large bounding box
+	trajectory = _make_synthetic_trajectory(
+		30,
+		cx_func=lambda i: 640.0,
+		cy_func=lambda i: 360.0,
+		h_val=5000.0,  # huge height
+	)
+
+	config = _make_direct_center_config({
+		"crop_fill_ratio": 0.30,
+	})
+	frame_w = 800
+	frame_h = 600
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, frame_w, frame_h, config,
+	)
+
+	# all crop dimensions must not exceed frame
+	for i, (x, y, w, h) in enumerate(rects):
+		assert w <= frame_w, (
+			f"Frame {i}: crop_w {w} exceeds frame_w {frame_w}"
+		)
+		assert h <= frame_h, (
+			f"Frame {i}: crop_h {h} exceeds frame_h {frame_h}"
+		)
+
+
+#============================================
+def test_containment_disabled_when_zero() -> None:
+	"""When crop_containment_radius=0, no containment clamping occurs."""
+	# trajectory with fast oscillation that would normally trigger containment
+	def cx_func(i: int) -> float:
+		return 300.0 if i % 3 < 1.5 else 800.0
+
+	trajectory = _make_synthetic_trajectory(
+		40,
+		cx_func=cx_func,
+		cy_func=lambda i: 360.0,
+		h_val=100.0,
+	)
+
+	# disable containment
+	config = _make_direct_center_config({
+		"crop_post_smooth_strength": 0.05,
+		"crop_containment_radius": 0.0,  # disabled
+	})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+
+	# no containment clamp means crop center can drift further from subject
+	# we just verify the function runs and produces valid output
+	assert len(rects) == 40
+	for x, y, w, h in rects:
+		assert w > 0 and h > 0
+
+
+# duplicate test_zoom_constraint_disabled_when_zero removed (defined above)

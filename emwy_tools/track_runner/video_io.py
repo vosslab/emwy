@@ -196,24 +196,22 @@ class VideoWriter:
 	def close(self) -> None:
 		"""Close the ffmpeg pipe and wait for completion.
 
+		Uses communicate() to drain stderr while waiting, avoiding a
+		deadlock when ffmpeg stderr output fills the OS pipe buffer.
+
 		Raises:
 			RuntimeError: If ffmpeg exits with a non-zero return code.
 		"""
 		if self.process is None:
 			return
-		# close stdin to signal end of input
-		if self.process.stdin is not None:
-			self.process.stdin.close()
-		# wait for ffmpeg to finish
-		self.process.wait()
+		# communicate() closes stdin, drains stderr, and waits atomically
+		# (manual stdin.close + wait deadlocks if stderr pipe fills up)
+		_, stderr_bytes = self.process.communicate()
 		returncode = self.process.returncode
 		if returncode != 0:
-			# read stderr for the error message
 			stderr_output = ""
-			if self.process.stderr is not None:
-				stderr_output = self.process.stderr.read().decode(
-					"utf-8", errors="replace"
-				)
+			if stderr_bytes:
+				stderr_output = stderr_bytes.decode("utf-8", errors="replace")
 			self.process = None
 			raise RuntimeError(
 				f"ffmpeg exited with code {returncode}: {stderr_output}"

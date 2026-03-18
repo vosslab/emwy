@@ -38,6 +38,7 @@ import interval_solver
 import review
 import tr_crop
 import key_input
+import encode_analysis
 import common_tools.frame_filters as frame_filters
 
 # module-level video identity, set once in main() and treated as read-only
@@ -1026,6 +1027,125 @@ def _resolve_encode_filters(args: argparse.Namespace, proc_cfg: dict) -> list:
 
 
 #============================================
+def _mode_analyze(
+	args: argparse.Namespace,
+	cfg: dict,
+	video_info: dict,
+	diag_path: str,
+	intervals_path: str | None = None,
+) -> None:
+	"""Analyze mode: compute crop-path stability metrics before encoding.
+
+	Reconstructs the trajectory from solved intervals (same pipeline as
+	encode), computes crop rects, then runs crop-path stability analysis
+	and solver context analysis. Prints a formatted console report and
+	writes a diagnostic YAML file.
+
+	Args:
+		args: Parsed argparse namespace.
+		cfg: Configuration dict.
+		video_info: Video metadata dict.
+		diag_path: Path to diagnostics JSON file.
+		intervals_path: Path to solved-intervals JSON file.
+			If None, derived from input_file.
+	"""
+	# apply aspect override
+	if getattr(args, "aspect", None) is not None:
+		cfg.setdefault("processing", {})
+		cfg["processing"]["crop_aspect"] = args.aspect
+
+	# load diagnostics (for fps and interval metadata)
+	if not os.path.isfile(diag_path):
+		raise RuntimeError(
+			f"no diagnostics found at {diag_path}; run 'solve' first"
+		)
+	diag_data = state_io.load_diagnostics(diag_path)
+
+	# reconstruct trajectory from solved intervals
+	if intervals_path is None:
+		intervals_path = tr_paths.default_intervals_path(args.input_file)
+	if not os.path.isfile(intervals_path):
+		raise RuntimeError(
+			f"no solved intervals found at {intervals_path}; "
+			f"run 'solve' first"
+		)
+	intervals_file = state_io.load_intervals(intervals_path)
+	solved = intervals_file.get("solved_intervals", {})
+	if not solved:
+		raise RuntimeError(
+			"solved intervals file contains no interval data"
+		)
+	# sort interval results by start_frame for stitching
+	interval_results = sorted(
+		solved.values(), key=lambda r: int(r["start_frame"]),
+	)
+	trajectory = interval_solver.stitch_trajectories(interval_results)
+
+	# apply multi-seed anchored interpolation to reduce drift
+	seeds_path = tr_paths.default_seeds_path(args.input_file)
+	all_seeds = []
+	if os.path.isfile(seeds_path):
+		seeds_data = state_io.load_seeds(seeds_path)
+		all_seeds = seeds_data.get("seeds", [])
+		trajectory = interval_solver.anchor_to_seeds(trajectory, all_seeds)
+		# apply trajectory erasure from seeds
+		fps = float(diag_data.get("fps", video_info["fps"]))
+		trajectory = interval_solver._apply_trajectory_erasure(
+			trajectory, all_seeds, fps,
+		)
+
+	if not trajectory:
+		raise RuntimeError(
+			"could not reconstruct trajectory from solved intervals"
+		)
+
+	# compute crop trajectory
+	print("computing crop trajectory...")
+	crop_rects = tr_crop.trajectory_to_crop_rects(trajectory, video_info, cfg)
+
+	# compute output dimensions (same logic as encode)
+	proc_cfg = cfg.get("processing", {})
+	user_resolution = proc_cfg.get("output_resolution")
+	if user_resolution is not None:
+		crop_w = int(user_resolution[0])
+		crop_h = int(user_resolution[1])
+	elif crop_rects:
+		all_widths = [r[2] for r in crop_rects]
+		all_heights = [r[3] for r in crop_rects]
+		crop_w = int(statistics.median(all_widths))
+		crop_h = int(statistics.median(all_heights))
+	else:
+		crop_h = video_info["height"] // 2
+		crop_w = crop_h
+	# ensure even dimensions
+	crop_w = crop_w - (crop_w % 2)
+	crop_h = crop_h - (crop_h % 2)
+
+	fps = float(diag_data.get("fps", video_info["fps"]))
+
+	# run crop-path stability analysis
+	print("analyzing crop path stability...")
+	analysis = encode_analysis.analyze_crop_stability(
+		crop_rects, trajectory, crop_w, crop_h, fps,
+	)
+
+	# run solver context analysis
+	solver_context = encode_analysis.analyze_solver_context(
+		interval_results, all_seeds, fps,
+	)
+
+	# write YAML report
+	analysis_path = tr_paths.default_encode_analysis_path(args.input_file)
+	encode_analysis.write_analysis_yaml(analysis, solver_context, analysis_path)
+
+	# print console report
+	report = encode_analysis.format_analysis_report(
+		analysis, solver_context, analysis_path,
+	)
+	print(report)
+
+
+#============================================
 def _mode_encode(
 	args: argparse.Namespace,
 	cfg: dict,
@@ -1165,7 +1285,7 @@ def _mode_encode(
 	workers_enc_label = f" ({num_workers} workers)" if num_workers > 1 else ""
 	filters_label = f" filters={encode_filters}" if encode_filters else ""
 	print(f"encoding cropped video: {crop_w}x{crop_h}{workers_enc_label}{filters_label}")
-	print("  (press Q to quit, P to pause)")
+	print("  (press Q to quit)")
 	t_encode_start = time.time()
 
 	# set up keyboard controls for encoding
@@ -1291,6 +1411,10 @@ def main() -> None:
 	print(f"seeds:       {os.path.abspath(seeds_path)}")
 	print(f"diagnostics: {os.path.abspath(diag_path)}")
 	print(f"intervals:   {os.path.abspath(intervals_path)}")
+	# show analysis file path when it exists (diagnostic awareness)
+	analysis_path = tr_paths.default_encode_analysis_path(args.input_file)
+	if os.path.isfile(analysis_path):
+		print(f"analysis:    {os.path.abspath(analysis_path)}")
 
 	# handle --write-default-config: write and exit
 	if args.write_default_config:
@@ -1342,6 +1466,8 @@ def main() -> None:
 		_mode_refine(args, cfg, video_info, seeds_path, diag_path, intervals_path)
 	elif mode == "encode":
 		_mode_encode(args, cfg, video_info, diag_path, intervals_path)
+	elif mode == "analyze":
+		_mode_analyze(args, cfg, video_info, diag_path, intervals_path)
 	else:
 		raise RuntimeError(f"unknown mode: {mode}")
 

@@ -234,6 +234,8 @@ def _make_direct_center_config(overrides: dict = None) -> dict:
 		"crop_post_smooth_strength": 0.0,
 		"crop_post_smooth_size_strength": 0.0,
 		"crop_post_smooth_max_velocity": 0.0,
+		"crop_max_height_change": 0.0,
+		"crop_containment_radius": 0.0,
 	}
 	if overrides:
 		processing.update(overrides)

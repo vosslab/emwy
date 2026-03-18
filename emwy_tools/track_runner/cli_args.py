@@ -159,6 +159,15 @@ def parse_args() -> argparse.Namespace:
 	)
 	_add_encode_args(encode_parser)
 
+	# -- analyze mode --
+	analyze_parser = subparsers.add_parser(
+		"analyze", help="Analyze crop path stability before encoding.",
+	)
+	analyze_parser.add_argument(
+		"--aspect", dest="aspect", type=str, default=None,
+		help="Override crop aspect ratio (e.g. '1:1', '16:9').",
+	)
+
 	args = parser.parse_args()
 	# no subcommand given: print help and exit
 	if args.mode is None:

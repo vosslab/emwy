@@ -86,8 +86,6 @@ def copy_audio(
 		"-shortest",
 		output_path,
 	]
-	# print the command for debugging
-	print(f"Muxing audio: {' '.join(cmd)}")
 	result = subprocess.run(cmd, capture_output=True, text=True)
 	if result.returncode != 0:
 		raise RuntimeError(
@@ -138,8 +136,6 @@ def encode_cropped_video(
 		output_path, crop_width, crop_height, fps,
 		codec=codec, crf=crf, vf_string=vf_string,
 	)
-	# choose interpolation: lanczos when filters are active for quality
-	interp = cv2.INTER_LANCZOS4 if encode_filters else cv2.INTER_LINEAR
 	frame_count = len(crop_rects)
 	# wrap reader with rich progress bar (refresh every 1s to avoid flicker)
 	with rich.progress.Progress(
@@ -157,7 +153,10 @@ def encode_cropped_video(
 			# crop the frame using the crop module
 			crop_rect = crop_rects[frame_idx]
 			cropped = tr_crop.apply_crop(frame, crop_rect)
-			# resize to the exact output dimensions for consistency
+			# adaptive interpolation: INTER_AREA for downscaling (avoids aliasing),
+			# INTER_LANCZOS4 for upscaling (preserves detail)
+			crop_h = crop_rect[3]
+			interp = cv2.INTER_AREA if crop_h >= crop_height else cv2.INTER_LANCZOS4
 			resized = cv2.resize(cropped, (crop_width, crop_height), interpolation=interp)
 			# apply opencv encode filters after resize
 			if encode_filters:
@@ -170,11 +169,14 @@ def encode_cropped_video(
 				)
 			writer.write_frame(resized)
 			progress.update(task, advance=1)
-			# poll for keyboard input every 30 frames
+			# poll for quit key every 30 frames (pause not supported during encode)
 			if run_control is not None and frame_idx % 30 == 0:
 				if key_reader_obj is not None:
 					ch = key_reader_obj.poll()
-					key_input.handle_key(ch, run_control, key_reader_obj, progress)
+					if ch is not None and ch.lower() == "q":
+						run_control.request_quit()
+						key_input._quit_trace("KEY_HANDLE", quit_requested=True)
+						progress.console.print("  Q pressed, finishing current interval...")
 				if run_control.quit_requested:
 					key_input._quit_trace(
 						"MAIN_LOOP", context="encode_sequential",
@@ -184,6 +186,9 @@ def encode_cropped_video(
 						f"  encoding interrupted at frame {frame_idx}/{frame_count}"
 					)
 					break
+	# ffmpeg may still be encoding frames through its filter pipeline
+	# after all input has been written (especially with heavy filters)
+	print("  finalizing ffmpeg encode...", flush=True)
 	writer.close()
 	# trace early return on quit
 	if run_control is not None and run_control.quit_requested:
@@ -604,8 +609,6 @@ def _encode_segment(
 		output_path, crop_width, crop_height, fps,
 		codec=codec, crf=crf, vf_string=vf_string,
 	)
-	# choose interpolation: lanczos when filters are active for quality
-	interp = cv2.INTER_LANCZOS4 if encode_filters else cv2.INTER_LINEAR
 	chunk_size = len(crop_rects_chunk)
 	# rich progress bar for this worker (refresh every 1s to avoid flicker)
 	with rich.progress.Progress(
@@ -628,6 +631,10 @@ def _encode_segment(
 			# crop and resize
 			crop_rect = crop_rects_chunk[local_idx]
 			cropped = tr_crop.apply_crop(frame, crop_rect)
+			# adaptive interpolation: INTER_AREA for downscaling (avoids aliasing),
+			# INTER_LANCZOS4 for upscaling (preserves detail)
+			crop_h = crop_rect[3]
+			interp = cv2.INTER_AREA if crop_h >= crop_height else cv2.INTER_LANCZOS4
 			resized = cv2.resize(cropped, (crop_width, crop_height), interpolation=interp)
 			# apply opencv encode filters after resize
 			if encode_filters:
@@ -640,6 +647,8 @@ def _encode_segment(
 				)
 			writer.write_frame(resized)
 			progress.update(task, advance=1)
+	# ffmpeg may still be encoding through its filter pipeline
+	print(f"  worker {worker_id + 1}/{total_workers} finalizing...", flush=True)
 	writer.close()
 	reader.close()
 	return output_path
@@ -758,10 +767,13 @@ def encode_cropped_video_parallel(
 		# heartbeat counter: only trace every 30 iterations (~6s)
 		heartbeat_counter = 0
 		while len(done_futures) < len(all_futures):
-			# poll for keyboard input
+			# poll for quit key (pause not supported during encode)
 			if key_reader_obj is not None and run_control is not None:
 				ch = key_reader_obj.poll()
-				key_input.handle_key(ch, run_control, key_reader_obj)
+				if ch is not None and ch.lower() == "q":
+					run_control.request_quit()
+					key_input._quit_trace("KEY_HANDLE", quit_requested=True)
+					print("  Q pressed, finishing current interval...", flush=True)
 			# check quit flag
 			if run_control is not None and run_control.quit_requested:
 				key_input._quit_trace(

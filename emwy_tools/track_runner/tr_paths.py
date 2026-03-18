@@ -115,6 +115,20 @@ def default_intervals_path(input_file: str) -> str:
 
 #============================================
 
+def default_encode_analysis_path(input_file: str) -> str:
+	"""Return the default encode analysis YAML path for a given input file.
+
+	Args:
+		input_file: Input media file path.
+
+	Returns:
+		str: Analysis YAML file path inside tr_config/.
+	"""
+	analysis_path = _data_file_path(input_file, ".encode_analysis.yaml")
+	return analysis_path
+
+#============================================
+
 def default_output_path(input_file: str) -> str:
 	"""Return the default encoded output path next to the source video.
 
