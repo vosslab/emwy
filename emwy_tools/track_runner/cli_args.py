@@ -109,13 +109,7 @@ def parse_args() -> argparse.Namespace:
 			"Examples: '30:120', '200:'."
 		),
 	)
-	parser.add_argument(
-		"--write-default-config", dest="write_default_config",
-		action="store_true",
-		help="Write the default config for this input and exit.",
-	)
 	parser.set_defaults(
-		write_default_config=False,
 		debug=False,
 	)
 

@@ -1429,20 +1429,11 @@ def main() -> None:
 	if os.path.isfile(analysis_path):
 		print(f"analysis:    {os.path.abspath(analysis_path)}")
 
-	# handle --write-default-config: write and exit
-	if args.write_default_config:
-		cfg = tr_config.default_config()
-		tr_config.write_config(config_path, cfg)
-		print(f"wrote default config: {config_path}")
-		return
-
-	# load or create config
+	# load config: per-video file if it exists, otherwise defaults
 	if os.path.isfile(config_path):
 		cfg = tr_config.load_config(config_path)
 	else:
-		cfg = tr_config.default_config()
-		tr_config.write_config(config_path, cfg)
-		print(f"wrote default config: {config_path}")
+		cfg = tr_config.read_default_config()
 	tr_config.validate_config(cfg)
 
 	# probe video metadata

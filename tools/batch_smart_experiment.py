@@ -599,7 +599,7 @@ def main() -> None:
 		if os.path.isfile(config_path):
 			base_cfg = tr_config.load_config(config_path)
 		else:
-			base_cfg = tr_config.default_config()
+			base_cfg = tr_config.read_default_config()
 		# solver context (shared)
 		solver_context = encode_analysis.analyze_solver_context(
 			interval_results, all_seeds, vinfo["fps"],

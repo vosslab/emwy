@@ -169,7 +169,7 @@ def analyze_one_video(
 	if paths["config_path"] is not None:
 		cfg = tr_config.load_config(paths["config_path"])
 	else:
-		cfg = tr_config.default_config()
+		cfg = tr_config.read_default_config()
 	# load intervals
 	intervals_file = state_io.load_intervals(paths["intervals_path"])
 	solved = intervals_file.get("solved_intervals", {})

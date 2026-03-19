@@ -463,7 +463,7 @@ class TestCompositionMetrics:
 		comp = result["composition"]
 		# center is at (480, 270), subject at (950, 530)
 		# dx_norm = (950 - 480) / 960 = 0.489, dy_norm = (530 - 270) / 540 = 0.481
-		# offset = hypot(0.489, 0.481) ≈ 0.68 > 0.25 -> bad_center
+		# offset = hypot(0.489, 0.481) ~ 0.68 > 0.25 -> bad_center
 		assert comp["center_offset_p50"] > 0.25
 		assert comp["bad_center_fraction"] > 0.0
 		# edge touch: subject at (950 +/- 30, 530 +/- 60)
@@ -561,7 +561,7 @@ class TestCompositionMetrics:
 		n = 100
 		# two crops, same center offset in pixels, different dimensions
 		# crop1: 400x300, subject offset by (40, 30) pixels from center
-		# -> offset_norm = hypot(40/400, 30/300) = hypot(0.1, 0.1) ≈ 0.141
+		# -> offset_norm = hypot(40/400, 30/300) = hypot(0.1, 0.1) ~ 0.141
 		rects1 = [(0, 0, 400, 300)] * n
 		traj1 = []
 		for i in range(n):
@@ -571,7 +571,7 @@ class TestCompositionMetrics:
 				"conf": 0.9, "source": "propagated",
 			})
 		# crop2: 800x600 (2x larger), same pixel offset
-		# -> offset_norm = hypot(40/800, 30/600) = hypot(0.05, 0.05) ≈ 0.0707
+		# -> offset_norm = hypot(40/800, 30/600) = hypot(0.05, 0.05) ~ 0.0707
 		rects2 = [(0, 0, 800, 600)] * n
 		traj2 = []
 		for i in range(n):

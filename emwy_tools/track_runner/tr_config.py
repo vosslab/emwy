@@ -19,7 +19,7 @@ TOOL_CONFIG_HEADER_VALUE = 2
 
 #============================================
 
-def default_config() -> dict:
+def read_default_config() -> dict:
 	"""
 	Return the minimal default config schema for track_runner v2.
 
@@ -35,9 +35,7 @@ def default_config() -> dict:
 		"processing": {
 			"crop_mode": "direct_center",
 			"crop_aspect": "16:9",
-			"crop_fill_ratio": 0.1,
-			"crop_post_smooth_strength": 0.03,
-			"crop_post_smooth_max_velocity": 15.0,
+			"crop_fill_ratio": 0.30,
 			"video_codec": "libx264",
 			"crf": 18,
 			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for emwy_tools/track_runner/tr_video_identity.py."""
 
 # Standard Library

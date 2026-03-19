@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-03-19
+
+### Fixes and Maintenance
+- Removed `processing` section from all 6 per-video config files in `tr_config/`. These files had stale `crop_fill_ratio: 0.1` from before Experiment 5 established 0.30 as the correct value. The experiment harness did not override this key, so all Experiment 7 variants silently ran with the wrong fill ratio, producing full-frame output (2816x1584 on IMG_3702) instead of tight crops. Root cause: processing parameters were duplicated across per-video configs instead of being controlled by the experiment.
+- Consolidated 6 identical per-video `*.track_runner.config.yaml` files into one global [tr_config/track_runner.config.yaml](tr_config/track_runner.config.yaml). Per-video configs contained only detection settings (model, confidence_threshold) which were identical across all videos. Processing parameters now live exclusively in the experiment variant overrides in [tools/batch_encode_experiment.py](tools/batch_encode_experiment.py).
+- Added `crop_fill_ratio`, `crop_aspect`, `video_codec`, `crf`, and `encode_filters` to experiment variant overrides so all processing is controlled in one place.
+
+### Decisions and Failures
+- Per-video config files with processing settings are a maintenance trap. Processing parameters that the experiment controls must not also live in per-video YAML files where they go stale. Detection-only configs are the correct separation: detection settings describe the video, processing settings describe the experiment.
+
 ## 2026-03-18
 
 ### Additions and New Features

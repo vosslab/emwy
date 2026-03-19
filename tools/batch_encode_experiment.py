@@ -658,9 +658,8 @@ def main() -> None:
 			video_name, data_dir, vinfo,
 		)
 		print(f"  trajectory: {len(trajectory)} frames, {len(all_seeds)} seeds")
-		# load global base config (detection-only, shared across all videos)
-		global_config_path = os.path.join(data_dir, "track_runner.config.yaml")
-		base_cfg = tr_config.load_config(global_config_path)
+		# use default config as base (single source of truth)
+		base_cfg = tr_config.read_default_config()
 		# compute solver context once (shared across all variants for this video)
 		solver_context = encode_analysis.analyze_solver_context(
 			interval_results, all_seeds, vinfo["fps"],
