@@ -1812,129 +1812,168 @@ def test_torso_anchor_containment_still_works() -> None:
 
 
 # ============================================================
-# zoom event detector tests
+# zoom phase detector tests
 # ============================================================
 
 
 #============================================
-def test_zoom_detector_smooth_signal_no_events() -> None:
-	"""Smooth height signal produces no zoom events."""
+def test_zoom_phases_smooth_signal_no_events() -> None:
+	"""Smooth height signal produces no transitions or settling."""
 	n = 100
 	# gradual height change: 200 to 210 over 100 frames (< 1% per frame)
 	raw_h = numpy.linspace(200.0, 210.0, n)
-	mask = crop_mod._detect_zoom_events(raw_h)
-	assert not mask.any(), "smooth signal should produce no zoom events"
+	trans, settle = crop_mod._detect_zoom_phases(raw_h)
+	assert not trans.any(), "smooth signal should have no transitions"
+	assert not settle.any(), "smooth signal should have no settling"
 
 
 #============================================
-def test_zoom_detector_large_jump_detected() -> None:
-	"""2x height jump at frame 50 triggers hold zone."""
-	n = 100
+def test_zoom_phases_large_jump_detected() -> None:
+	"""2x height jump at frame 50 triggers transition and settling."""
+	n = 150
 	raw_h = numpy.full(n, 200.0)
 	# instant 2x jump at frame 50 that persists
 	raw_h[50:] = 400.0
-	mask = crop_mod._detect_zoom_events(raw_h, threshold_ratio=1.25, hold_frames=30)
-	# frame 50 should be in hold zone
-	assert mask[50], "jump frame should be in hold zone"
-	# frames 51-79 should be in hold zone (hold_frames=30 from frame 50)
-	assert mask[79], "frame 79 should be in hold zone"
-	# frame 80 should not be in hold zone
-	assert not mask[80], "frame 80 should be outside hold zone"
-	# frames before jump should not be flagged
-	assert not mask[49], "frame before jump should not be flagged"
+	trans, settle = crop_mod._detect_zoom_phases(
+		raw_h, window=5, threshold_ratio=1.40, settle_frames=30,
+	)
+	# frames near jump should be in transition (within window)
+	assert trans[50], "jump frame should be in transition"
+	# frames before jump should not be flagged as transition
+	assert not trans[45], "frame well before jump should not be transition"
+	# settling should follow the transition block
+	# find the last transition frame and check settling starts after it
+	last_trans = max(i for i in range(n) if trans[i])
+	assert settle[last_trans + 1], "settling should start after transition"
+	# settling should end within settle_frames
+	settle_end = last_trans + 1 + 30
+	if settle_end < n:
+		assert not settle[settle_end], "settling should end after 30 frames"
 
 
 #============================================
-def test_zoom_detector_zoom_out_detected() -> None:
+def test_zoom_phases_zoom_out_detected() -> None:
 	"""Zoom-out (height decrease) is also detected."""
-	n = 100
+	n = 150
 	raw_h = numpy.full(n, 400.0)
 	# instant halving at frame 40
 	raw_h[40:] = 200.0
-	mask = crop_mod._detect_zoom_events(raw_h, threshold_ratio=1.25, hold_frames=20)
-	assert mask[40], "zoom-out frame should be detected"
-	assert mask[59], "hold zone should extend 20 frames"
-	assert not mask[60], "frame 60 should be outside hold zone"
+	trans, settle = crop_mod._detect_zoom_phases(
+		raw_h, window=5, threshold_ratio=1.40, settle_frames=20,
+	)
+	assert trans[40], "zoom-out frame should be in transition"
+	# settling should follow
+	last_trans = max(i for i in range(n) if trans[i])
+	if last_trans + 1 < n:
+		assert settle[last_trans + 1], "settling should follow transition"
 
 
 #============================================
-def test_zoom_detector_single_frame_outlier_not_confirmed() -> None:
-	"""Single-frame spike fails persistence -- the up-jump is not confirmed.
+def test_zoom_phases_gradual_ramp_not_detected() -> None:
+	"""A 5-frame spread ramp that stays under threshold is not a transition.
 
-	The spike at frame 30 (200->500) fails persistence because frame 31
-	returns to 200.  The return at frame 31 (500->200) does pass persistence
-	because subsequent frames stay at 200, so it is correctly treated as a
-	real step change.  We verify the up-jump itself is not confirmed.
+	Ratio of 1.30 over 5 frames is under the 1.40 threshold.
 	"""
 	n = 100
 	raw_h = numpy.full(n, 200.0)
-	# single frame spike at frame 30
-	raw_h[30] = 500.0
-	mask = crop_mod._detect_zoom_events(raw_h, threshold_ratio=1.25, hold_frames=30)
-	# frames well before the spike should be clean
-	assert not mask[25], "frames before spike should be clean"
-	# the return jump at 31 is a real persistent step change (500->200,
-	# and 200 persists), so a hold zone starting at 31 is correct behavior.
-	# verify frames after that hold zone are clean
-	assert not mask[29], "frame before spike should not be flagged"
+	# spread ramp: 200 -> 260 over 5 frames (ratio 1.30, under 1.40)
+	for i in range(5):
+		raw_h[50 + i] = 200.0 + i * 12.0
+	raw_h[55:] = 260.0
+	trans, settle = crop_mod._detect_zoom_phases(
+		raw_h, window=5, threshold_ratio=1.40, settle_frames=30,
+	)
+	assert not trans.any(), "gradual ramp under threshold should not trigger"
 
 
 #============================================
-def test_zoom_detector_overlapping_events_merge() -> None:
-	"""Two events within hold_frames merge their hold zones."""
-	n = 150
+def test_zoom_phases_spread_ramp_detected() -> None:
+	"""A 5-frame spread ramp exceeding threshold is detected."""
+	n = 100
+	raw_h = numpy.full(n, 200.0)
+	# spread ramp: 200 -> 350 over 5 frames (ratio 1.75, above 1.40)
+	for i in range(5):
+		raw_h[50 + i] = 200.0 + i * 30.0 + 30.0
+	raw_h[55:] = 350.0
+	trans, settle = crop_mod._detect_zoom_phases(
+		raw_h, window=5, threshold_ratio=1.40, settle_frames=30,
+	)
+	# at least some frames in the ramp should be detected
+	ramp_trans = trans[48:58].any()
+	assert ramp_trans, "spread ramp above threshold should trigger transition"
+
+
+#============================================
+def test_zoom_phases_overlapping_events_merge() -> None:
+	"""Two events close together merge their settling zones."""
+	n = 200
 	raw_h = numpy.full(n, 200.0)
 	# first jump at frame 20
 	raw_h[20:60] = 400.0
-	# second jump at frame 40 (back down, within hold zone of first)
-	raw_h[40:] = 200.0
-	mask = crop_mod._detect_zoom_events(raw_h, threshold_ratio=1.25, hold_frames=30)
-	# both events should create hold zones that overlap
-	assert mask[20], "first event should be detected"
-	assert mask[40], "second event should be detected"
-	# continuous hold from first event through second
-	assert mask[30], "mid-zone should be in hold"
+	# second jump at frame 60 (back down, close to first)
+	raw_h[60:] = 200.0
+	trans, settle = crop_mod._detect_zoom_phases(
+		raw_h, window=5, threshold_ratio=1.40, settle_frames=30,
+	)
+	# both events should have transitions
+	assert trans[20], "first event should be in transition"
+	# frames between events should be transition or settling (merged)
+	all_affected = trans | settle
+	# check continuous coverage from first event through settling
+	assert all_affected[30], "mid-zone should be in transition or settling"
+
+
+#============================================
+def test_zoom_phases_no_overlap_between_masks() -> None:
+	"""Transition and settle masks should not overlap."""
+	n = 150
+	raw_h = numpy.full(n, 200.0)
+	raw_h[50:] = 400.0
+	trans, settle = crop_mod._detect_zoom_phases(
+		raw_h, window=5, threshold_ratio=1.40, settle_frames=30,
+	)
+	# no frame should be both transition and settling
+	overlap = trans & settle
+	assert not overlap.any(), "transition and settle masks must not overlap"
 
 
 # ============================================================
-# zoom-event damping integration tests
+# zoom stabilization integration tests (three-mode constraint)
 # ============================================================
 
 
 #============================================
-def test_zoom_damping_disabled_matches_baseline() -> None:
-	"""crop_zoom_event_damping=False produces same output as no damping."""
+def test_zoom_stabilization_disabled_matches_baseline() -> None:
+	"""crop_zoom_stabilization=False produces same output as no stabilization."""
 	n = 100
-	raw_h = numpy.full(n, 200.0)
-	raw_h[50:] = 400.0  # big jump
 	trajectory = _make_synthetic_trajectory(
 		n, cx_func=lambda i: 960.0, cy_func=lambda i: 540.0,
 		h_val=200.0,
 	)
-	# inject the height jump into the trajectory
+	# inject a height jump
 	for i in range(50, n):
 		trajectory[i]["h"] = 400.0
-	config_no_damp = _make_direct_center_config({
+	config_off = _make_direct_center_config({
 		"crop_max_height_change": 0.005,
-		"crop_zoom_event_damping": False,
+		"crop_zoom_stabilization": False,
 	})
 	config_default = _make_direct_center_config({
 		"crop_max_height_change": 0.005,
 	})
-	rects_no_damp = crop_mod.direct_center_crop_trajectory(
-		trajectory, 1920, 1080, config_no_damp,
+	rects_off = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_off,
 	)
 	rects_default = crop_mod.direct_center_crop_trajectory(
 		trajectory, 1920, 1080, config_default,
 	)
-	assert len(rects_no_damp) == len(rects_default)
-	for a, b in zip(rects_no_damp, rects_default):
+	assert len(rects_off) == len(rects_default)
+	for a, b in zip(rects_off, rects_default):
 		assert a == b
 
 
 #============================================
-def test_zoom_damping_reduces_height_change_rate() -> None:
-	"""During zoom hold, crop height changes at most 10% of normal rate."""
+def test_zoom_stabilization_transition_mode_near_freeze() -> None:
+	"""Transition frames change crop height at most 2% of normal rate."""
 	n = 100
 	trajectory = _make_synthetic_trajectory(
 		n, cx_func=lambda i: 960.0, cy_func=lambda i: 540.0,
@@ -1943,63 +1982,135 @@ def test_zoom_damping_reduces_height_change_rate() -> None:
 	# inject a persistent 2x height jump at frame 50
 	for i in range(50, n):
 		trajectory[i]["h"] = 400.0
-	config_damped = _make_direct_center_config({
+	config_stabilized = _make_direct_center_config({
 		"crop_max_height_change": 0.005,
-		"crop_zoom_event_damping": True,
+		"crop_zoom_stabilization": True,
 	})
-	config_undamped = _make_direct_center_config({
+	config_normal = _make_direct_center_config({
 		"crop_max_height_change": 0.005,
-		"crop_zoom_event_damping": False,
+		"crop_zoom_stabilization": False,
 	})
-	rects_damped = crop_mod.direct_center_crop_trajectory(
-		trajectory, 1920, 1080, config_damped,
+	rects_stab = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_stabilized,
 	)
-	rects_undamped = crop_mod.direct_center_crop_trajectory(
-		trajectory, 1920, 1080, config_undamped,
+	rects_norm = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config_normal,
 	)
-	# compare height change rate in the 10 frames after the jump
-	damped_deltas = []
-	undamped_deltas = []
+	# compare height change rate in 10 frames after jump
+	stab_deltas = []
+	norm_deltas = []
 	for i in range(51, 61):
-		damped_deltas.append(abs(rects_damped[i][3] - rects_damped[i - 1][3]))
-		undamped_deltas.append(abs(rects_undamped[i][3] - rects_undamped[i - 1][3]))
-	avg_damped = sum(damped_deltas) / len(damped_deltas)
-	avg_undamped = sum(undamped_deltas) / len(undamped_deltas)
-	# damped should be significantly slower than undamped
-	assert avg_damped < avg_undamped, (
-		f"damped avg delta {avg_damped:.2f} should be < undamped {avg_undamped:.2f}"
+		stab_deltas.append(abs(rects_stab[i][3] - rects_stab[i - 1][3]))
+		norm_deltas.append(abs(rects_norm[i][3] - rects_norm[i - 1][3]))
+	avg_stab = sum(stab_deltas) / len(stab_deltas)
+	avg_norm = sum(norm_deltas) / len(norm_deltas)
+	# stabilized should be significantly slower
+	assert avg_stab < avg_norm, (
+		f"stabilized avg delta {avg_stab:.2f} should be < normal {avg_norm:.2f}"
 	)
-	# damped rate should be roughly 10% of undamped (allow some tolerance)
-	if avg_undamped > 0:
-		ratio = avg_damped / avg_undamped
+	# stabilized rate should be much less than normal (transition=0.02x)
+	if avg_norm > 0:
+		ratio = avg_stab / avg_norm
 		assert ratio < 0.25, (
-			f"damped/undamped ratio {ratio:.2f} should be < 0.25"
+			f"stabilized/normal ratio {ratio:.2f} should be < 0.25 (transition mode)"
 		)
 
 
 #============================================
-def test_zoom_damping_normal_rate_outside_hold() -> None:
-	"""After hold zone expires, normal height change rate resumes."""
+def test_zoom_stabilization_settling_mode_slow_convergence() -> None:
+	"""Settling frames change crop height at reduced rate vs normal."""
+	n = 250
+	trajectory = _make_synthetic_trajectory(
+		n, cx_func=lambda i: 960.0, cy_func=lambda i: 540.0,
+		h_val=200.0,
+	)
+	# inject a persistent height jump at frame 30
+	for i in range(30, n):
+		trajectory[i]["h"] = 400.0
+	config = _make_direct_center_config({
+		"crop_max_height_change": 0.005,
+		"crop_zoom_stabilization": True,
+	})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	# detect the phases to know which frames are settling
+	raw_h = numpy.array([t["h"] for t in trajectory])
+	trans, settle = crop_mod._detect_zoom_phases(raw_h)
+	# find settling frames and check their rate is bounded
+	settle_indices = numpy.where(settle)[0]
+	if len(settle_indices) > 2:
+		# check that settling frames have smaller deltas than normal rate
+		# normal max delta = 0.005 * height; settling = 0.20 * 0.005 * height = 0.001 * height
+		for idx in settle_indices[1:]:
+			delta = abs(rects[idx][3] - rects[idx - 1][3])
+			# settling rate: 20% of 0.005 = 0.001 of prev height
+			prev_h = rects[idx - 1][3]
+			max_settle_delta = 0.001 * prev_h + 1.0  # +1 for rounding
+			assert delta <= max_settle_delta, (
+				f"settling frame {idx}: delta {delta} exceeds max {max_settle_delta}"
+			)
+
+
+#============================================
+def test_zoom_stabilization_normal_rate_after_settling() -> None:
+	"""After settling expires, normal height change rate resumes."""
+	n = 300
+	trajectory = _make_synthetic_trajectory(
+		n, cx_func=lambda i: 960.0, cy_func=lambda i: 540.0,
+		h_val=200.0,
+	)
+	# jump at frame 30 -- transition + settling should end well before frame 200
+	for i in range(30, n):
+		trajectory[i]["h"] = 400.0
+	config = _make_direct_center_config({
+		"crop_max_height_change": 0.005,
+		"crop_zoom_stabilization": True,
+	})
+	rects = crop_mod.direct_center_crop_trajectory(
+		trajectory, 1920, 1080, config,
+	)
+	# check frames well after settling zone (frame 150+) have normal rate
+	late_deltas = []
+	for i in range(151, 180):
+		late_deltas.append(abs(rects[i][3] - rects[i - 1][3]))
+	# at least some frames should have nonzero height change (still converging)
+	max_late_delta = max(late_deltas)
+	assert max_late_delta > 0, "crop should still be converging after settling"
+
+
+#============================================
+def test_zoom_stabilization_biased_monotonicity_suppresses_small_reversals() -> None:
+	"""Small reversals are suppressed during settling zone."""
 	n = 200
 	trajectory = _make_synthetic_trajectory(
 		n, cx_func=lambda i: 960.0, cy_func=lambda i: 540.0,
 		h_val=200.0,
 	)
-	# jump at frame 30, hold_frames default=30, so hold ends at frame 60
+	# jump at frame 30
 	for i in range(30, n):
 		trajectory[i]["h"] = 400.0
+	# inject small oscillations during what will be settling
+	# (frames ~35-95 with default settle_frames=60)
+	for i in range(40, 90, 4):
+		trajectory[i]["h"] = 395.0  # small dip from 400
+		trajectory[i + 1]["h"] = 400.0  # back to 400
 	config = _make_direct_center_config({
 		"crop_max_height_change": 0.005,
-		"crop_zoom_event_damping": True,
+		"crop_zoom_stabilization": True,
 	})
 	rects = crop_mod.direct_center_crop_trajectory(
 		trajectory, 1920, 1080, config,
 	)
-	# check frames well after hold zone (frame 80+) have normal rate
-	# the crop should be converging toward the new height at normal speed
-	late_deltas = []
-	for i in range(81, 100):
-		late_deltas.append(abs(rects[i][3] - rects[i - 1][3]))
-	# at least some frames should have nonzero height change (still converging)
-	max_late_delta = max(late_deltas)
-	assert max_late_delta > 0, "crop should still be converging after hold zone"
+	# count direction changes in the settling region (frames 55-90)
+	direction_changes = 0
+	for i in range(56, 90):
+		prev_delta = rects[i][3] - rects[i - 1][3]
+		curr_delta = rects[i + 1][3] - rects[i][3]
+		if prev_delta * curr_delta < 0:
+			direction_changes += 1
+	# with biased monotonicity, direction changes should be very few
+	assert direction_changes < 5, (
+		f"settling zone had {direction_changes} direction changes, "
+		"expected < 5 with biased monotonicity"
+	)

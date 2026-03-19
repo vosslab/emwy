@@ -49,7 +49,7 @@ CLIP_DURATION = 15
 CLIP_MARGIN = 5
 
 # experiment output directory
-EXPERIMENT_DIR = os.path.join(REPO_ROOT, "output_smoke", "experiment")
+EXPERIMENT_DIR = os.path.join(REPO_ROOT, "output_smoke", "experiment_7b")
 
 # videos to test (all 7 with solved intervals)
 EXPERIMENT_VIDEOS = {
@@ -83,51 +83,73 @@ EXPERIMENT_VIDEOS = {
 	},
 }
 
-# Experiment 7 (composition + zoom-event damping): 2x2 factorial design.
+# Experiment 7b (composition + piecewise zoom stabilization): 2x2 factorial design.
 #
 # Prior experiments:
 #   1-4: axis-isolated overrides, all indistinguishable (fill_ratio=0.1 root cause)
 #   5: tighter fill ratio + containment + zoom constraint -- fixed first-order problem
 #   6: smart mode v1a -- rocking-boat on IMG_3702, baseline_dc was better
+#   7: zoom-event damping (single-frame detector) -- missed multi-frame transitions
 #
 # This experiment tests two independent improvements to the direct_center baseline:
 #   - Composition: torso anchor at 38% from top (more room for legs/feet)
-#   - Zoom-event damping: detect discrete camera zoom jumps and refuse to follow
+#   - Zoom stabilization: sliding-window 3-mode (transition/settling/normal)
+#     constraint that treats crop height as a noisy time series
 #
 # Config keys:
 #   crop_torso_anchor: 0.38 or 0.50 (default centered)
-#   crop_zoom_event_damping: True/False
+#   crop_zoom_stabilization: True/False
 VARIANTS = {
 	"A_baseline_dc": {
 		"description": "Current direct_center: centered torso, scalar zoom constraint",
 		"overrides": {
 			"crop_mode": "direct_center",
+			"crop_aspect": "16:9",
+			"crop_fill_ratio": 0.30,
 			"crop_torso_anchor": 0.50,
-			"crop_zoom_event_damping": False,
+			"crop_zoom_stabilization": False,
+			"video_codec": "libx264",
+			"crf": 18,
+			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],
 		},
 	},
 	"B_torso_38": {
 		"description": "Composition offset only: torso at 38% from top",
 		"overrides": {
 			"crop_mode": "direct_center",
+			"crop_aspect": "16:9",
+			"crop_fill_ratio": 0.30,
 			"crop_torso_anchor": 0.38,
-			"crop_zoom_event_damping": False,
+			"crop_zoom_stabilization": False,
+			"video_codec": "libx264",
+			"crf": 18,
+			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],
 		},
 	},
-	"C_zoom_hold": {
-		"description": "Zoom-event damping only, centered torso",
+	"C_zoom_stabilized": {
+		"description": "Piecewise zoom stabilization only, centered torso",
 		"overrides": {
 			"crop_mode": "direct_center",
+			"crop_aspect": "16:9",
+			"crop_fill_ratio": 0.30,
 			"crop_torso_anchor": 0.50,
-			"crop_zoom_event_damping": True,
+			"crop_zoom_stabilization": True,
+			"video_codec": "libx264",
+			"crf": 18,
+			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],
 		},
 	},
-	"D_zoom_hold_torso_38": {
-		"description": "Zoom-event damping + torso at 38% from top",
+	"D_zoom_stabilized_torso_38": {
+		"description": "Piecewise zoom stabilization + torso at 38% from top",
 		"overrides": {
 			"crop_mode": "direct_center",
+			"crop_aspect": "16:9",
+			"crop_fill_ratio": 0.30,
 			"crop_torso_anchor": 0.38,
-			"crop_zoom_event_damping": True,
+			"crop_zoom_stabilization": True,
+			"video_codec": "libx264",
+			"crf": 18,
+			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],
 		},
 	},
 }
@@ -336,6 +358,43 @@ def encode_variant(
 	# normalized convergence: convergence_median / crop_width as percentage
 	conv_med = solver_context["fwd_bwd_convergence_median"]
 	conv_width_pct = round(conv_med / crop_w * 100, 2) if crop_w > 0 else 0.0
+	# zoom stabilization diagnostics: detect phases on raw height signal
+	import numpy
+	# trajectory may contain None entries for unsolved gaps
+	traj_slice = trajectory[:len(crop_rects)]
+	raw_h = numpy.array([
+		t["h"] if t is not None else 0.0 for t in traj_slice
+	])
+	trans_mask, settle_mask = tr_crop._detect_zoom_phases(raw_h)
+	n_total = len(raw_h)
+	n_transitions = int(trans_mask.sum())
+	n_settling = int(settle_mask.sum())
+	n_normal = n_total - n_transitions - n_settling
+	# count transition blocks (contiguous True runs)
+	trans_block_count = 0
+	in_block = False
+	for val in trans_mask:
+		if val and not in_block:
+			trans_block_count += 1
+			in_block = True
+		elif not val:
+			in_block = False
+	# crop height variance from output rects
+	crop_heights = numpy.array([r[3] for r in crop_rects], dtype=float)
+	crop_h_var = float(numpy.var(crop_heights))
+	# torso vertical position in crop (fraction from top)
+	torso_positions = []
+	for i in range(len(crop_rects)):
+		_, cy_rect, _, h_rect = crop_rects[i]
+		if h_rect > 0 and i < len(trajectory) and trajectory[i] is not None:
+			torso_cy = trajectory[i]["cy"]
+			pos = (torso_cy - cy_rect) / h_rect
+			torso_positions.append(pos)
+	torso_pos_arr = numpy.array(torso_positions) if torso_positions else numpy.array([0.5])
+	torso_pos_median = float(numpy.median(torso_pos_arr))
+	torso_pos_p95 = float(numpy.percentile(torso_pos_arr, 95))
+	# fraction of frames where torso is in desired upper band (< 0.42)
+	torso_upper_frac = float(numpy.mean(torso_pos_arr < 0.42))
 	row = {
 		"video": video_name,
 		"variant": variant_name,
@@ -358,6 +417,16 @@ def encode_variant(
 		"bad_edge_pct": round(comp.get("bad_edge_fraction", 0.0) * 100, 1),
 		"bad_zoom_pct": round(comp.get("bad_zoom_fraction", 0.0) * 100, 1),
 		"bad_run_max": comp.get("bad_run_max_length", 0),
+		# zoom stabilization diagnostics
+		"zoom_trans_blocks": trans_block_count,
+		"trans_pct": round(n_transitions / n_total * 100, 1) if n_total > 0 else 0.0,
+		"settle_pct": round(n_settling / n_total * 100, 1) if n_total > 0 else 0.0,
+		"normal_pct": round(n_normal / n_total * 100, 1) if n_total > 0 else 0.0,
+		"crop_h_var": round(crop_h_var, 1),
+		# composition diagnostics
+		"torso_pos_median": round(torso_pos_median, 3),
+		"torso_pos_p95": round(torso_pos_p95, 3),
+		"torso_upper_frac": round(torso_upper_frac * 100, 1),
 		"encode_time_s": round(t_elapsed, 0),
 		"analysis_yaml": os.path.basename(analysis_yaml_path),
 	}
@@ -429,6 +498,9 @@ def write_results(rows: list, output_dir: str) -> None:
 		"center_offset_p95", "edge_touch_count",
 		"bad_frame_pct", "bad_center_pct", "bad_edge_pct",
 		"bad_zoom_pct", "bad_run_max",
+		"zoom_trans_blocks", "trans_pct", "settle_pct", "normal_pct",
+		"crop_h_var",
+		"torso_pos_median", "torso_pos_p95", "torso_upper_frac",
 		"encode_time_s",
 	]
 	with open(csv_path, "w", newline="") as f:
@@ -501,14 +573,58 @@ def write_results(rows: list, output_dir: str) -> None:
 				str(row.get("bad_run_max", "N/A")),
 			]
 			f.write("| " + " | ".join(comp_line) + " |\n")
+		# zoom stabilization diagnostics table
+		f.write("\n## Zoom stabilization diagnostics\n\n")
+		zoom_cols = [
+			"Video", "Variant", "ZoomBlocks", "Trans%",
+			"Settle%", "Normal%", "CropHVar", "Size",
+		]
+		f.write("| " + " | ".join(zoom_cols) + " |\n")
+		f.write("| " + " | ".join(["---"] * len(zoom_cols)) + " |\n")
+		for row in rows:
+			vname = row["video"]
+			if len(vname) > 20:
+				vname = vname[:17] + "..."
+			zoom_line = [
+				vname,
+				row["variant"],
+				str(row.get("zoom_trans_blocks", 0)),
+				str(row.get("trans_pct", 0.0)),
+				str(row.get("settle_pct", 0.0)),
+				str(row.get("normal_pct", 0.0)),
+				str(row.get("crop_h_var", 0.0)),
+				f"{row['crop_w']}x{row['crop_h']}",
+			]
+			f.write("| " + " | ".join(zoom_line) + " |\n")
+		# torso composition diagnostics table
+		f.write("\n## Torso composition diagnostics\n\n")
+		torso_cols = [
+			"Video", "Variant", "TorsoMed", "TorsoP95",
+			"Upper%",
+		]
+		f.write("| " + " | ".join(torso_cols) + " |\n")
+		f.write("| " + " | ".join(["---"] * len(torso_cols)) + " |\n")
+		for row in rows:
+			vname = row["video"]
+			if len(vname) > 20:
+				vname = vname[:17] + "..."
+			torso_line = [
+				vname,
+				row["variant"],
+				str(row.get("torso_pos_median", "N/A")),
+				str(row.get("torso_pos_p95", "N/A")),
+				str(row.get("torso_upper_frac", "N/A")),
+			]
+			f.write("| " + " | ".join(torso_line) + " |\n")
 		# pass criteria section
 		f.write("\n## Pass criteria\n\n")
-		f.write("- `center_offset_p95 < 0.20`\n")
-		f.write("- `edge_touch_count < 10` per video\n")
+		f.write("- C reduces `height_jerk_p95` on IMG_3702 vs A\n")
+		f.write("- C produces smaller output resolution on multimodal videos (IMG_3702, IMG_3629)\n")
+		f.write("- C does not regress on canon_60d\n")
+		f.write("- B places torso measurably higher in frame than A\n")
+		f.write("- D combines both improvements without regression\n")
 		f.write("- `bad_frame_fraction < 0.05` (< 5%)\n")
-		f.write("- `bad_run_max_length < 10`\n")
 		f.write("- `height_jerk_p95 < 5.0`\n")
-		f.write("- Material improvement over A_old_baseline\n")
 		f.write("\n## How to review\n\n")
 		f.write("1. Watch the `_clip*.mkv` files side by side\n")
 		f.write("2. Rate each 0-3 for: jitter, zoom pumping, drift, shake\n")
@@ -542,14 +658,9 @@ def main() -> None:
 			video_name, data_dir, vinfo,
 		)
 		print(f"  trajectory: {len(trajectory)} frames, {len(all_seeds)} seeds")
-		# load base config
-		config_path = os.path.join(
-			data_dir, video_name + ".track_runner.config.yaml",
-		)
-		if os.path.isfile(config_path):
-			base_cfg = tr_config.load_config(config_path)
-		else:
-			base_cfg = tr_config.default_config()
+		# load global base config (detection-only, shared across all videos)
+		global_config_path = os.path.join(data_dir, "track_runner.config.yaml")
+		base_cfg = tr_config.load_config(global_config_path)
 		# compute solver context once (shared across all variants for this video)
 		solver_context = encode_analysis.analyze_solver_context(
 			interval_results, all_seeds, vinfo["fps"],

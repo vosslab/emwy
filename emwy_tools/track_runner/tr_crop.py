@@ -420,9 +420,83 @@ def direct_center_crop_trajectory(
 	else:
 		smoothed_h = desired_crop_h.copy()
 
+	# Step 2.3: vertical composition offset (torso anchor)
+	# anchor=0.50 is identity (no offset). anchor<0.50 shifts crop down
+	# so the torso appears higher in the frame, leaving room for legs/feet.
+	torso_anchor = float(processing.get("crop_torso_anchor", 0.50))
+	if torso_anchor != 0.50:
+		# offset uses smoothed height to avoid coupling tracking noise
+		composition_offset = (0.50 - torso_anchor) * smoothed_h
+		smoothed_cy += composition_offset
+
 	# Step 2.5: zoom stability constraint
+	zoom_stabilization = bool(processing.get("crop_zoom_stabilization", False))
 	max_height_change_frac = float(processing.get("crop_max_height_change", 0.005))
-	if max_height_change_frac > 0:
+	if zoom_stabilization and max_height_change_frac > 0:
+		# three-mode constraint: detect zoom phases and apply per-mode rates
+		transition_mask, settle_mask = _detect_zoom_phases(raw_h)
+		# rate multipliers per mode
+		transition_rate = 0.02
+		settling_rate = 0.20
+		# biased monotonicity tracking for settling zones
+		mono_direction = 0  # 0=unset, 1=growing, -1=shrinking
+		mono_reversal_count = 0
+		# minimum reversal threshold: 0.3% of current height
+		mono_threshold_frac = 0.003
+		# consecutive frames needed to allow a reversal
+		mono_sustain_required = 3
+		for i in range(1, n):
+			delta = smoothed_h[i] - smoothed_h[i - 1]
+			if transition_mask[i]:
+				# near-freeze during active zoom change
+				max_delta = max_height_change_frac * transition_rate * smoothed_h[i - 1]
+			elif settle_mask[i]:
+				# slow convergence during settling
+				max_delta = max_height_change_frac * settling_rate * smoothed_h[i - 1]
+				# biased monotonicity: suppress small reversals
+				if mono_direction == 0:
+					# set direction from first settling movement
+					if delta > 0:
+						mono_direction = 1
+					elif delta < 0:
+						mono_direction = -1
+				else:
+					# check if this frame reverses direction
+					is_reversal = (
+						(mono_direction == 1 and delta < 0)
+						or (mono_direction == -1 and delta > 0)
+					)
+					if is_reversal:
+						reversal_threshold = mono_threshold_frac * smoothed_h[i - 1]
+						if abs(delta) < reversal_threshold:
+							# suppress small reversal
+							delta = 0.0
+							smoothed_h[i] = smoothed_h[i - 1]
+							continue
+						else:
+							# potential sustained reversal
+							mono_reversal_count += 1
+							if mono_reversal_count < mono_sustain_required:
+								# not yet sustained, suppress
+								delta = 0.0
+								smoothed_h[i] = smoothed_h[i - 1]
+								continue
+							else:
+								# sustained reversal, allow and flip direction
+								mono_direction = -mono_direction
+								mono_reversal_count = 0
+					else:
+						mono_reversal_count = 0
+			else:
+				# normal frames: full rate, reset monotonicity
+				max_delta = max_height_change_frac * smoothed_h[i - 1]
+				mono_direction = 0
+				mono_reversal_count = 0
+			# apply rate limit
+			if abs(delta) > max_delta:
+				smoothed_h[i] = smoothed_h[i - 1] + math.copysign(max_delta, delta)
+	elif max_height_change_frac > 0:
+		# scalar constraint (original behavior when zoom_stabilization=False)
 		for i in range(1, n):
 			delta = smoothed_h[i] - smoothed_h[i - 1]
 			max_delta = max_height_change_frac * smoothed_h[i - 1]
@@ -810,6 +884,96 @@ def compute_crop_metrics(crop_rects: list) -> dict:
 		"p95_step_distance": float(numpy.percentile(step_dist, 95)),
 	}
 	return result
+
+
+#============================================
+def _detect_zoom_phases(
+	raw_h: numpy.ndarray,
+	window: int = 5,
+	threshold_ratio: float = 1.40,
+	settle_frames: int = 60,
+) -> tuple:
+	"""Detect zoom transition and settling phases in a height signal.
+
+	Uses a sliding window to find frames where the max/min height ratio
+	exceeds a threshold, indicating a camera zoom transition (e.g. iPhone
+	lens switch). Returns two boolean masks:
+	- transition_mask: frames during active zoom change
+	- settle_mask: frames in the settling window after each transition
+
+	Args:
+		raw_h: 1-D numpy array of raw bbox heights per frame.
+		window: Sliding window size in frames.
+		threshold_ratio: Max/min ratio within window that triggers detection.
+		settle_frames: Number of frames to mark as settling after each
+			transition window ends.
+
+	Returns:
+		Tuple of (transition_mask, settle_mask) boolean numpy arrays,
+		each of length len(raw_h).
+	"""
+	n = len(raw_h)
+	transition_mask = numpy.zeros(n, dtype=bool)
+	settle_mask = numpy.zeros(n, dtype=bool)
+	if n < 2:
+		return (transition_mask, settle_mask)
+
+	# guard against zero or NaN heights
+	safe_h = numpy.where(
+		(raw_h > 0) & numpy.isfinite(raw_h), raw_h, 1.0,
+	)
+
+	# sliding window: flag frames where max/min ratio exceeds threshold
+	half_w = window // 2
+	for i in range(n):
+		lo = max(0, i - half_w)
+		hi = min(n, i + half_w + 1)
+		win_slice = safe_h[lo:hi]
+		ratio = numpy.max(win_slice) / numpy.min(win_slice)
+		if ratio >= threshold_ratio:
+			transition_mask[i] = True
+
+	# build settle mask: settle_frames after each contiguous transition block
+	in_transition = False
+	block_end = -1
+	for i in range(n):
+		if transition_mask[i]:
+			in_transition = True
+			block_end = i
+		elif in_transition:
+			# transition block just ended at block_end
+			in_transition = False
+			settle_start = block_end + 1
+			settle_end = min(n, settle_start + settle_frames)
+			settle_mask[settle_start:settle_end] = True
+
+	# handle case where transition extends to end of signal
+	# (no settling after final transition block)
+
+	# merge overlapping settle zones with subsequent transitions
+	# if a transition starts during a settle zone, extend settle after it
+	changed = True
+	while changed:
+		changed = False
+		in_transition = False
+		block_end = -1
+		for i in range(n):
+			if transition_mask[i]:
+				in_transition = True
+				block_end = i
+			elif in_transition:
+				in_transition = False
+				settle_start = block_end + 1
+				settle_end = min(n, settle_start + settle_frames)
+				for j in range(settle_start, settle_end):
+					if not settle_mask[j]:
+						settle_mask[j] = True
+						changed = True
+
+	# ensure transition frames are not also settle frames
+	settle_mask[transition_mask] = False
+
+	return (transition_mask, settle_mask)
 
 
 # ============================================================
