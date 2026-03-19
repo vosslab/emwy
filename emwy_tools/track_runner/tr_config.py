@@ -21,26 +21,19 @@ TOOL_CONFIG_HEADER_VALUE = 2
 
 def read_default_config() -> dict:
 	"""
-	Return the minimal default config schema for track_runner v2.
+	Read the global default config from track_runner.config.yaml.
+
+	The file lives alongside this module in emwy_tools/track_runner/.
 
 	Returns:
-		dict: Default configuration dictionary.
+		dict: Parsed and validated configuration dictionary.
+
+	Raises:
+		RuntimeError: If the default config file is missing or invalid.
 	"""
-	config = {
-		TOOL_CONFIG_HEADER_KEY: TOOL_CONFIG_HEADER_VALUE,
-		"detection": {
-			"model": "yolov8n",
-			"confidence_threshold": 0.25,
-		},
-		"processing": {
-			"crop_mode": "direct_center",
-			"crop_aspect": "16:9",
-			"crop_fill_ratio": 0.30,
-			"video_codec": "libx264",
-			"crf": 18,
-			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],
-		},
-	}
+	module_dir = os.path.dirname(os.path.abspath(__file__))
+	default_path = os.path.join(module_dir, "track_runner.config.yaml")
+	config = load_config(default_path)
 	return config
 
 #============================================

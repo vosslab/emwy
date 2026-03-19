@@ -358,6 +358,7 @@ def direct_center_crop_trajectory(
 	frame_width: int,
 	frame_height: int,
 	config: dict,
+	fps: float = 60.0,
 ) -> list:
 	"""Compute crop rectangles by centering directly on the solved trajectory.
 
@@ -372,6 +373,7 @@ def direct_center_crop_trajectory(
 		frame_width: Source video frame width in pixels.
 		frame_height: Source video frame height in pixels.
 		config: Project configuration dict with 'processing' section.
+		fps: Video frame rate in frames per second.
 
 	Returns:
 		List of (x, y, w, h) integer crop rectangles, one per frame.
@@ -434,64 +436,73 @@ def direct_center_crop_trajectory(
 	max_height_change_frac = float(processing.get("crop_max_height_change", 0.005))
 	if zoom_stabilization and max_height_change_frac > 0:
 		# three-mode constraint: detect zoom phases and apply per-mode rates
-		transition_mask, settle_mask = _detect_zoom_phases(raw_h)
+		# settling window is time-based: 3 seconds regardless of frame rate
+		settle_seconds = 3.0
+		settle_frames = round(settle_seconds * fps)
+		transition_mask, settle_mask = _detect_zoom_phases(
+			raw_h, settle_frames=settle_frames,
+		)
 		# rate multipliers per mode
 		transition_rate = 0.02
 		settling_rate = 0.20
-		# biased monotonicity tracking for settling zones
+		# global biased monotonicity: crop height resists direction changes
+		# on ALL frames, not just settling. This prevents the crop from
+		# chasing seed-height jitter and stride-phase oscillation.
 		mono_direction = 0  # 0=unset, 1=growing, -1=shrinking
 		mono_reversal_count = 0
 		# minimum reversal threshold: 0.3% of current height
 		mono_threshold_frac = 0.003
 		# consecutive frames needed to allow a reversal
-		mono_sustain_required = 3
+		# settling zones require more evidence than normal frames
+		mono_sustain_normal = 5
+		mono_sustain_settling = 3
 		for i in range(1, n):
 			delta = smoothed_h[i] - smoothed_h[i - 1]
+			# determine rate limit and sustain requirement per mode
 			if transition_mask[i]:
 				# near-freeze during active zoom change
 				max_delta = max_height_change_frac * transition_rate * smoothed_h[i - 1]
+				sustain_required = mono_sustain_settling
 			elif settle_mask[i]:
 				# slow convergence during settling
 				max_delta = max_height_change_frac * settling_rate * smoothed_h[i - 1]
-				# biased monotonicity: suppress small reversals
-				if mono_direction == 0:
-					# set direction from first settling movement
-					if delta > 0:
-						mono_direction = 1
-					elif delta < 0:
-						mono_direction = -1
-				else:
-					# check if this frame reverses direction
-					is_reversal = (
-						(mono_direction == 1 and delta < 0)
-						or (mono_direction == -1 and delta > 0)
-					)
-					if is_reversal:
-						reversal_threshold = mono_threshold_frac * smoothed_h[i - 1]
-						if abs(delta) < reversal_threshold:
-							# suppress small reversal
-							delta = 0.0
+				sustain_required = mono_sustain_settling
+			else:
+				# normal frames: full rate
+				max_delta = max_height_change_frac * smoothed_h[i - 1]
+				sustain_required = mono_sustain_normal
+			# biased monotonicity: suppress direction reversals globally
+			if mono_direction == 0:
+				# set direction from first movement
+				if delta > 0:
+					mono_direction = 1
+				elif delta < 0:
+					mono_direction = -1
+			else:
+				# check if this frame reverses direction
+				is_reversal = (
+					(mono_direction == 1 and delta < 0)
+					or (mono_direction == -1 and delta > 0)
+				)
+				if is_reversal:
+					reversal_threshold = mono_threshold_frac * smoothed_h[i - 1]
+					if abs(delta) < reversal_threshold:
+						# suppress small reversal
+						smoothed_h[i] = smoothed_h[i - 1]
+						continue
+					else:
+						# potential sustained reversal, accumulate evidence
+						mono_reversal_count += 1
+						if mono_reversal_count < sustain_required:
+							# not yet sustained, suppress
 							smoothed_h[i] = smoothed_h[i - 1]
 							continue
 						else:
-							# potential sustained reversal
-							mono_reversal_count += 1
-							if mono_reversal_count < mono_sustain_required:
-								# not yet sustained, suppress
-								delta = 0.0
-								smoothed_h[i] = smoothed_h[i - 1]
-								continue
-							else:
-								# sustained reversal, allow and flip direction
-								mono_direction = -mono_direction
-								mono_reversal_count = 0
-					else:
-						mono_reversal_count = 0
-			else:
-				# normal frames: full rate, reset monotonicity
-				max_delta = max_height_change_frac * smoothed_h[i - 1]
-				mono_direction = 0
-				mono_reversal_count = 0
+							# sustained reversal, allow and flip direction
+							mono_direction = -mono_direction
+							mono_reversal_count = 0
+				else:
+					mono_reversal_count = 0
 			# apply rate limit
 			if abs(delta) > max_delta:
 				smoothed_h[i] = smoothed_h[i - 1] + math.copysign(max_delta, delta)
@@ -681,8 +692,9 @@ def trajectory_to_crop_rects(
 					f"direct_center mode: {missing}"
 				)
 		# direct-center mode: center on solved trajectory, skip CropController
+		fps = float(video_info.get("fps", 60.0))
 		crop_rects = direct_center_crop_trajectory(
-			full_trajectory, frame_width, frame_height, config,
+			full_trajectory, frame_width, frame_height, config, fps=fps,
 		)
 	elif crop_mode == "smooth":
 		# existing online CropController pass

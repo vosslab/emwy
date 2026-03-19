@@ -1,0 +1,14 @@
+track_runner: 2
+detection:
+  model: yolov8n
+  confidence_threshold: 0.25
+processing:
+  crop_mode: direct_center
+  crop_aspect: '16:9'
+  crop_fill_ratio: 0.30
+  video_codec: libx264
+  crf: 18
+  encode_filters:
+  - bilateral
+  - auto_levels
+  - hqdn3d

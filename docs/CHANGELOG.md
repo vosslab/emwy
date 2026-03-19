@@ -2,13 +2,23 @@
 
 ## 2026-03-19
 
+### Additions and New Features
+- Global biased monotonicity for crop height in [emwy_tools/track_runner/tr_crop.py](emwy_tools/track_runner/tr_crop.py). Direction reversals in crop height now require sustained evidence on all frames, not just during detected zoom transitions. Normal frames require 5 consecutive reversal frames to change direction; settling zones require 3. Prevents the crop from chasing seed-height jitter and stride-phase oscillation.
+- Time-based settling window for zoom stabilization. Settling duration is now specified in seconds (3.0s) and converted to frames using the video's fps, so the behavior is consistent across 24fps, 60fps, and 240fps content. The `direct_center_crop_trajectory()` function now accepts an `fps` parameter.
+
+### Behavior or Interface Changes
+- Renamed `tr_config.default_config()` to `tr_config.read_default_config()`. The function now reads from [emwy_tools/track_runner/track_runner.config.yaml](emwy_tools/track_runner/track_runner.config.yaml) instead of returning hardcoded values. Single source of truth for default configuration.
+- Removed `--write-default-config` CLI flag from track runner. The CLI no longer auto-creates per-video config files when none exists; it falls back to `read_default_config()` silently.
+- Removed per-video `*.track_runner.config.yaml` files from `tr_config/`. All 6 files were identical detection-only configs. Default config now lives in the package at [emwy_tools/track_runner/track_runner.config.yaml](emwy_tools/track_runner/track_runner.config.yaml).
+
 ### Fixes and Maintenance
-- Removed `processing` section from all 6 per-video config files in `tr_config/`. These files had stale `crop_fill_ratio: 0.1` from before Experiment 5 established 0.30 as the correct value. The experiment harness did not override this key, so all Experiment 7 variants silently ran with the wrong fill ratio, producing full-frame output (2816x1584 on IMG_3702) instead of tight crops. Root cause: processing parameters were duplicated across per-video configs instead of being controlled by the experiment.
-- Consolidated 6 identical per-video `*.track_runner.config.yaml` files into one global [tr_config/track_runner.config.yaml](tr_config/track_runner.config.yaml). Per-video configs contained only detection settings (model, confidence_threshold) which were identical across all videos. Processing parameters now live exclusively in the experiment variant overrides in [tools/batch_encode_experiment.py](tools/batch_encode_experiment.py).
-- Added `crop_fill_ratio`, `crop_aspect`, `video_codec`, `crf`, and `encode_filters` to experiment variant overrides so all processing is controlled in one place.
+- **Bug fix**: fixed stale `crop_fill_ratio: 0.1` in all per-video config files. The experiment harness did not override this key, so all Experiment 7 variants silently ran with the wrong fill ratio, producing full-frame output (2816x1584 on IMG_3702) instead of tight crops.
+- Updated `crop_fill_ratio` default from 0.1 to 0.30 in [emwy_tools/track_runner/track_runner.config.yaml](emwy_tools/track_runner/track_runner.config.yaml). Removed stale `crop_post_smooth_strength` and `crop_post_smooth_max_velocity` defaults that were leftovers from before `direct_center` mode.
+- Added full processing overrides (`crop_fill_ratio`, `crop_aspect`, `video_codec`, `crf`, `encode_filters`) to experiment variant dicts in [tools/batch_encode_experiment.py](tools/batch_encode_experiment.py) so all processing is controlled in one place.
 
 ### Decisions and Failures
 - Per-video config files with processing settings are a maintenance trap. Processing parameters that the experiment controls must not also live in per-video YAML files where they go stale. Detection-only configs are the correct separation: detection settings describe the video, processing settings describe the experiment.
+- Torso-box size is a noisy proxy for subject scale. Fast oscillations in torso height are expected from stride phase, body rotation, and annotation variation. The crop controller must treat short-window size oscillation as noise, not as a zoom signal to follow. Global biased monotonicity is the first step toward this model.
 
 ## 2026-03-18
 
