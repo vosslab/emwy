@@ -49,7 +49,7 @@ CLIP_DURATION = 15
 CLIP_MARGIN = 5
 
 # experiment output directory
-EXPERIMENT_DIR = os.path.join(REPO_ROOT, "output_smoke", "experiment_7b")
+EXPERIMENT_DIR = os.path.join(REPO_ROOT, "output_smoke", "experiment_7c")
 
 # videos to test (all 7 with solved intervals)
 EXPERIMENT_VIDEOS = {
