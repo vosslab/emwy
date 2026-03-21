@@ -6,6 +6,7 @@ processing:
   crop_mode: direct_center
   crop_aspect: '16:9'
   crop_fill_ratio: 0.30
+  crop_post_smooth_size_strength: 0.05
   video_codec: libx264
   crf: 18
   encode_filters:

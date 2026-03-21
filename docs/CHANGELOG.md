@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-03-20
+
+### Additions and New Features
+- Created [tools/assess_pixel_zoom.py](tools/assess_pixel_zoom.py): pixel-level zoom stability measurement tool. Measures zoom drift and jitter using Fourier-Mellin phase-correlation registration on dense tile grids. Features include dual scale tracks (consecutive frame-to-frame zoom + reference-frame anchor zoom) for independent drift and oscillation detection, three spatial weighting modes (full, edge_weighted, side_strips) with edge-weighted masking to suppress border artifacts and stabilize registration on detailed regions, comprehensive stability metrics (zoom range, coefficient of variation, velocity distribution with median/p95/max, jerk statistics, bounce rate, per-minute drift, inter-frame correlation), CSV time-series output, YAML summary output with metadata, batch comparison mode for cross-variant analysis with sorted ranking table, and pluggable estimator architecture for future algorithm options. Validated on real Experiment 7d output across 4 IMG_3707 variants (A_baseline_dc, B_size_smooth, C_zoom_stab, D_smooth_zoom) with 480-frame analysis: valid_frame_fraction > 99%, metrics show differentiation across variants (bounce rate 4.5–12.2/sec, velocity_p95 0.0006–0.0013), CSV and comparison table generated successfully.
+- Created [tests/test_pixel_zoom.py](tests/test_pixel_zoom.py): synthetic calibration tests for pixel zoom assessment (in parallel development).
+
+### Fixes and Maintenance
+- Added `crop_post_smooth_size_strength: 0.05` to default config in [emwy_tools/track_runner/track_runner.config.yaml](emwy_tools/track_runner/track_runner.config.yaml). The height channel in `direct_center_crop_trajectory()` had no EMA smoothing (alpha defaulted to 0.0), so raw bbox height jitter amplified 3.3x by fill_ratio passed straight through to the `max_height_change` velocity limiter, producing visible staircase zoom bounce. Forward-backward EMA at alpha=0.05 (~40 frame window at 60fps) smooths seed-frame jitter while preserving multi-second zoom drift.
+- Updated [tools/batch_encode_experiment.py](tools/batch_encode_experiment.py) to Experiment 7d: 2x2 factorial design isolating size-channel smoothing and zoom stabilization. Variants: A_baseline_dc (no smoothing, no zoom stab), B_size_smooth (EMA alpha=0.05), C_zoom_stab (3-mode constraint only), D_smooth_zoom (both combined). Added `crop_post_smooth_size_strength` to all variant overrides. Dropped composition variants to focus on scale stability.
+
+### Decisions and Failures
+- The `max_height_change` velocity limiter is not a smoother. It prevents large jumps but creates quantized staircase artifacts when chasing a jittery signal. Each seed frame introduces 10-20% height discontinuity; between seeds, heights are smooth. The limiter chases seed jitter up and down at 0.5%/frame, producing visible zoom pumping on all videos including those with stable source zoom (IMG_3707). The fix is low-pass filtering the input signal before the constraint, not tuning the constraint itself.
+
+### Developer Tests and Notes
+- Validated [tools/assess_pixel_zoom.py](tools/assess_pixel_zoom.py) on real Experiment 7d output (IMG_3707): single-file analysis on A_baseline_dc completed successfully with 100% valid_frame_fraction and reasonable metric values (zoom_range=0.00378, bounce_rate=11.1/sec, velocity_p95=0.001128). Batch comparison across all 4 IMG_3707 variants completed successfully, metrics differentiate variants as expected (bounce rate spread 4.5–12.2/sec), comparison table sorted by worst bounce rate first. CSV and YAML outputs generated correctly.
+
 ## 2026-03-19
 
 ### Additions and New Features

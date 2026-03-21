@@ -49,7 +49,7 @@ CLIP_DURATION = 15
 CLIP_MARGIN = 5
 
 # experiment output directory
-EXPERIMENT_DIR = os.path.join(REPO_ROOT, "output_smoke", "experiment_7c")
+EXPERIMENT_DIR = os.path.join(REPO_ROOT, "output_smoke", "experiment_7d")
 
 # videos to test (all 7 with solved intervals)
 EXPERIMENT_VIDEOS = {
@@ -83,69 +83,78 @@ EXPERIMENT_VIDEOS = {
 	},
 }
 
-# Experiment 7b (composition + piecewise zoom stabilization): 2x2 factorial design.
+# Experiment 7d (size-channel smoothing + zoom stabilization): 2x2 factorial design.
 #
 # Prior experiments:
 #   1-4: axis-isolated overrides, all indistinguishable (fill_ratio=0.1 root cause)
 #   5: tighter fill ratio + containment + zoom constraint -- fixed first-order problem
 #   6: smart mode v1a -- rocking-boat on IMG_3702, baseline_dc was better
 #   7: zoom-event damping (single-frame detector) -- missed multi-frame transitions
+#   7b: composition + zoom stabilization -- zoom stabilization improved HJerk p95
+#   7c: global biased monotonicity -- reduced CropHVar, but bounce persists
 #
-# This experiment tests two independent improvements to the direct_center baseline:
-#   - Composition: torso anchor at 38% from top (more room for legs/feet)
-#   - Zoom stabilization: sliding-window 3-mode (transition/settling/normal)
-#     constraint that treats crop height as a noisy time series
+# Root cause of remaining bounce: crop_post_smooth_size_strength defaults to 0.0,
+# so raw bbox height jitter (amplified 3.3x by fill_ratio) passes straight through
+# to the max_height_change velocity limiter, producing staircase artifacts.
+#
+# This experiment tests forward-backward EMA on the height channel:
+#   - Size smoothing: crop_post_smooth_size_strength 0.05 (alpha=0.05, ~40 frame window)
+#   - Zoom stabilization: sliding-window 3-mode constraint
 #
 # Config keys:
-#   crop_torso_anchor: 0.38 or 0.50 (default centered)
+#   crop_post_smooth_size_strength: 0.0 (off) or 0.05 (on)
 #   crop_zoom_stabilization: True/False
 VARIANTS = {
 	"A_baseline_dc": {
-		"description": "Current direct_center: centered torso, scalar zoom constraint",
+		"description": "Current direct_center: no size smoothing, no zoom stabilization",
 		"overrides": {
 			"crop_mode": "direct_center",
 			"crop_aspect": "16:9",
 			"crop_fill_ratio": 0.30,
 			"crop_torso_anchor": 0.50,
+			"crop_post_smooth_size_strength": 0.0,
 			"crop_zoom_stabilization": False,
 			"video_codec": "libx264",
 			"crf": 18,
 			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],
 		},
 	},
-	"B_torso_38": {
-		"description": "Composition offset only: torso at 38% from top",
+	"B_size_smooth": {
+		"description": "Size smoothing only: forward-backward EMA alpha=0.05 on height",
 		"overrides": {
 			"crop_mode": "direct_center",
 			"crop_aspect": "16:9",
 			"crop_fill_ratio": 0.30,
-			"crop_torso_anchor": 0.38,
+			"crop_torso_anchor": 0.50,
+			"crop_post_smooth_size_strength": 0.05,
 			"crop_zoom_stabilization": False,
 			"video_codec": "libx264",
 			"crf": 18,
 			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],
 		},
 	},
-	"C_zoom_stabilized": {
-		"description": "Piecewise zoom stabilization only, centered torso",
+	"C_zoom_stab": {
+		"description": "Zoom stabilization only: 3-mode constraint, no size smoothing",
 		"overrides": {
 			"crop_mode": "direct_center",
 			"crop_aspect": "16:9",
 			"crop_fill_ratio": 0.30,
 			"crop_torso_anchor": 0.50,
+			"crop_post_smooth_size_strength": 0.0,
 			"crop_zoom_stabilization": True,
 			"video_codec": "libx264",
 			"crf": 18,
 			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],
 		},
 	},
-	"D_zoom_stabilized_torso_38": {
-		"description": "Piecewise zoom stabilization + torso at 38% from top",
+	"D_smooth_zoom": {
+		"description": "Size smoothing + zoom stabilization combined",
 		"overrides": {
 			"crop_mode": "direct_center",
 			"crop_aspect": "16:9",
 			"crop_fill_ratio": 0.30,
-			"crop_torso_anchor": 0.38,
+			"crop_torso_anchor": 0.50,
+			"crop_post_smooth_size_strength": 0.05,
 			"crop_zoom_stabilization": True,
 			"video_codec": "libx264",
 			"crf": 18,
@@ -618,10 +627,10 @@ def write_results(rows: list, output_dir: str) -> None:
 			f.write("| " + " | ".join(torso_line) + " |\n")
 		# pass criteria section
 		f.write("\n## Pass criteria\n\n")
-		f.write("- C reduces `height_jerk_p95` on IMG_3702 vs A\n")
-		f.write("- C produces smaller output resolution on multimodal videos (IMG_3702, IMG_3629)\n")
-		f.write("- C does not regress on canon_60d\n")
-		f.write("- B places torso measurably higher in frame than A\n")
+		f.write("- B reduces `crop_h_var` and `height_jerk_p95` vs A on all videos\n")
+		f.write("- B reduces visible zoom bounce on IMG_3707\n")
+		f.write("- B does not regress on canon_60d\n")
+		f.write("- C reduces `height_jerk_p95` on IMG_3702 vs A (zoom transitions)\n")
 		f.write("- D combines both improvements without regression\n")
 		f.write("- `bad_frame_fraction < 0.05` (< 5%)\n")
 		f.write("- `height_jerk_p95 < 5.0`\n")
