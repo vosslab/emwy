@@ -432,9 +432,18 @@ def direct_center_crop_trajectory(
 		smoothed_cy += composition_offset
 
 	# Step 2.5: zoom stability constraint
+	# When EMA size smoothing is active (alpha_size > 0), the forward-backward
+	# EMA already bounds the rate of height change and produces a smooth signal.
+	# The rate limiter would re-quantize the smooth output into staircase
+	# artifacts (Experiment 7d: variant D was worst despite combining both).
+	# Only apply rate limiting when EMA smoothing is disabled.
 	zoom_stabilization = bool(processing.get("crop_zoom_stabilization", False))
 	max_height_change_frac = float(processing.get("crop_max_height_change", 0.005))
-	if zoom_stabilization and max_height_change_frac > 0:
+	if alpha_size > 0:
+		# EMA handles zoom stability; skip rate limiting to avoid
+		# re-quantizing the smooth signal into staircase steps
+		pass
+	elif zoom_stabilization and max_height_change_frac > 0:
 		# three-mode constraint: detect zoom phases and apply per-mode rates
 		# settling window is time-based: 3 seconds regardless of frame rate
 		settle_seconds = 3.0

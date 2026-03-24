@@ -49,7 +49,7 @@ CLIP_DURATION = 15
 CLIP_MARGIN = 5
 
 # experiment output directory
-EXPERIMENT_DIR = os.path.join(REPO_ROOT, "output_smoke", "experiment_7d")
+EXPERIMENT_DIR = os.path.join(REPO_ROOT, "output_smoke", "experiment_9a")
 
 # videos to test (all 7 with solved intervals)
 EXPERIMENT_VIDEOS = {
@@ -83,7 +83,7 @@ EXPERIMENT_VIDEOS = {
 	},
 }
 
-# Experiment 7d (size-channel smoothing + zoom stabilization): 2x2 factorial design.
+# Experiment 9A: composition only -- torso_anchor isolation.
 #
 # Prior experiments:
 #   1-4: axis-isolated overrides, all indistinguishable (fill_ratio=0.1 root cause)
@@ -92,70 +92,57 @@ EXPERIMENT_VIDEOS = {
 #   7: zoom-event damping (single-frame detector) -- missed multi-frame transitions
 #   7b: composition + zoom stabilization -- zoom stabilization improved HJerk p95
 #   7c: global biased monotonicity -- reduced CropHVar, but bounce persists
+#   7d: 2x2 factorial (EMA x zoom_stab). Key finding: variant D (EMA + limiter)
+#       had WORST pixel bounce (12.3/s). Rate limiter re-quantizes EMA output.
+#   8: validated rate-limiter bypass when EMA active. B and D_gated identical.
 #
-# Root cause of remaining bounce: crop_post_smooth_size_strength defaults to 0.0,
-# so raw bbox height jitter (amplified 3.3x by fill_ratio) passes straight through
-# to the max_height_change velocity limiter, producing staircase artifacts.
+# Current gap: torso_anchor=0.50 (centered) produces too much headroom and
+# crops feet. The torso is anatomically asymmetric -- head is smaller than
+# legs -- so centering creates unbalanced framing.
 #
-# This experiment tests forward-backward EMA on the height channel:
-#   - Size smoothing: crop_post_smooth_size_strength 0.05 (alpha=0.05, ~40 frame window)
-#   - Zoom stabilization: sliding-window 3-mode constraint
+# This experiment tests whether a single global anchor value fixes framing.
+# torso_anchor is a simple normalized vertical bias:
+#   composition_offset = (0.50 - torso_anchor) * smoothed_h
+# anchor < 0.50 moves the subject up in frame (more room below for legs).
 #
-# Config keys:
-#   crop_post_smooth_size_strength: 0.0 (off) or 0.05 (on)
-#   crop_zoom_stabilization: True/False
+# 0.38 approximates legs+stride occupying ~60-70% of space below torso
+# center, head ~30-40% above. It is a static assumption, not anatomical.
+#
+# Decision fork after 9A:
+#   YES (framing improves across all videos): lock anchor, proceed to 9B.
+#   NO (works on some videos, breaks others): stop tuning, move to
+#       phase-dependent anchor. Do not sweep 0.38/0.42/0.44 endlessly.
+#
+# Hold fixed: alpha_size=0.05, limiter bypass active, fill_ratio=0.30,
+# containment_radius=0.20, alpha_pos=0.0 (position smoothing OFF).
 VARIANTS = {
-	"A_baseline_dc": {
-		"description": "Current direct_center: no size smoothing, no zoom stabilization",
-		"overrides": {
-			"crop_mode": "direct_center",
-			"crop_aspect": "16:9",
-			"crop_fill_ratio": 0.30,
-			"crop_torso_anchor": 0.50,
-			"crop_post_smooth_size_strength": 0.0,
-			"crop_zoom_stabilization": False,
-			"video_codec": "libx264",
-			"crf": 18,
-			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],
-		},
-	},
-	"B_size_smooth": {
-		"description": "Size smoothing only: forward-backward EMA alpha=0.05 on height",
+	"A_current": {
+		"description": "Current baseline (torso_anchor=0.50, centered)",
 		"overrides": {
 			"crop_mode": "direct_center",
 			"crop_aspect": "16:9",
 			"crop_fill_ratio": 0.30,
 			"crop_torso_anchor": 0.50,
 			"crop_post_smooth_size_strength": 0.05,
+			"crop_post_smooth_strength": 0.0,
 			"crop_zoom_stabilization": False,
+			"crop_containment_radius": 0.20,
 			"video_codec": "libx264",
 			"crf": 18,
 			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],
 		},
 	},
-	"C_zoom_stab": {
-		"description": "Zoom stabilization only: 3-mode constraint, no size smoothing",
+	"B_anchor": {
+		"description": "Composition fix only (torso_anchor=0.38, subject higher in frame)",
 		"overrides": {
 			"crop_mode": "direct_center",
 			"crop_aspect": "16:9",
 			"crop_fill_ratio": 0.30,
-			"crop_torso_anchor": 0.50,
-			"crop_post_smooth_size_strength": 0.0,
-			"crop_zoom_stabilization": True,
-			"video_codec": "libx264",
-			"crf": 18,
-			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],
-		},
-	},
-	"D_smooth_zoom": {
-		"description": "Size smoothing + zoom stabilization combined",
-		"overrides": {
-			"crop_mode": "direct_center",
-			"crop_aspect": "16:9",
-			"crop_fill_ratio": 0.30,
-			"crop_torso_anchor": 0.50,
+			"crop_torso_anchor": 0.38,
 			"crop_post_smooth_size_strength": 0.05,
-			"crop_zoom_stabilization": True,
+			"crop_post_smooth_strength": 0.0,
+			"crop_zoom_stabilization": False,
+			"crop_containment_radius": 0.20,
 			"video_codec": "libx264",
 			"crf": 18,
 			"encode_filters": ["bilateral", "auto_levels", "hqdn3d"],
@@ -626,14 +613,18 @@ def write_results(rows: list, output_dir: str) -> None:
 			]
 			f.write("| " + " | ".join(torso_line) + " |\n")
 		# pass criteria section
-		f.write("\n## Pass criteria\n\n")
-		f.write("- B reduces `crop_h_var` and `height_jerk_p95` vs A on all videos\n")
-		f.write("- B reduces visible zoom bounce on IMG_3707\n")
-		f.write("- B does not regress on canon_60d\n")
-		f.write("- C reduces `height_jerk_p95` on IMG_3702 vs A (zoom transitions)\n")
-		f.write("- D combines both improvements without regression\n")
-		f.write("- `bad_frame_fraction < 0.05` (< 5%)\n")
-		f.write("- `height_jerk_p95 < 5.0`\n")
+		f.write("\n## Pass criteria (Experiment 9A: composition)\n\n")
+		f.write("- B_anchor `torso_pos_median` lower than A_current (torso higher in frame)\n")
+		f.write("- B_anchor `torso_upper_frac` increases vs A_current\n")
+		f.write("- Visual: feet visible, less headroom on B vs A\n")
+		f.write("- `height_jerk_p95` within 10% of A (no zoom bounce regression)\n")
+		f.write("- `edge_touch_count` does not increase on B vs A\n")
+		f.write("- `bad_frame_pct` does not increase on B vs A\n")
+		f.write("- canon_60d and IMG_3830 do not regress on any stability metric\n")
+		f.write("\n## Decision fork\n\n")
+		f.write("- YES: B improves framing across all/most videos -> lock anchor, proceed to 9B\n")
+		f.write("- NO: B works on some but breaks others -> stop, move to phase-dependent anchor\n")
+		f.write("- Single fallback: try 0.34 if 0.38 under-corrects. No further sweeps.\n")
 		f.write("\n## How to review\n\n")
 		f.write("1. Watch the `_clip*.mkv` files side by side\n")
 		f.write("2. Rate each 0-3 for: jitter, zoom pumping, drift, shake\n")
