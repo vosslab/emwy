@@ -829,6 +829,8 @@ class Renderer():
 		font = self._load_font(font_file, font_size)
 		color = self._parse_color(text_color or "#ffffff")
 		color_rgba = (color[0], color[1], color[2], 255)
+		# wrap long text so it fits within the frame width
+		text = self._wrap_card_text(draw, text, font, int(round(width * 0.9)))
 		text_size = self._measure_text(draw, text, font)
 		x = (width - text_size[0]) / 2.0
 		y = (height - text_size[1]) / 2.0
@@ -922,6 +924,8 @@ class Renderer():
 		draw = PIL.ImageDraw.Draw(image)
 		font = self._load_font(font_file, font_size)
 		color = self._parse_color(text_color or "#ffffff")
+		# wrap long titles so they fit within the frame width
+		text = self._wrap_card_text(draw, text, font, int(round(width * 0.9)))
 		if hasattr(draw, "multiline_textbbox"):
 			bbox = draw.multiline_textbbox((0, 0), text, font=font, align="center")
 			text_w = bbox[2] - bbox[0]
@@ -933,6 +937,27 @@ class Renderer():
 			x = (width - text_size[0]) / 2.0
 			y = (height - text_size[1]) / 2.0
 		draw.multiline_text((x, y), text, font=font, fill=color, align="center")
+
+	#============================
+	def _wrap_card_text(self, draw, text: str, font, max_width: int) -> str:
+		# greedy word wrap; honor any explicit newlines the author added
+		wrapped_lines = []
+		for paragraph in text.split("\n"):
+			words = paragraph.split()
+			if len(words) == 0:
+				wrapped_lines.append("")
+				continue
+			current = words[0]
+			for word in words[1:]:
+				trial = current + " " + word
+				# keep adding words until the line would exceed max_width
+				if self._measure_text(draw, trial, font)[0] <= max_width:
+					current = trial
+				else:
+					wrapped_lines.append(current)
+					current = word
+			wrapped_lines.append(current)
+		return "\n".join(wrapped_lines)
 
 	#============================
 	def _fit_image(self, image, width: int, height: int):

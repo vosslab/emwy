@@ -1,6 +1,14 @@
 # Changelog
 
-## 2026-03-20
+## 2026-07-21
+
+### Behavior or Interface Changes
+- Title cards now word-wrap long titles to fit the frame. Added `_wrap_card_text()` in [emwylib/core/renderer.py](emwylib/core/renderer.py), called from the shared `_draw_card_text()` helper (color, gradient, and image backgrounds) and from `_render_transparent_card_image()` (overlay text). Greedy word wrap honors any author-supplied newlines and keeps each line within 90 percent of the frame width. Previously a long single-line `title:` overflowed horizontally and was clipped.
+- Added matching word wrap to the animated no-background path in [emwylib/titlecard.py](emwylib/titlecard.py): `setType()` now builds a wrapped, vertically centered text block (`_wrap_text()`), and `createCards()` draws each wrapped line centered around the drifting center. The banded highlight is sized to the full block.
+
+### Fixes and Maintenance
+- Verified wrap behavior: a 2221 px title at font size 60 on a 1280 px frame breaks into two lines, each within the 1152 px limit, while short titles render unchanged on a single line.
+- Built a Chimp Crazy welfare teaching segment ([chimp_crazy_welfare_class.yaml](chimp_crazy_welfare_class.yaml)) and attachment/deception segments (full and condensed) from the episode SDH caption files; all validate via `emwy_cli.py -n`.
 
 ### Additions and New Features
 - Created [tools/assess_pixel_zoom.py](tools/assess_pixel_zoom.py): pixel-level zoom stability measurement tool. Measures zoom drift and jitter using Fourier-Mellin phase-correlation registration on dense tile grids. Features include dual scale tracks (consecutive frame-to-frame zoom + reference-frame anchor zoom) for independent drift and oscillation detection, three spatial weighting modes (full, edge_weighted, side_strips) with edge-weighted masking to suppress border artifacts and stabilize registration on detailed regions, comprehensive stability metrics (zoom range, coefficient of variation, velocity distribution with median/p95/max, jerk statistics, bounce rate, per-minute drift, inter-frame correlation), CSV time-series output, YAML summary output with metadata, batch comparison mode for cross-variant analysis with sorted ranking table, and pluggable estimator architecture for future algorithm options. Validated on real Experiment 7d output across 4 IMG_3707 variants (A_baseline_dc, B_size_smooth, C_zoom_stab, D_smooth_zoom) with 480-frame analysis: valid_frame_fraction > 99%, metrics show differentiation across variants (bounce rate 4.5–12.2/sec, velocity_p95 0.0006–0.0013), CSV and comparison table generated successfully.

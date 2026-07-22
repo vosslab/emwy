@@ -42,11 +42,26 @@ class TitleCard(object):
 	#===============================
 	def setType(self):
 		self.fnt = self._load_font()
-		textsize = self._measure_text(self.text)
-		self.w = int(round(self.width/2.0 - textsize[0]/2.0))
-		self.h = int(round(self.height/2.0 - textsize[1]/2.0))
-		self.topband = int(round(self.height/2.0 - textsize[1]))
-		self.bottomband = int(round(self.height/2.0 + textsize[1]))
+		# wrap the title into lines that fit the frame width
+		self.lines = self._wrap_text(self.text)
+		line_sizes = [self._measure_text(line) for line in self.lines]
+		self.line_widths = [size[0] for size in line_sizes]
+		# use a single line height from the tallest measured line
+		self.line_height = max((size[1] for size in line_sizes), default=self.size)
+		# vertical gap between wrapped lines
+		self.line_gap = int(round(self.line_height * 0.35))
+		line_count = len(self.lines)
+		# total height of the stacked text block
+		self.block_height = (line_count * self.line_height
+			+ max(line_count - 1, 0) * self.line_gap)
+		# top y so the block is vertically centered
+		self.h = int(round(self.height/2.0 - self.block_height/2.0))
+		# horizontal center; each line is centered around this at draw time
+		self.w = int(round(self.width/2.0))
+		# banded highlight behind the whole block, with padding
+		pad = int(round(self.line_height * 0.5))
+		self.topband = self.h - pad
+		self.bottomband = self.h + self.block_height + pad
 		return
 
 	#===============================
@@ -57,6 +72,29 @@ class TitleCard(object):
 			height = bbox[3] - bbox[1]
 			return (width, height)
 		return self.fnt.getsize(text)
+
+	#===============================
+	def _wrap_text(self, text):
+		# greedy word wrap so long titles fit within the frame width
+		max_width = int(round(self.width * 0.9))
+		lines = []
+		# honor any explicit newlines, then wrap each paragraph by words
+		for paragraph in text.split("\n"):
+			words = paragraph.split()
+			if len(words) == 0:
+				lines.append("")
+				continue
+			current = words[0]
+			for word in words[1:]:
+				trial = current + " " + word
+				# keep adding words until the line would exceed max_width
+				if self._measure_text(trial)[0] <= max_width:
+					current = trial
+				else:
+					lines.append(current)
+					current = word
+			lines.append(current)
+		return lines
 
 	#===============================
 	def alterColor(self, rgb1, shift):
@@ -166,7 +204,13 @@ class TitleCard(object):
 			d = ImageDraw.Draw(im)
 			rectcolor = self.alterColor(rectcolor, self.defaultshift)
 			d.rectangle([0, self.topband, self.width, self.bottomband], fill=rectcolor, outline='black')
-			d.text((w,h), self.text, font=self.fnt, fill=textcolor)
+			# draw each wrapped line, centered around the drifting center (w)
+			# and stacked down from the drifting block top (h)
+			line_y = h
+			for idx, line in enumerate(self.lines):
+				line_x = w - int(round(self.line_widths[idx]/2.0))
+				d.text((line_x, line_y), line, font=self.fnt, fill=textcolor)
+				line_y += self.line_height + self.line_gap
 			imgname = os.path.join(temp_dir, "%s%05d.png"%(self.imgcode, i))
 			im.save(imgname, "PNG")
 			imglist.append(imgname)
